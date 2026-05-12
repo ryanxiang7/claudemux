@@ -1,5 +1,6 @@
 ---
 description: Bind claudemux to a dispatcher directory on this machine — writes ~/.config/claudemux/config, seeds CLAUDE.md from the bundled template, and optionally enables Claude Code Remote Control (with the user's consent). Run once after /plugin install. Defaults to the current working directory; pass --dev-dir <path> to override.
+argument-hint: "[--dev-dir <path>] [--force]"
 ---
 
 Do these steps in order. Stop and report at the end — don't start tmux, claude, or any teammate.
@@ -57,4 +58,4 @@ A 3-4 line summary:
 - Dispatcher directory that was bound (from step 1 output).
 - Whether `CLAUDE.md` was written / skipped / already matched.
 - Remote Control state: already-on / now-on / skipped-by-user / failed-tell-user-to-edit-manually.
-- One next step — usually "restart Claude Code so the plugin's Stop hook activates" (and so Remote Control kicks in if you just enabled it).
+- One next step — usually "run /reload-plugins so the plugin's Stop hook activates". If Remote Control was just enabled by step 2, mention that it only takes effect on the *next* Claude Code launch (it's read once at startup), not via /reload-plugins.

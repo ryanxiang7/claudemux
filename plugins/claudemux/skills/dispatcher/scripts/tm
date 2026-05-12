@@ -61,6 +61,28 @@ die() { echo "tm: $*" >&2; exit 1; }
 session_name() { echo "${PREFIX}$1"; }
 sid_file() { echo "/tmp/teammate-$1.sid"; }
 
+# Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
+# empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
+# use the _or_die variant for a uniform error story.
+resolve_sid() {
+    local sf; sf=$(sid_file "$1")
+    [[ -s "$sf" ]] || return 1
+    cat "$sf"
+}
+
+resolve_sid_or_die() {
+    local repo="$1" sid
+    sid=$(resolve_sid "$repo") || die "no sid file for $repo at $(sid_file "$repo") — was this teammate spawned via 'tm spawn'? (raw 'tmux new-session' won't seed the sid)"
+    printf '%s' "$sid"
+}
+
+# Drop the Stop-hook artifacts for <sid> (touch + .last) together so a
+# subsequent wait-idle / last sees the NEW turn, not a stale one. Used at
+# spawn, send, and kill — the two paths must move in lockstep.
+clear_idle() {
+    [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last"
+}
+
 # Generate a lowercase UUID. macOS uuidgen emits uppercase; Claude Code
 # normalizes session-ids to lowercase on disk (the jsonl filename is lowercase),
 # so we normalize up front to keep the sid file and jsonl filename byte-equal.
@@ -122,7 +144,7 @@ cmd_spawn() {
         echo "spawned: $name (cwd=$path, sid=$sid)"
     fi
     echo "$sid" > "$sf"
-    rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
+    clear_idle "$sid"
     echo "use 'tm status $repo' once the startup banner appears (~5s)"
 }
 
@@ -138,14 +160,12 @@ cmd_send() {
     [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm send <repo> <prompt...>"
     local prompt="$*"
     local name; name=$(require_session "$repo")
-    local sf; sf=$(sid_file "$repo")
 
     # Clear the baseline idle + last-turn files so a subsequent wait-idle /
     # last reflects THIS prompt's outcome, not a previously satisfied turn.
-    if [[ -s "$sf" ]]; then
-        local sid; sid=$(cat "$sf")
-        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
-    fi
+    # No sid yet (raw tmux spawn) is tolerated — wait-idle would fail anyway.
+    local sid=""
+    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
 
     # CRITICAL: prompt text and Enter must be two separate calls. Combining
     # them in one tmux send-keys inlines Enter as a newline inside the input
@@ -158,23 +178,23 @@ cmd_send() {
     # any newline, the first Enter is consumed as "insert newline at cursor"
     # and the second Enter (on the now-empty trailing line) actually submits.
     # Single-line prompts must NOT get a second Enter — that would submit
-    # an empty follow-up turn.
+    # an empty follow-up turn. The gap defaults to 0.2s (empirically enough
+    # for tmux to flush the literal text on a typical box); override via
+    # TM_SEND_GAP if a loaded box or different terminal needs more.
     if [[ "$prompt" == *$'\n'* ]]; then
-        sleep 0.2
+        sleep "${TM_SEND_GAP:-0.2}"
         tmux send-keys -t "$name" Enter
     fi
 
     echo "sent to $name (Enter issued separately)"
-    [[ -s "$sf" ]] && echo "sid=$(cat "$sf")"
+    [[ -n "$sid" ]] && echo "sid=$sid"
 }
 
 cmd_wait_idle() {
     local repo="${1:-}"; local timeout="${2:-600}"
     [[ -n "$repo" ]] || die "usage: tm wait-idle <repo> [timeout=600]"
     require_session "$repo" >/dev/null
-    local sf; sf=$(sid_file "$repo")
-    [[ -s "$sf" ]] || die "no sid file for $repo at $sf — was this teammate spawned via 'tm spawn'? (raw 'tmux new-session' won't seed the sid)"
-    local sid; sid=$(cat "$sf")
+    local sid; sid=$(resolve_sid_or_die "$repo")
 
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
@@ -196,9 +216,7 @@ cmd_wait_idle() {
 cmd_last() {
     local repo="${1:-}"
     [[ -n "$repo" ]] || die "usage: tm last <repo>"
-    local sf; sf=$(sid_file "$repo")
-    [[ -s "$sf" ]] || die "no sid file for $repo at $sf — was this teammate spawned via 'tm spawn'?"
-    local sid; sid=$(cat "$sf")
+    local sid; sid=$(resolve_sid_or_die "$repo")
     local lf="$IDLE_DIR/$sid.last"
     [[ -e "$lf" ]] || die "no last-turn file for $repo (sid=$sid) at $lf — has the teammate finished a turn yet? Try 'tm wait-idle $repo' first."
     cat "$lf"
@@ -208,12 +226,9 @@ cmd_kill() {
     local repo="${1:-}"
     [[ -n "$repo" ]] || die "usage: tm kill <repo>"
     local name; name=$(session_name "$repo")
-    local sf; sf=$(sid_file "$repo")
-    if [[ -s "$sf" ]]; then
-        local sid; sid=$(cat "$sf")
-        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
-    fi
-    rm -f "$sf"
+    local sid=""
+    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
+    rm -f "$(sid_file "$repo")"
     if tmux has-session -t "$name" 2>/dev/null; then
         tmux kill-session -t "$name"
         echo "killed: $name"

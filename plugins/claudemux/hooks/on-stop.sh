@@ -16,14 +16,29 @@ set -u
 input=$(cat || true)
 [[ -n "${input:-}" ]] || exit 0
 
-sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+# Pull both fields in one jq invocation — jq is the dominant per-Stop cost
+# (~8ms cold start each), and this hook runs on EVERY Claude Code session
+# on the machine.
+sid=""; transcript=""
+IFS=$'\t' read -r sid transcript < <(
+    printf '%s' "$input" | jq -r '[.session_id // "", .transcript_path // ""] | @tsv' 2>/dev/null || true
+)
 [[ -n "${sid:-}" ]] || exit 0
 
 idle_dir="/tmp/claude-idle"
 mkdir -p "$idle_dir" 2>/dev/null || exit 0
 
+# Occasionally sweep stale idle/last files older than 7 days. The hook is the
+# only writer to $idle_dir, but `tm kill` only cleans entries for sessions it
+# spawned — ad-hoc `claude` sessions (and orphans from crashes) accumulate
+# forever otherwise. Run in the background and ignore failures so the sweep
+# never delays turn-end. ~1/16 probability keeps it amortized over many turns.
+if (( RANDOM % 16 == 0 )); then
+    find "$idle_dir" -maxdepth 1 -mtime +7 -type f -delete 2>/dev/null &
+    disown 2>/dev/null || true
+fi
+
 last_file="$idle_dir/$sid.last"
-transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 
 # Reverse input by line. GNU `tac` if available (Linux), else BSD `tail -r`
 # (macOS). Both seek from end on a regular file (true backward streaming),
