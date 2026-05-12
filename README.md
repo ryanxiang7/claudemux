@@ -1,236 +1,233 @@
+**English** · [简体中文](./README.zh-CN.md)
+
 # claudemux
 
-> A Claude Code plugin for **multi-repo orchestration**. Run one dispatcher
-> session in the parent directory of your repos; spawn, message, and wait on
-> tmux teammates across every repo from one place.
+> One Claude Code session that drives many. Run a **dispatcher** in the parent
+> of your repos; spawn per-repo **teammates** in `tmux`, talk to them in plain
+> language, and keep them alive across days.
 
-`claudemux` is what happens when you have a dozen sibling git repos under one
-directory and want a single Claude Code instance to coordinate work across
-them — routing tasks, watching MRs, hosting cron jobs, and driving long-lived
-teammates in their own `tmux` sessions that you can pick up later from the web
-or mobile.
+The name is `claude` + `tmux`. The shape is a *dispatcher* (the Claude Code
+session you talk to) plus *teammates* (one Claude Code per repo, each in its
+own `tmux` session).
 
-The name is `claude` + `tmux`. The architecture is a *dispatcher* (the
-top-level Claude Code session you talk to) plus *teammates* (per-repo Claude
-sessions in `tmux`).
+## Why you might want this
 
-## What it gives you
+If you keep half a dozen sibling repos under one folder and find yourself
+opening five Claude Code sessions to coordinate work across them — switching
+windows, copying context, asking each one "are you done yet?" — `claudemux`
+collapses that into one conversation. The dispatcher routes work into the
+right repo, blocks until the teammate replies, and gives you a single place
+to schedule recurring jobs (CI watchers, status pulls) that survive across
+sessions.
 
-| Component | What it does |
+Because each teammate is a real `claude` REPL inside `tmux`, it auto-registers
+its own Claude Code Remote Control URL — you can also drive any teammate
+directly from `claude.ai/code` or the mobile app, in parallel with the
+dispatcher.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    user(["You<br/>(terminal · web · mobile)"])
+
+    subgraph dispatcher_dir["dispatcher directory · the parent of your repos"]
+        dispatcher["dispatcher<br/>(claude in tmux, talks to you)"]
+        repoA[("repo-a/")]
+        repoB[("repo-b/")]
+        repoC[("repo-c/")]
+    end
+
+    subgraph teammates["teammates · one tmux session per repo"]
+        tA["teammate-repo-a<br/>(claude in repo-a/)"]
+        tB["teammate-repo-b<br/>(claude in repo-b/)"]
+    end
+
+    user <-->|chat| dispatcher
+    user -.->|optional: direct drive<br/>via Remote Control| tA
+    dispatcher -->|tm spawn / send / ask| tA
+    dispatcher -->|tm spawn / send / ask| tB
+    tA -.cwd.-> repoA
+    tB -.cwd.-> repoB
+```
+
+The dispatcher holds the conversation; teammates do the work. Everything in
+between — spawning, sending prompts, waiting for replies, killing stale
+sessions — goes through the `tm` script the plugin installs on `PATH`.
+
+## Install
+
+Inside any Claude Code session:
+
+```
+/plugin marketplace add excitedjs/claudemux
+/plugin install claudemux@claudemux
+/reload-plugins
+```
+
+`/reload-plugins` activates the bundled Stop hook in this Claude Code
+process; no restart needed.
+
+Then, from inside the directory you want as your dispatcher root (the
+parent of your sibling repos):
+
+```bash
+cd ~/path/to/your/dev-dir
+claude
+```
+
+And in the REPL:
+
+```
+/claudemux:setup
+```
+
+`/claudemux:setup` records your dispatcher directory in
+`~/.config/claudemux/config`, seeds a `CLAUDE.md` (the dispatcher's
+working agreement) into the directory, and offers to flip on Claude
+Code's `remoteControlAtStartup` so every teammate gets its own remote
+URL.
+
+## Quick start
+
+In your dispatcher directory, talk in plain language:
+
+> 派一个 teammate 去 repo-a 跑测试
+>
+> 看看 repo-b 现在在干啥
+>
+> 让 repo-a 跑 lint,同时让 repo-b 升级 react 到 19
+
+The `dispatcher` skill auto-triggers on these intents — you don't have to
+name it.
+
+Or skip the conversation and use `tm` directly:
+
+```bash
+tm spawn repo-a                                # launch a teammate
+tm ask   repo-a 'run yarn test in unit-test'   # send + wait + print reply
+tm states                                      # fleet snapshot
+tm kill  repo-a                                # done
+```
+
+## The `tm` script
+
+`tm` is on `PATH` automatically when you're inside any Claude Code session.
+Outside of `claude`, symlink it once into your `PATH` (see [Outside Claude
+Code](#using-tm-outside-claude-code)).
+
+| Subcommand | What it does |
 |---|---|
-| `dispatcher` skill | Operations manual that triggers automatically when you ask the dispatcher to spawn / message / kill / poll teammates, or to set up scheduled work. Bakes in the hard limits (cron only fires in TUI REPLs, Agent Teams cwd cannot be set at spawn, two-step Enter for `tmux send-keys`, etc.) |
-| `tm` script | One-command interface to the teammate fleet: `tm spawn`, `tm send`, `tm wait-idle`, `tm status`, `tm kill`, `tm poll`, `tm ls` |
-| `setup` script | One-shot installer that records your dispatcher dir, installs the idle-signal Stop hook, and writes the dispatcher's working agreement (`CLAUDE.md`) into your dispatcher dir |
-| Idle-signal Stop hook | Lets `tm wait-idle <repo>` block until a teammate finishes a turn, instead of polling a regex against `capture-pane` output |
+| `tm ls` | List every running teammate session. |
+| `tm states` | One-line-per-teammate fleet snapshot: repo, sid, busy?, size + age of last reply, preview of the first 50 chars. The "what's everyone doing right now" view. |
+| `tm spawn <repo>` | Launch a teammate for `<repo>` (a directory under your dispatcher root) in a fresh `tmux` session. Pre-generates the session id, so wait/last work immediately. |
+| `tm resume <repo> [<sid>]` | Resume a prior conversation. Prefer passing the `sid` from your task ledger; without it, falls back to the newest jsonl by mtime (with a warning). |
+| `tm send <repo> <prompt…>` | Send a prompt + Enter. Handles the two-step Enter and the multi-line submit quirk you'd otherwise re-discover. |
+| `tm ask [--quiet] [--timeout=N] <repo> <prompt…>` | The round-trip primitive: send + wait + print the assistant's full reply on stdout. Pipe-friendly. Use `--quiet` for things like `/compact` that don't fire a Stop event. |
+| `tm wait-idle <repo> [timeout]` | Block until the teammate's Stop hook fires (= one turn finished). |
+| `tm wait-quiet <repo> [timeout]` | Block until the teammate's pane shows no working spinner for a few seconds. Useful when the action doesn't end in a Stop event (`/compact`, `/clear`). |
+| `tm last <repo>` | Print the full text of the teammate's last reply. Use this instead of `tm status` when you need the complete text — tmux scrollback truncates. |
+| `tm status <repo> [lines]` | Capture-pane the teammate's live screen. |
+| `tm poll <repo> <regex> [timeout]` | Block until pane content matches a regex. Fallback when `wait-idle` / `wait-quiet` don't apply. |
+| `tm kill <repo>` | Kill the teammate's tmux session and clean up its state files. |
 
-## Architecture in one diagram
+### How the wait primitives work
+
+Every Claude Code session emits a Stop event at the end of each turn. The
+plugin's Stop hook writes two files keyed by the session id:
+
+- `/tmp/claude-idle/<sid>` — zero-byte touch, the wait-idle signal.
+- `/tmp/claude-idle/<sid>.last` — plain text of the assistant's last-turn
+  reply (just the visible text blocks; tool calls and internal thinking
+  are excluded).
+
+`tm send` deletes both files before submitting, so a subsequent `wait-idle`
+/ `last` reflects *this* turn, not a previously satisfied one. The hook
+waits for the latest assistant API response in the jsonl to reach a
+terminal `stop_reason` before writing `.last`, so the file is either
+complete or absent — never a partial reply that looks complete.
+
+`tm wait-quiet` is a sister primitive that watches the live pane for the
+"working" spinner instead of the hook signal. Use it when a teammate is
+running a slash-command (e.g. `/compact`) that doesn't fire Stop.
+
+## `/claudemux:optimize` — periodic self-review
+
+A bundled skill that scans the dispatcher's own recent conversations,
+spots recurring foot-guns or undocumented conventions, and promotes them
+into the right place:
+
+- a behavioral rule for every dispatcher session → your `CLAUDE.md`
+- a dispatcher-specific addition → `<dispatcher-root>/.claude/local-dispatcher-notes.md`
+- a situational fact → project memory (`~/.claude/projects/<encoded>/memory/`)
+
+It runs in a forked context (so the log scan doesn't pollute your live
+session) and returns a short structured report. Invoke manually with
+`/claudemux:optimize`, or schedule it via `CronCreate` for a weekly pass.
+
+## Configuration
+
+`~/.config/claudemux/config` is the one piece of state the plugin keeps.
+It records:
 
 ```
-            ┌──────────────────────────────────────┐
-            │  $DEV_DIR        (dispatcher dir)    │
-            │  • CLAUDE.md     (working agreement) │
-            │  • repo-a/                           │
-            │  • repo-b/                           │
-            │  • repo-c/                           │
-            └──────────────────────────────────────┘
-                        ▲
-            cd here, run claude → this is the
-            "dispatcher" — your orchestrator
-                        │
-                        │  tm spawn repo-a
-                        ▼
-            ┌─────────────────────┐  ┌──────────────────────┐
-            │ tmux: teammate-repo-a│ │ tmux: teammate-repo-b│
-            │   claude in repo-a/  │ │   claude in repo-b/  │
-            │   (interactive REPL) │ │   (interactive REPL) │
-            └─────────────────────┘  └──────────────────────┘
-                  ▲                          ▲
-                  │ tm send repo-a "<prompt>"
-                  │ tm wait-idle repo-a 600
-                  │
-            Each teammate auto-registers its own Claude Code
-            Remote Control session, so you can also drive it
-            directly from claude.ai/code or the mobile app —
-            in parallel with the dispatcher.
+DEV_DIR="/Users/you/Development"
 ```
+
+`DEV_DIR` is the **dispatcher root** — the directory your dispatcher Claude
+session runs in and the parent it expects sibling repos under. Every `tm`
+subcommand resolves repo short-names against it (`tm spawn foo` →
+`$DEV_DIR/foo`). Re-run `/claudemux:setup` (or edit the file by hand) to
+change it.
+
+> ⚠️ In docs `$DEV_DIR` is a *placeholder*, not a real shell variable. The
+> plugin scripts source the config and resolve it internally; if you copy a
+> command from these docs into your shell, replace `$DEV_DIR` with the
+> actual path.
+
+`<dispatcher-root>/.claude/local-dispatcher-notes.md` is an optional
+user-owned notes file. `/claudemux:optimize` appends user-specific
+dispatcher conventions there; the bundled dispatcher skill reads it on
+trigger. It's the safe place to keep notes you don't want overwritten by
+a plugin update.
 
 ## Requirements
 
 | Tool | Why |
 |---|---|
-| Claude Code CLI | The plugin attaches to it |
-| `tmux` | Teammates run in tmux sessions |
-| `jq` | The plugin's Stop hook uses `jq` to parse `session_id` from stdin |
-| Bash 4+ | The scripts use Bash features (associative arrays not needed; just `[[ ]]`, `${BASH_SOURCE[0]}`, etc.) |
-| macOS or Linux | The scripts use `stat -f %m` (BSD); on GNU systems swap to `stat -c %Y` |
+| Claude Code CLI | The plugin attaches to it. |
+| `tmux` | Teammates live in tmux sessions. |
+| `jq` | The Stop hook parses harness JSON. |
+| `bash` | Plugin scripts use Bash features (works with the macOS-default `bash` and any Linux distribution). |
+| macOS or Linux | Scripts use BSD `stat -f %m`. GNU Linux needs `-c %Y` (PRs welcome). |
 
-## Install
+## Using `tm` outside Claude Code
 
-Inside any Claude Code session, register this repo as a marketplace and
-install the plugin:
-
-```
-/plugin marketplace add excitedjs/claudemux
-/plugin install claudemux@claudemux
-```
-
-The `marketplace add` command clones the GitHub repo into Claude Code's
-plugin cache; no manual `git clone` needed. After install, run
-`/reload-plugins` once so the bundled Stop hook activates — no Claude Code
-restart required.
-
-## Bind to your dispatcher directory
-
-After installing, run `/claudemux:setup` from inside the directory you want
-as your dispatcher root (the parent of all your sibling repos):
-
-```bash
-cd ~/path/to/your/dev-dir
-claude
-# inside the Claude Code REPL:
-/claudemux:setup
-```
-
-`/claudemux:setup` is idempotent. It:
-
-1. Records `DEV_DIR=<current-dir>` in `~/.config/claudemux/config` so `tm`
-   can find your dispatcher directory from any shell.
-2. Copies `CLAUDE.md` into your dispatcher directory from the bundled
-   template (skipped if one already exists — pass `--force` to overwrite).
-3. Ensures `/tmp/claude-idle/` exists for the idle-signal hook.
-4. **Asks you whether to enable Claude Code Remote Control at startup**
-   (the `remoteControlAtStartup` key in `~/.claude/settings.json`).
-   Each claudemux teammate registers its own Remote Control URL, which is
-   how you drive teammates from claude.ai/code or mobile — so the plugin
-   works best with it on. If you say yes, claudemux backs up your settings
-   file and flips the flag with `jq`; if the edit is blocked (permissions,
-   missing `jq`, etc.) you get the one-liner to do it yourself. If you say
-   no, your settings stay untouched.
-
-The Stop hook itself ships with the plugin (`hooks/hooks.json`), so it is
-installed and uninstalled automatically with the plugin. Apart from the
-opt-in Remote Control toggle above, `/claudemux:setup` does not modify
-`~/.claude/settings.json`.
-
-### `tm` is on your PATH automatically
-
-The `tm` script is the day-to-day driver for teammates. It ships under
-`bin/tm` in this plugin, and Claude Code auto-prepends each installed
-plugin's `bin/` directory to `PATH` at session start — so `which tm` should
-resolve inside any Bash subshell launched by Claude Code. No symlink step
-required.
-
-If you also want `tm` available in your regular login shell (i.e. outside
-of any `claude` session), symlink it once:
+`tm` ships under `bin/tm` in the plugin, and Claude Code auto-prepends each
+installed plugin's `bin/` to `PATH` at session start. From a regular
+terminal (no Claude Code session), symlink it once:
 
 ```bash
 ln -sf ~/.claude/plugins/cache/claudemux/claudemux/0.1.0/bin/tm ~/.local/bin/tm
 ```
 
-(Make sure `~/.local/bin` is on your `PATH`. Replace `0.1.0` with the
-installed version reported by `/plugin` if it has been bumped.)
+Make sure `~/.local/bin` is on your `PATH`. Replace `0.1.0` with the
+installed version if it has been bumped.
 
-> Note: `${CLAUDE_PLUGIN_ROOT}` is only injected when the harness runs
-> plugin-defined commands/hooks — it is **not** exported into arbitrary
-> `Bash` tool subshells. Don't rely on it from a generic shell call; use
-> bare `tm` (PATH-resolved) or the absolute install path above.
+## Local development
 
-## Quick start
+Two ways to point Claude Code at a local checkout instead of the
+marketplace-installed copy.
 
-```bash
-# In your dispatcher directory, start the dispatcher session
-tmux new-session -s dispatcher -c "$YOUR_DEV_DIR"
-# In the pane:
-claude
-```
-
-Now talk to the dispatcher in plain language:
-
-> 派一个 teammate 去 repo-a,跑测试
-
-> 看看 repo-b 现在在干啥
-
-> 帮我开两个并行 teammate,一个修 repo-a 的 i18n bug,一个在 repo-b 升 react 19
-
-The `dispatcher` skill auto-triggers on these intents. Or use the `tm` script
-directly:
-
-```bash
-tm spawn repo-a              # launch a teammate
-tm send  repo-a 'run yarn test in the unit-test package'
-tm wait-idle repo-a 1800     # block until that turn finishes
-tm status repo-a 200         # peek at the tail of the screen
-tm kill   repo-a             # done
-```
-
-## How `tm wait-idle` and `tm last` work
-
-Every Claude Code session emits a Stop event at the end of each turn. The
-plugin's Stop hook (`hooks/on-stop.sh`) writes two files on every Stop:
-
-- `/tmp/claude-idle/<session_id>` — zero-byte touch, the wait-idle signal.
-- `/tmp/claude-idle/<session_id>.last` — plain text of the assistant's last-turn
-  reply (concatenated `text` content blocks since the most recent user message;
-  internal `thinking` and `tool_use` blocks are excluded).
-
-`tm wait-idle <repo>` blocks until the touch file appears and then reports the
-`.last` path. `tm last <repo>` cats it directly. Use `.last` instead of
-`tm status` whenever you need the full reply — `tm status` reads the tmux
-scrollback buffer, which truncates long output silently.
-
-`tm send` records the teammate's session id and *deletes* both files before
-submitting the prompt, so a later `tm wait-idle` / `tm last` reflects *this*
-turn, not a previously satisfied one.
-
-The Stop hook fires for every Claude Code session, including the dispatcher
-itself — but nothing waits on the dispatcher's own files, so the extra writes
-are harmless. Because `.last` is keyed by session id, the same mechanism works
-for any Claude Code session whose sid you know: tmux teammates (`tm spawn`),
-`claude -p --session-id <uuid>` headless runs, and Agent Teams teammates
-(once you know their sid).
-
-## What's NOT installed
-
-The plugin does not seed or migrate any AutoMemory. Those files
-(`~/.claude/projects/<dispatcher-dir-sanitized>/memory/`) are personal state:
-the in-flight task ledger, your user / feedback / project memories. They grow
-organically as the dispatcher works.
-
-## Foot-guns the dispatcher skill already knows about
-
-Captured in the skill so you don't re-discover them:
-
-- `tmux send-keys -t <s> '<prompt>' Enter` silently fails to submit
-  (`Enter` becomes a newline). Always use `tm send`, or two separate
-  `send-keys` calls.
-- Multi-line prompts in Claude Code's TUI need a second `Enter` after the
-  first (the first one is consumed as "insert newline" once the input box
-  is in multi-line mode). `tm send` detects newlines in the prompt and
-  sends the extra Enter for you.
-- `CronCreate` inside `claude -p` or inside an Agent Teams teammate returns
-  success and never fires. Host cron on the dispatcher (interactive TUI).
-- Polling for "is the teammate done?" by regex against `capture-pane` is
-  fragile — prefer `tm wait-idle`, which reads the hook-driven signal file.
-- Don't `grep` / `find` across the dispatcher dir — it contains many
-  unrelated repos. Always narrow to a specific repo first.
-
-The full set is in [`skills/dispatcher/SKILL.md`](skills/dispatcher/SKILL.md).
-
-## Contributing / local development
-
-Two ways to point Claude Code at a local checkout of this repo instead of
-the marketplace-installed copy. Both are documented at
-[code.claude.com/docs/en/plugins.md#test-your-plugins-locally](https://code.claude.com/docs/en/plugins.md#test-your-plugins-locally).
-
-**One-off session** — attach a plugin directory directly:
+**One-off** — attach a plugin directory directly:
 
 ```bash
 git clone https://github.com/excitedjs/claudemux ~/src/claudemux
 claude --plugin-dir ~/src/claudemux/plugins/claudemux
 ```
 
-**Persistent (recommended for iterative dev)** — register the local repo as
-a marketplace, then install from it:
+**Persistent (recommended for iterative dev)** — register the local repo
+as a marketplace, then install:
 
 ```bash
 claude plugin marketplace add ~/src/claudemux --scope local
@@ -239,15 +236,27 @@ claude
 /plugin install claudemux@claudemux
 ```
 
-`--scope local` keeps the registration to the current project only;
-`--scope user` makes it global to your account.
+`--scope local` keeps the registration to the current project;
+`--scope user` is global.
 
-**Iteration loop.** All changes — skills, commands, hooks, the `tm` script
-— pick up via `/reload-plugins` ([docs](https://code.claude.com/docs/en/discover-plugins.md#apply-plugin-changes-without-restarting));
-no Claude Code restart needed and there is no file-watch mode, so you have
-to run it explicitly after each edit. If you suspect a stale cache (e.g.
-`bin/tm` not on `PATH` after a fresh install), a full Claude Code restart
-is the nuclear option.
+**Iteration loop.** Skills, commands, hooks, and the `tm` script all hot-
+reload via `/reload-plugins` — no Claude Code restart needed. If you
+suspect a stale cache (e.g. `tm` not on `PATH` after a fresh install),
+a full Claude Code restart is the nuclear option.
+
+## Known limitations
+
+- **Single dispatcher root.** `DEV_DIR` assumes all your sibling repos
+  share one parent directory. Multi-root setups need manual path passing.
+- **macOS / Linux only.** Several scripts use BSD `stat`. Windows is
+  unsupported.
+- **Cron only fires inside the dispatcher REPL.** `CronCreate` from
+  `claude -p` or an Agent Teams teammate returns success then never fires
+  — host all recurring jobs on the dispatcher.
+
+The dispatcher skill bakes in the larger list of foot-guns it has already
+hit, so you don't have to re-discover them. See
+[`plugins/claudemux/skills/dispatcher/SKILL.md`](plugins/claudemux/skills/dispatcher/SKILL.md).
 
 ## Uninstall
 
@@ -255,13 +264,12 @@ is the nuclear option.
 /plugin uninstall claudemux
 ```
 
-`/plugin uninstall` removes the plugin and its Stop hook together (the hook
-ships inside the plugin). Two things are NOT cleaned up automatically:
+Removes the plugin and its Stop hook together. Two things are left
+behind on purpose — delete by hand if you don't want them:
 
-- `~/.config/claudemux/config` — the recorded `DEV_DIR`. Delete by hand if
-  you want.
+- `~/.config/claudemux/config` — the recorded `DEV_DIR`.
 - `CLAUDE.md` in your former dispatcher directory — left in place because
-  you may want to keep the dispatcher policy as reference. Delete by hand.
+  you may want to keep the dispatcher policy as reference.
 
 ## License
 
