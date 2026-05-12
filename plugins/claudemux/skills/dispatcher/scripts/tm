@@ -272,6 +272,120 @@ cmd_kill() {
     fi
 }
 
+cmd_ask() {
+    # One-shot send + wait + cat .last. Default uses wait-idle (Stop hook);
+    # pass --quiet to use the pane-driven wait-quiet (for /compact and other
+    # paths that don't fire a Stop event).
+    local quiet=0 timeout=600 repo=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quiet) quiet=1; shift ;;
+            --timeout=*) timeout="${1#--timeout=}"; shift ;;
+            --timeout) timeout="${2:-}"; shift 2 ;;
+            --) shift; break ;;
+            -*) die "unknown flag: $1" ;;
+            *) repo="$1"; shift; break ;;
+        esac
+    done
+    [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm ask [--quiet] [--timeout=N] <repo> <prompt...>"
+
+    # cmd_send is chatty on stdout; route to stderr so only the reply lands
+    # on our stdout (pipe-friendly: tm ask repo prompt | tee something).
+    cmd_send "$repo" "$@" >&2
+
+    local waiter_rc=0
+    if (( quiet )); then
+        cmd_wait_quiet "$repo" "$timeout" >&2 || waiter_rc=$?
+    else
+        cmd_wait_idle "$repo" "$timeout" >&2 || waiter_rc=$?
+    fi
+
+    local sid lf=""
+    if sid=$(resolve_sid "$repo"); then
+        lf="$IDLE_DIR/$sid.last"
+    fi
+
+    if (( waiter_rc != 0 )); then
+        echo "tm ask: timed out after ${timeout}s on $repo" >&2
+        # Best-effort partial: if Stop hook landed between our last poll and
+        # here, dump .last as the "what we got". Empty stdout otherwise.
+        [[ -n "$lf" && -s "$lf" ]] && cat "$lf"
+        return 1
+    fi
+
+    # Success. --quiet may legitimately have no .last (e.g. /compact).
+    [[ -n "$lf" && -s "$lf" ]] && cat "$lf"
+    return 0
+}
+
+cmd_resume() {
+    # Resume a prior conversation. The recommended call form is
+    #     tm resume <repo> <sid>
+    # with the sid pulled from the dispatcher's task ledger (each tracked
+    # task records the sid of the teammate that owned it). When called
+    # without a sid we fall back to "newest jsonl by mtime" as a one-off
+    # convenience — that's NOT the typical workflow because the latest
+    # jsonl is not necessarily the one you mean to continue.
+    local repo="" sid="" prompt="" has_prompt=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --prompt) prompt="${2:-}"; has_prompt=1; shift 2 ;;
+            --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
+            --) shift; break ;;
+            -*) die "unknown flag: $1" ;;
+            *)
+                if [[ -z "$repo" ]]; then repo="$1"
+                elif [[ -z "$sid" ]]; then sid="$1"
+                else die "tm resume: too many positional args (got '$1' after repo='$repo' sid='$sid')"
+                fi
+                shift
+                ;;
+        esac
+    done
+    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"]  (sid from ledger preferred; auto-pick on omit)"
+
+    local path="$DEV_DIR/$repo"
+    [[ -d "$path" ]] || die "repo not found: $path"
+
+    local name; name=$(session_name "$repo")
+    if tmux has-session -t "$name" 2>/dev/null; then
+        die "$name already running — 'tm kill $repo' first if you really want to start over"
+    fi
+
+    local encoded; encoded=$(printf '%s' "$path" | tr / -)
+    local project_dir="$HOME/.claude/projects/$encoded"
+
+    if [[ -z "$sid" ]]; then
+        # Auto-pick fallback. Warn so the caller notices the ledger lookup
+        # was skipped — most resumes should target a specific task's sid.
+        [[ -d "$project_dir" ]] || die "no project dir at $project_dir — has anyone ever run claude inside $path? Try 'tm spawn $repo' first."
+        local latest
+        latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
+        [[ -n "$latest" ]] || die "no .jsonl transcripts under $project_dir — try 'tm spawn $repo' to start fresh."
+        sid=$(basename "$latest" .jsonl)
+        echo "tm resume: no sid given — auto-picked $sid (jsonl mtime $(stat -f %Sm "$latest")). Prefer passing the sid from your task ledger." >&2
+    else
+        # Explicit sid: prove it exists as a jsonl under this repo's project
+        # dir. Claude's --resume on an unknown sid produces a confusing
+        # "session not found" deep inside the TUI; failing early here is
+        # nicer.
+        local target="$project_dir/$sid.jsonl"
+        [[ -f "$target" ]] || die "no transcript at $target — wrong repo for this sid, or sid does not exist. Check 'ls $project_dir/'."
+    fi
+
+    [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+        || die "sid is not a valid uuid: $sid"
+
+    cmd_spawn "$repo" --resume "$sid"
+
+    if (( has_prompt )); then
+        # Give the resumed claude a moment to render its banner / restore
+        # state before sending. Empirically 3s is enough on a warm Mac.
+        sleep 3
+        cmd_send "$repo" "$prompt"
+    fi
+}
+
 cmd_states() {
     local rows
     rows=$( { tmux ls 2>/dev/null || true; } | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print $1}')
@@ -394,6 +508,27 @@ USAGE
       not a previously satisfied one. Do NOT roll your own with raw tmux
       send-keys, see notes inside the script.
 
+  tm ask [--quiet] [--timeout=N] <repo> <prompt...>
+      send + wait + cat .last in one shot. The dispatcher's "round-trip"
+      shorthand: prompt goes to the teammate, this blocks until the reply
+      is available, and the assistant text is printed to stdout (pipe-
+      friendly — diagnostics go to stderr). Default uses wait-idle; pass
+      --quiet to use wait-quiet (for /compact and other non-turn-end paths).
+      Default timeout 600s. On timeout, prints partial .last to stdout
+      (if Stop hook landed in the race window) and exits non-zero.
+
+  tm resume <repo> [<sid>] [--prompt "..."]
+      Resume a prior conversation. PREFER passing the sid explicitly — the
+      dispatcher's task ledger (active-dispatcher-tasks.md) records the sid
+      of each teammate it spawned; pull from there. With sid given, this is
+      equivalent to 'tm spawn <repo> --resume <sid>' but with an up-front
+      check that the jsonl exists in the right project dir.
+      Without sid: auto-pick the newest jsonl by mtime as a one-off
+      convenience (warns on stderr so you notice the ledger was skipped).
+      Fails if a teammate session for <repo> already exists.
+      Optional --prompt sends a follow-up message after the resumed banner
+      renders.
+
   tm wait-idle <repo> [timeout=600]
       block until the teammate's Stop hook fires (file appears at
       /tmp/claude-idle/<sid>). On hit, also reports the path of the
@@ -450,6 +585,8 @@ main() {
         spawn)      cmd_spawn "$@" ;;
         status)     cmd_status "$@" ;;
         send)       cmd_send "$@" ;;
+        ask)        cmd_ask "$@" ;;
+        resume)     cmd_resume "$@" ;;
         wait-idle)  cmd_wait_idle "$@" ;;
         last)       cmd_last "$@" ;;
         kill)       cmd_kill "$@" ;;

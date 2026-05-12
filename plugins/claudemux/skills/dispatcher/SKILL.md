@@ -51,6 +51,18 @@ tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to
 tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
                                  multi-line submit quirk); clears the idle/last baseline
                                  and touches /tmp/teammate-<repo>.send-at for wait-quiet
+tm ask [--quiet] [--timeout=N] <repo> <prompt...>
+                                 send + wait + cat .last in one shot. Default uses
+                                 wait-idle; pass --quiet to use wait-quiet (for /compact
+                                 and other non-turn-end paths). Reply on stdout (pipe-
+                                 friendly); diagnostics on stderr. Exit non-zero on
+                                 timeout, with whatever partial .last exists.
+tm resume <repo> [<sid>] [--prompt "..."]
+                                 resume a prior conversation. PREFER passing the sid
+                                 from the task ledger (active-dispatcher-tasks.md). Without
+                                 sid, auto-picks the newest jsonl by mtime (warns on stderr,
+                                 since that's rarely the one you actually wanted).
+                                 Optional --prompt sends a follow-up after resume.
 tm wait-idle <repo> [timeout=600]
                                  block until the teammate's Stop hook fires (idle).
                                  Prints the path of the <sid>.last file on hit.
@@ -193,6 +205,20 @@ A teammate going idle immediately after a SendMessage does **not** mean it faile
 - The auto-mode classifier blocks the dispatcher from editing its **own** `settings.local.json` to grant itself new tool permissions (flagged as "Self-Modification"). Hand the user the exact JSON snippet to paste, or tell them to use `/permissions`.
 - The `/hooks` slash-command UI only surfaces tool-related hooks (PreToolUse / PostToolUse / etc.) — `Stop` hooks do **not** appear in that menu, but they still fire. Don't conclude "hook missing" from the `/hooks` UI alone; check `~/.claude/settings.json` directly and watch for the signal file (`/tmp/claude-idle/<jsonl-uuid>`).
 
+## Local dispatcher notes (`$DEV_DIR/.claude/local-dispatcher-notes.md`)
+
+This skill ships inside the claudemux plugin install directory, which is
+read-only and gets overwritten on plugin update. Anything user-specific —
+foot-guns this particular dispatcher hits, conventions the user has stated
+once, project-local procedural additions — lives in
+`$DEV_DIR/.claude/local-dispatcher-notes.md` instead. The file is user-owned,
+free-form, and persists across plugin upgrades.
+
+Before doing anything substantive, check whether the notes file exists and
+`Read` it if so — it's where `/claudemux:optimize` parks dispatcher-specific
+additions that didn't warrant editing `$DEV_DIR/CLAUDE.md`. Treat its
+contents as additional skill body for this dispatcher.
+
 ## Task ledger (use AutoMemory)
 
 The dispatcher keeps a single live ledger named `active-dispatcher-tasks.md` in
@@ -212,6 +238,7 @@ When you spawn a teammate (any form: inline Bash, `claude -p`, Agent teammate,
 | `repo` | absolute path under `$DEV_DIR/` |
 | `branch` | `git -C <repo> branch --show-current` at spawn time |
 | `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for inline / `-p` |
+| `sid` | the teammate's claude session id (for tmux teammates: `cat /tmp/teammate-<repo>.sid`; for Agent Teams: not applicable). This is the field `tm resume <repo> <sid>` consumes when you come back to the task in a future dispatcher session — record it at spawn time, not after the teammate has died. |
 | `intent` | one short line — what the user actually asked for |
 | `artifacts` | URLs to any Dev Task / MR / Feishu doc as they appear (start empty, fill later) |
 | `watch` | `CronCreate` job id polling this task's artifacts, or `none` |
