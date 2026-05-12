@@ -41,18 +41,30 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 
 ```
 tm ls                            list all teammate sessions (sessions named teammate-<repo>)
+tm states                        one-line-per-teammate fleet snapshot: REPO, SID, BUSY,
+                                 LAST (size+age of .last), PREVIEW (first 50 chars of .last).
+                                 The "what's everyone doing" view — prefer this over running
+                                 tm ls + tm status across each session.
 tm spawn <repo> [--resume <sid>] launch a teammate in $DEV_DIR/<repo>;
                                  --resume <sid> picks up an existing session by jsonl-UUID
 tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
 tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
                                  multi-line submit quirk); clears the idle/last baseline
+                                 and touches /tmp/teammate-<repo>.send-at for wait-quiet
 tm wait-idle <repo> [timeout=600]
                                  block until the teammate's Stop hook fires (idle).
                                  Prints the path of the <sid>.last file on hit.
+                                 Does NOT fire for /compact, /clear, or other
+                                 non-turn-end paths — use tm wait-quiet for those.
+tm wait-quiet <repo> [timeout=600]
+                                 block until the pane shows no spinner for ~4s
+                                 (and at least 3s have passed since the last send).
+                                 Sister to wait-idle: pane-driven instead of hook-driven,
+                                 so it catches /compact and /clear too.
 tm last <repo>                   cat the assistant's last-turn full text (written by
                                  the Stop hook). Use this instead of 'tm status' when
                                  you need the full reply — tmux scrollback truncates.
-tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle/last files
+tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle/last/send-at files
 tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
 ```
@@ -94,7 +106,41 @@ Use `tm last` for the full text. Reserve `tm status` for cases where you specifi
 
 Run `tm wait-idle` in the background (Bash with `run_in_background: true`) — the harness's task-notification fires when it exits, so the dispatcher gets pinged the moment the teammate goes idle without burning context on a wakeup chain.
 
-When the idle-hook signal doesn't fit (waiting for some intermediate screen state, not turn-end), fall back to `tm poll <repo> <regex>` — but for "wait until teammate is done", `wait-idle` is always the right answer.
+When the idle-hook signal doesn't fit (waiting for some intermediate screen state, not turn-end), fall back to `tm poll <repo> <regex>` — but for "wait until teammate is done with a normal turn", `wait-idle` is the right answer.
+
+## When the Stop hook isn't enough: `tm wait-quiet`
+
+Some teammate operations finish without triggering a turn-end Stop event, so `tm wait-idle` waits forever for a signal that will never arrive. Observed cases:
+
+- `/compact` — rewrites the jsonl and returns to the input prompt, no Stop fires.
+- `/clear` — starts a fresh conversation in place; no Stop on the old turn.
+- (Suspected) other slash-commands that operate on the TUI rather than the model loop.
+
+For these, use `tm wait-quiet <repo>`. It watches the *pane* instead of the hook: it returns once the Claude Code TUI status spinner (the `✢ Verbing… (Ns · ↓ Nk tokens)` line) has been gone for ~4 consecutive seconds and at least 3 seconds have passed since the last `tm send`. Pattern:
+
+```bash
+tm send <repo> '/compact'
+tm wait-quiet <repo> 300
+# teammate is now ready for the next message
+```
+
+`wait-quiet` works for normal turns too, so it's a safe default if you don't know whether your message triggers a Stop. The reason to keep `wait-idle` around: it reports the `.last` path on hit (the full assistant text), which `wait-quiet` can't, because operations like `/compact` don't produce visible assistant text at all.
+
+Known blind spot: a permission prompt blocks claude with no spinner. `wait-quiet` will return "ready" but the teammate is actually stuck on a y/n decision. If you suspect a prompt, follow with `tm status <repo>` to see the pane.
+
+## Fleet snapshot: `tm states`
+
+When several teammates are running and you want a one-shot "who's doing what", `tm states` prints one line per teammate:
+
+| Column | Meaning |
+|---|---|
+| `REPO` | short repo name (= tmux session minus the `teammate-` prefix) |
+| `SID` | first 8 chars of the session id |
+| `BUSY` | `yes` if the pane currently shows the working spinner, else `no` |
+| `LAST` | byte count and age of `<sid>.last` (the last-turn text written by the Stop hook), or `-` if no turn has ended yet |
+| `PREVIEW` | first 50 chars of `<sid>.last`, control chars stripped |
+
+`BUSY` is a live read of the pane; `LAST` and `PREVIEW` come from the Stop hook artifacts. The two together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
 
 ## Spawning an Agent Teams teammate
 

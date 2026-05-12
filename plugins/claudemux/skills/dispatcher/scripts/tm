@@ -60,6 +60,7 @@ die() { echo "tm: $*" >&2; exit 1; }
 
 session_name() { echo "${PREFIX}$1"; }
 sid_file() { echo "/tmp/teammate-$1.sid"; }
+send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
 # empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
@@ -81,6 +82,35 @@ resolve_sid_or_die() {
 # spawn, send, and kill — the two paths must move in lockstep.
 clear_idle() {
     [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last"
+}
+
+# Format an absolute second-count as a short relative age (e.g. "12s", "3m", "2h").
+fmt_age() {
+    local age=$1
+    if (( age < 60 )); then echo "${age}s"
+    elif (( age < 3600 )); then echo "$((age/60))m"
+    elif (( age < 86400 )); then echo "$((age/3600))h"
+    else echo "$((age/86400))d"
+    fi
+}
+
+# Detect whether the teammate's pane shows the Claude Code "working" spinner.
+#
+# The TUI renders a status line like:
+#     ✢ Combobulating… (5m 5s · ↓ 15.6k tokens)
+# while the model is processing, and removes that line once the turn is over
+# OR a subcommand like /compact finishes. The "(<N>s · " portion is the most
+# robust marker — the spinner glyph and verb both vary, but the elapsed-time
+# format is stable. Match against the last ~30 lines of the pane (enough to
+# include the status line above the input box without scanning all scrollback).
+#
+# Known blind spot: a permission prompt also shows no spinner; pane_busy
+# returns 0 but the teammate is actually blocked. wait-quiet documents this.
+pane_busy() {
+    local repo="$1" name
+    name=$(session_name "$repo")
+    tmux capture-pane -t "$name" -p -S -30 2>/dev/null \
+        | grep -qE '\(([0-9]+m )?[0-9]+s · '
 }
 
 # Generate a lowercase UUID. macOS uuidgen emits uppercase; Claude Code
@@ -167,6 +197,11 @@ cmd_send() {
     local sid=""
     sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
 
+    # Touch the send-at marker so wait-quiet has a "min time since action
+    # started" to guard against the pane being momentarily quiet right after
+    # send (before claude has rendered its spinner).
+    : > "$(send_at_file "$repo")"
+
     # CRITICAL: prompt text and Enter must be two separate calls. Combining
     # them in one tmux send-keys inlines Enter as a newline inside the input
     # box and the prompt does not submit. -l (literal) avoids tmux interpreting
@@ -228,13 +263,87 @@ cmd_kill() {
     local name; name=$(session_name "$repo")
     local sid=""
     sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
-    rm -f "$(sid_file "$repo")"
+    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")"
     if tmux has-session -t "$name" 2>/dev/null; then
         tmux kill-session -t "$name"
         echo "killed: $name"
     else
         echo "not running: $name"
     fi
+}
+
+cmd_states() {
+    local rows
+    rows=$( { tmux ls 2>/dev/null || true; } | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print $1}')
+    if [[ -z "$rows" ]]; then
+        echo "(no teammate sessions)"
+        return 0
+    fi
+    local now; now=$(date +%s)
+    {
+        printf 'REPO\tSID\tBUSY\tLAST\tPREVIEW\n'
+        while IFS= read -r name; do
+            local repo="${name#$PREFIX}"
+            local sid sid_short busy last preview
+            if sid=$(resolve_sid "$repo"); then
+                sid_short="${sid:0:8}"
+            else
+                sid="" sid_short="?"
+            fi
+            if pane_busy "$repo"; then busy="yes"; else busy="no"; fi
+            last="-"
+            preview="-"
+            if [[ -n "$sid" ]]; then
+                local lf="$IDLE_DIR/$sid.last"
+                if [[ -s "$lf" ]]; then
+                    local sz lmt age
+                    sz=$(wc -c < "$lf" | tr -d ' ')
+                    lmt=$(stat -f %m "$lf" 2>/dev/null || echo 0)
+                    age=$((now - lmt))
+                    last="${sz}B/$(fmt_age "$age")"
+                    # Sanitize the preview: strip control chars and tabs so
+                    # column -t doesn't split a column, then cut to 50 bytes.
+                    # macOS cut counts bytes, so multi-byte text may truncate
+                    # mid-character — acceptable for a one-line preview.
+                    preview=$(head -1 "$lf" | tr -d '\000-\037' | cut -c1-50)
+                    [[ -z "$preview" ]] && preview="(no first line)"
+                fi
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$sid_short" "$busy" "$last" "$preview"
+        done <<< "$rows"
+    } | column -t -s $'\t'
+}
+
+cmd_wait_quiet() {
+    local repo="${1:-}"; local timeout="${2:-600}"
+    [[ -n "$repo" ]] || die "usage: tm wait-quiet <repo> [timeout=600]"
+    require_session "$repo" >/dev/null
+
+    # send-at marker (touched by cmd_send) sets the floor for "time since
+    # action started" — without it we'd return immediately when the pane was
+    # already quiet from a prior turn.
+    local send_at=0 sa
+    sa=$(send_at_file "$repo")
+    [[ -f "$sa" ]] && send_at=$(stat -f %m "$sa" 2>/dev/null || echo 0)
+
+    local end; end=$(( $(date +%s) + timeout ))
+    local quiet_streak=0
+    while [[ $(date +%s) -lt $end ]]; do
+        if pane_busy "$repo"; then
+            quiet_streak=0
+        else
+            quiet_streak=$((quiet_streak + 1))
+        fi
+        local now; now=$(date +%s)
+        # 2 consecutive quiet samples (~4s) plus 3s since send = ready.
+        if (( quiet_streak >= 2 )) && (( now - send_at >= 3 )); then
+            echo "quiet: $repo (pane has no spinner for $((quiet_streak * 2))s+)"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "tm: timeout after ${timeout}s waiting for quiet pane on $repo" >&2
+    return 1
 }
 
 cmd_poll() {
@@ -299,7 +408,22 @@ USAGE
       but the .last file is the complete text the assistant emitted.
 
   tm kill <repo>
-      kill the teammate session and clean up its sid/idle files
+      kill the teammate session and clean up its sid/idle/send-at files
+
+  tm states
+      one-line summary per teammate: REPO, SID (first 8 chars), BUSY (yes if
+      the pane shows a working spinner), LAST (size + age of <sid>.last from
+      the Stop hook), PREVIEW (first 50 chars of <sid>.last). Use this when
+      you want to know what every teammate is doing at a glance.
+
+  tm wait-quiet <repo> [timeout=600]
+      block until the teammate's pane shows no working spinner for ~4
+      consecutive seconds AND at least 3s have passed since the last 'tm send'.
+      Sister to 'wait-idle' but pane-driven, so it also catches non-turn-end
+      operations like /compact and /clear (which do NOT trigger the Stop hook).
+      Known blind spot: a permission prompt blocks claude with no spinner —
+      wait-quiet will return "ready" but the teammate is actually waiting for
+      a y/n decision; 'tm status' shows the prompt.
 
   tm poll <repo> <regex> [timeout=180]
       block until pane content matches a regex; for "wait until done"
@@ -329,6 +453,8 @@ main() {
         wait-idle)  cmd_wait_idle "$@" ;;
         last)       cmd_last "$@" ;;
         kill)       cmd_kill "$@" ;;
+        states)     cmd_states "$@" ;;
+        wait-quiet) cmd_wait_quiet "$@" ;;
         poll)       cmd_poll "$@" ;;
         help|-h|--help) cmd_help ;;
         *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;
