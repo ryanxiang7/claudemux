@@ -69,9 +69,14 @@ without all of these in the spawn prompt:
 
 ### tmux teammate launch
 
-Prefer `.claude/skills/dispatcher/scripts/tm spawn <repo>` over rolling raw
-`tmux` calls — `tm` bakes in the two-step Enter requirement and the idle-signal
-plumbing. If you must drop to raw tmux:
+Prefer `tm spawn <repo>` over rolling raw `tmux` calls — `tm` bakes in the
+two-step Enter requirement and the idle-signal plumbing. The `tm` script
+ships with the `claudemux` plugin and is on `PATH` automatically (Claude Code
+adds each installed plugin's `bin/` directory to `PATH`); if not, fall back
+to the absolute install path
+`~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`.
+
+If you must drop to raw tmux:
 
 ```bash
 tmux new-session -d -s teammate-<repo> -c "$DEV_DIR/<repo>"
@@ -81,8 +86,15 @@ tmux send-keys -t teammate-<repo> 'claude' Enter
 Drive it with `tmux send-keys -t teammate-<repo> -l '<prompt>'` followed by a
 **separate** `tmux send-keys -t teammate-<repo> Enter` — combining prompt and
 Enter in one call inlines the Enter as a newline and the prompt does not submit.
+If the prompt is multi-line, send Enter a **second** time after a brief sleep:
+once the input box contains a `\n`, the first Enter is consumed as "insert
+newline" and only the second one actually submits. `tm send` already does this
+for you; only raw-tmux paths need to mirror it.
 
-Read its screen with `tmux capture-pane -t teammate-<repo> -p [-S -N]`.
+Read its short live state with `tmux capture-pane -t teammate-<repo> -p [-S -N]`.
+For the full last-turn reply (tmux scrollback truncates long output), use
+`tm last <repo>` instead — the plugin's Stop hook records each turn's text into
+`/tmp/claude-idle/<sid>.last`.
 
 ## Cron host
 

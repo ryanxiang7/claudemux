@@ -1,5 +1,5 @@
 {
-  "description": "claudemux idle-signal: on every Stop event, touch /tmp/claude-idle/<session_id> so that `tm wait-idle <repo>` can block until a teammate finishes a turn. The hook fires for every Claude Code session (including the dispatcher itself); nothing waits on the dispatcher's own idle file, so the extra touch is harmless.",
+  "description": "claudemux Stop hook. On every Stop event, writes the assistant's last-turn text to /tmp/claude-idle/<session_id>.last and then touches /tmp/claude-idle/<session_id> as the wait-idle signal. The .last file lets the dispatcher pull a full reply without scraping tmux scrollback. The hook fires for every Claude Code session including the dispatcher itself; nothing waits on the dispatcher's own files, so the extra writes are harmless. See on-stop.sh for the implementation.",
   "hooks": {
     "Stop": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "input=$(cat); sid=$(printf '%s' \"$input\" | jq -r '.session_id // empty'); [ -n \"$sid\" ] && { mkdir -p /tmp/claude-idle && touch \"/tmp/claude-idle/$sid\"; } ; exit 0"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on-stop.sh\""
           }
         ]
       }

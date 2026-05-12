@@ -75,8 +75,9 @@ install the plugin:
 ```
 
 The `marketplace add` command clones the GitHub repo into Claude Code's
-plugin cache; no manual `git clone` needed. After install, restart Claude
-Code once so the bundled Stop hook activates.
+plugin cache; no manual `git clone` needed. After install, run
+`/reload-plugins` once so the bundled Stop hook activates — no Claude Code
+restart required.
 
 ## Bind to your dispatcher directory
 
@@ -111,18 +112,28 @@ installed and uninstalled automatically with the plugin. Apart from the
 opt-in Remote Control toggle above, `/claudemux:setup` does not modify
 `~/.claude/settings.json`.
 
-### Put `tm` on your PATH (optional)
+### `tm` is on your PATH automatically
 
-The `tm` script is the day-to-day driver for teammates. If you'd rather
-type bare `tm` than the full plugin path, symlink it once. From inside a
-Claude Code session, `${CLAUDE_PLUGIN_ROOT}` is exported and points at the
-plugin's install directory — use a `!` shell command in the REPL:
+The `tm` script is the day-to-day driver for teammates. It ships under
+`bin/tm` in this plugin, and Claude Code auto-prepends each installed
+plugin's `bin/` directory to `PATH` at session start — so `which tm` should
+resolve inside any Bash subshell launched by Claude Code. No symlink step
+required.
 
+If you also want `tm` available in your regular login shell (i.e. outside
+of any `claude` session), symlink it once:
+
+```bash
+ln -sf ~/.claude/plugins/cache/claudemux/claudemux/0.1.0/bin/tm ~/.local/bin/tm
 ```
-! mkdir -p ~/.local/bin && ln -sf "${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/scripts/tm" ~/.local/bin/tm
-```
 
-(Make sure `~/.local/bin` is on your `PATH`.)
+(Make sure `~/.local/bin` is on your `PATH`. Replace `0.1.0` with the
+installed version reported by `/plugin` if it has been bumped.)
+
+> Note: `${CLAUDE_PLUGIN_ROOT}` is only injected when the harness runs
+> plugin-defined commands/hooks — it is **not** exported into arbitrary
+> `Bash` tool subshells. Don't rely on it from a generic shell call; use
+> bare `tm` (PATH-resolved) or the absolute install path above.
 
 ## Quick start
 
@@ -152,20 +163,31 @@ tm status repo-a 200         # peek at the tail of the screen
 tm kill   repo-a             # done
 ```
 
-## How `tm wait-idle` works
+## How `tm wait-idle` and `tm last` work
 
 Every Claude Code session emits a Stop event at the end of each turn. The
-plugin installs a global Stop hook that `touch`es `/tmp/claude-idle/<session_id>`
-on every Stop event.
+plugin's Stop hook (`hooks/on-stop.sh`) writes two files on every Stop:
 
-`tm send` records the teammate's session id and *deletes* its idle file
-before submitting the prompt, so that a later `tm wait-idle` blocks until a
-*new* idle file appears (i.e. *this* prompt has finished), not a stale one
-from a previous turn.
+- `/tmp/claude-idle/<session_id>` — zero-byte touch, the wait-idle signal.
+- `/tmp/claude-idle/<session_id>.last` — plain text of the assistant's last-turn
+  reply (concatenated `text` content blocks since the most recent user message;
+  internal `thinking` and `tool_use` blocks are excluded).
+
+`tm wait-idle <repo>` blocks until the touch file appears and then reports the
+`.last` path. `tm last <repo>` cats it directly. Use `.last` instead of
+`tm status` whenever you need the full reply — `tm status` reads the tmux
+scrollback buffer, which truncates long output silently.
+
+`tm send` records the teammate's session id and *deletes* both files before
+submitting the prompt, so a later `tm wait-idle` / `tm last` reflects *this*
+turn, not a previously satisfied one.
 
 The Stop hook fires for every Claude Code session, including the dispatcher
-itself. That's harmless — nothing ever waits on the dispatcher's own idle
-signal.
+itself — but nothing waits on the dispatcher's own files, so the extra writes
+are harmless. Because `.last` is keyed by session id, the same mechanism works
+for any Claude Code session whose sid you know: tmux teammates (`tm spawn`),
+`claude -p --session-id <uuid>` headless runs, and Agent Teams teammates
+(once you know their sid).
 
 ## What's NOT installed
 
@@ -181,6 +203,10 @@ Captured in the skill so you don't re-discover them:
 - `tmux send-keys -t <s> '<prompt>' Enter` silently fails to submit
   (`Enter` becomes a newline). Always use `tm send`, or two separate
   `send-keys` calls.
+- Multi-line prompts in Claude Code's TUI need a second `Enter` after the
+  first (the first one is consumed as "insert newline" once the input box
+  is in multi-line mode). `tm send` detects newlines in the prompt and
+  sends the extra Enter for you.
 - `CronCreate` inside `claude -p` or inside an Agent Teams teammate returns
   success and never fires. Host cron on the dispatcher (interactive TUI).
 - Polling for "is the teammate done?" by regex against `capture-pane` is
@@ -192,17 +218,36 @@ The full set is in [`skills/dispatcher/SKILL.md`](skills/dispatcher/SKILL.md).
 
 ## Contributing / local development
 
-To hack on the plugin source itself, clone this repo and load it directly
-with `--plugin-dir`:
+Two ways to point Claude Code at a local checkout of this repo instead of
+the marketplace-installed copy. Both are documented at
+[code.claude.com/docs/en/plugins.md#test-your-plugins-locally](https://code.claude.com/docs/en/plugins.md#test-your-plugins-locally).
+
+**One-off session** — attach a plugin directory directly:
 
 ```bash
 git clone https://github.com/excitedjs/claudemux ~/src/claudemux
 claude --plugin-dir ~/src/claudemux/plugins/claudemux
 ```
 
-`--plugin-dir` loads from disk for one session — no marketplace registration
-needed. Changes to skills/commands take effect after `/reload-plugins`;
-changes to hooks require restarting Claude Code.
+**Persistent (recommended for iterative dev)** — register the local repo as
+a marketplace, then install from it:
+
+```bash
+claude plugin marketplace add ~/src/claudemux --scope local
+claude
+# in the REPL:
+/plugin install claudemux@claudemux
+```
+
+`--scope local` keeps the registration to the current project only;
+`--scope user` makes it global to your account.
+
+**Iteration loop.** All changes — skills, commands, hooks, the `tm` script
+— pick up via `/reload-plugins` ([docs](https://code.claude.com/docs/en/discover-plugins.md#apply-plugin-changes-without-restarting));
+no Claude Code restart needed and there is no file-watch mode, so you have
+to run it explicitly after each edit. If you suspect a stale cache (e.g.
+`bin/tm` not on `PATH` after a fresh install), a full Claude Code restart
+is the nuclear option.
 
 ## Uninstall
 

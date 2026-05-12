@@ -12,11 +12,16 @@
 # driven the same way, and the rules are in one place where a future fix lands
 # for the entire system.
 #
-# Idle signaling: when the global Stop hook in ~/.claude/settings.json fires,
-# it touches /tmp/claude-idle/<jsonl-uuid>. This script captures each teammate's
-# jsonl-uuid into /tmp/teammate-<repo>.sid so `tm wait-idle` knows which file
-# to wait on. `tm send` rm's the signal file first so a subsequent wait-idle
-# waits for the NEW idle, not a stale one.
+# Idle signaling: the plugin's Stop hook (hooks/on-stop.sh) writes two files
+# on every turn-end:
+#   /tmp/claude-idle/<sid>        zero-byte touch — what wait-idle blocks on
+#   /tmp/claude-idle/<sid>.last   plain text of the assistant's last reply
+# We avoid race-prone jsonl scanning by pre-generating a UUID at spawn time
+# and handing it to `claude --session-id` directly — the jsonl filename then
+# equals that UUID. The sid is stashed in /tmp/teammate-<repo>.sid so
+# `tm wait-idle` / `tm last` know which files to read. `tm send` rm's both
+# files first so a subsequent wait-idle / last waits on / returns the NEW
+# turn's content, not a stale one.
 
 set -euo pipefail
 
@@ -56,48 +61,15 @@ die() { echo "tm: $*" >&2; exit 1; }
 session_name() { echo "${PREFIX}$1"; }
 sid_file() { echo "/tmp/teammate-$1.sid"; }
 
-project_dir() {
-    # cwd → ~/.claude/projects/<cwd-with-slashes-as-dashes>/
-    local path="$DEV_DIR/$1"
-    local sanitized; sanitized="${path//\//-}"
-    echo "$HOME/.claude/projects/$sanitized"
-}
+# Generate a lowercase UUID. macOS uuidgen emits uppercase; Claude Code
+# normalizes session-ids to lowercase on disk (the jsonl filename is lowercase),
+# so we normalize up front to keep the sid file and jsonl filename byte-equal.
+new_sid() { uuidgen | tr '[:upper:]' '[:lower:]'; }
 
 require_session() {
     local name; name=$(session_name "$1")
     tmux has-session -t "$name" 2>/dev/null || die "no such teammate session: $name (try 'tm ls')"
     echo "$name"
-}
-
-# Find the teammate's session id (jsonl filename UUID) by scanning the project
-# directory for a *.jsonl with mtime >= since_epoch. For fresh `claude`, the
-# file is created the moment the first event is logged — typically within ~2s
-# of the first user prompt. Polls briefly. Writes the sid to /tmp/teammate-<repo>.sid.
-capture_sid() {
-    local repo="$1"; local since_epoch="${2:-0}"
-    local dir; dir=$(project_dir "$repo")
-    local sf; sf=$(sid_file "$repo")
-    local end; end=$(( $(date +%s) + 8 ))
-
-    [[ -d "$dir" ]] || return 1
-
-    while [[ $(date +%s) -lt $end ]]; do
-        local newest="" newest_mt=0 mt
-        for f in "$dir"/*.jsonl; do
-            [[ -e "$f" ]] || continue
-            mt=$(stat -f %m "$f" 2>/dev/null || echo 0)
-            if (( mt >= since_epoch && mt > newest_mt )); then
-                newest_mt=$mt
-                newest="$f"
-            fi
-        done
-        if [[ -n "$newest" ]]; then
-            basename "$newest" .jsonl > "$sf"
-            return 0
-        fi
-        sleep 0.5
-    done
-    return 1
 }
 
 cmd_ls() {
@@ -135,16 +107,22 @@ cmd_spawn() {
     fi
 
     tmux new-session -d -s "$name" -c "$path"
+    local sid sf; sf=$(sid_file "$repo")
     if [[ -n "$resume_sid" ]]; then
-        tmux send-keys -t "$name" "claude --resume $resume_sid" Enter
-        echo "$resume_sid" > "$(sid_file "$repo")"
-        rm -f "$IDLE_DIR/$resume_sid"
-        echo "spawned: $name (cwd=$path, resumed sid=$resume_sid)"
+        sid="$resume_sid"
+        tmux send-keys -t "$name" "claude --resume $sid" Enter
+        echo "spawned: $name (cwd=$path, resumed sid=$sid)"
     else
-        tmux send-keys -t "$name" 'claude' Enter
-        rm -f "$(sid_file "$repo")"
-        echo "spawned: $name (cwd=$path, sid will be captured on first 'tm send')"
+        # Pre-generate the UUID so the sid is known the moment spawn returns.
+        # No more jsonl scanning, no race window: --session-id makes the jsonl
+        # filename equal to this UUID, and the global Stop hook touches
+        # /tmp/claude-idle/<that-same-uuid> on every turn-end.
+        sid=$(new_sid)
+        tmux send-keys -t "$name" "claude --session-id $sid" Enter
+        echo "spawned: $name (cwd=$path, sid=$sid)"
     fi
+    echo "$sid" > "$sf"
+    rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
     echo "use 'tm status $repo' once the startup banner appears (~5s)"
 }
 
@@ -162,14 +140,12 @@ cmd_send() {
     local name; name=$(require_session "$repo")
     local sf; sf=$(sid_file "$repo")
 
-    # If sid is known, clear the baseline idle signal so wait-idle blocks
-    # until THIS prompt completes (not until the previously satisfied one).
+    # Clear the baseline idle + last-turn files so a subsequent wait-idle /
+    # last reflects THIS prompt's outcome, not a previously satisfied turn.
     if [[ -s "$sf" ]]; then
         local sid; sid=$(cat "$sf")
-        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid"
+        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
     fi
-
-    local since; since=$(date +%s)
 
     # CRITICAL: prompt text and Enter must be two separate calls. Combining
     # them in one tmux send-keys inlines Enter as a newline inside the input
@@ -178,10 +154,14 @@ cmd_send() {
     tmux send-keys -t "$name" -l "$prompt"
     tmux send-keys -t "$name" Enter
 
-    # Fresh teammate: sid wasn't known at spawn. The first send triggers a
-    # user event that materializes the jsonl file — capture sid now.
-    if [[ ! -s "$sf" ]]; then
-        capture_sid "$repo" "$since" || true
+    # Multi-line prompts need a SECOND Enter: once the input box contains
+    # any newline, the first Enter is consumed as "insert newline at cursor"
+    # and the second Enter (on the now-empty trailing line) actually submits.
+    # Single-line prompts must NOT get a second Enter — that would submit
+    # an empty follow-up turn.
+    if [[ "$prompt" == *$'\n'* ]]; then
+        sleep 0.2
+        tmux send-keys -t "$name" Enter
     fi
 
     echo "sent to $name (Enter issued separately)"
@@ -193,19 +173,35 @@ cmd_wait_idle() {
     [[ -n "$repo" ]] || die "usage: tm wait-idle <repo> [timeout=600]"
     require_session "$repo" >/dev/null
     local sf; sf=$(sid_file "$repo")
-    [[ -s "$sf" ]] || die "no sid captured for $repo — was 'tm send' called yet? Or pass --resume <sid> on spawn."
+    [[ -s "$sf" ]] || die "no sid file for $repo at $sf — was this teammate spawned via 'tm spawn'? (raw 'tmux new-session' won't seed the sid)"
     local sid; sid=$(cat "$sf")
 
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
         if [[ -e "$IDLE_DIR/$sid" ]]; then
             echo "idle: $sid"
+            if [[ -s "$IDLE_DIR/$sid.last" ]]; then
+                echo "last: $IDLE_DIR/$sid.last ($(wc -c < "$IDLE_DIR/$sid.last" | tr -d ' ') bytes)"
+            else
+                echo "last: (no text reply this turn — assistant may have only used tools)"
+            fi
             return 0
         fi
         sleep 3
     done
     echo "tm: timeout after ${timeout}s waiting for idle signal on $repo (sid=$sid)" >&2
     return 1
+}
+
+cmd_last() {
+    local repo="${1:-}"
+    [[ -n "$repo" ]] || die "usage: tm last <repo>"
+    local sf; sf=$(sid_file "$repo")
+    [[ -s "$sf" ]] || die "no sid file for $repo at $sf — was this teammate spawned via 'tm spawn'?"
+    local sid; sid=$(cat "$sf")
+    local lf="$IDLE_DIR/$sid.last"
+    [[ -e "$lf" ]] || die "no last-turn file for $repo (sid=$sid) at $lf — has the teammate finished a turn yet? Try 'tm wait-idle $repo' first."
+    cat "$lf"
 }
 
 cmd_kill() {
@@ -215,7 +211,7 @@ cmd_kill() {
     local sf; sf=$(sid_file "$repo")
     if [[ -s "$sf" ]]; then
         local sid; sid=$(cat "$sf")
-        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid"
+        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid" "$IDLE_DIR/$sid.last"
     fi
     rm -f "$sf"
     if tmux has-session -t "$name" 2>/dev/null; then
@@ -261,7 +257,8 @@ USAGE
       recorded in ~/.config/claudemux/config; override per-invocation
       with the CLAUDEMUX_DEV_DIR env var).
       --resume <sid> picks up an existing session by jsonl-UUID; otherwise
-      a fresh session starts and its sid is captured on the first 'tm send'
+      a fresh UUID is pre-generated and handed to `claude --session-id`,
+      so 'tm wait-idle' works immediately without a prior 'tm send'.
 
   tm status <repo> [lines=80]
       capture-pane the teammate's screen
@@ -275,9 +272,16 @@ USAGE
 
   tm wait-idle <repo> [timeout=600]
       block until the teammate's Stop hook fires (file appears at
-      /tmp/claude-idle/<sid>). Requires the global Stop hook to be
-      installed in ~/.claude/settings.json — it writes that signal file
-      every time a teammate goes idle. See the dispatcher SKILL.md.
+      /tmp/claude-idle/<sid>). On hit, also reports the path of the
+      <sid>.last file (the assistant's last-turn text, written by the
+      same hook). Requires the plugin's Stop hook to be loaded — it
+      writes both files every time a session ends a turn.
+
+  tm last <repo>
+      cat the assistant's last-turn text for <repo>, captured by the
+      Stop hook into /tmp/claude-idle/<sid>.last. Use this instead of
+      'tm status' when you need the full reply — tmux scrollback truncates,
+      but the .last file is the complete text the assistant emitted.
 
   tm kill <repo>
       kill the teammate session and clean up its sid/idle files
@@ -308,6 +312,7 @@ main() {
         status)     cmd_status "$@" ;;
         send)       cmd_send "$@" ;;
         wait-idle)  cmd_wait_idle "$@" ;;
+        last)       cmd_last "$@" ;;
         kill)       cmd_kill "$@" ;;
         poll)       cmd_poll "$@" ;;
         help|-h|--help) cmd_help ;;

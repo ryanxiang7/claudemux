@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Wrapper so `tm` is discoverable on PATH. Claude Code auto-prepends each
+# installed plugin's `bin/` directory to PATH, which is the only reliable
+# mechanism that survives the cache install copy (symlinks are not).
+# The real script lives under skills/dispatcher/scripts/tm so it stays
+# co-located with the docs that explain its behavior.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$HERE/../skills/dispatcher/scripts/tm" "$@"

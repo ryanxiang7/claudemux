@@ -9,7 +9,9 @@ You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of 
 
 > **`$DEV_DIR` is a documentation placeholder, not a shell environment variable.** When you generate a `Bash` call from any example below, substitute the actual absolute path. Pasting `$DEV_DIR` literally into a shell command resolves it to the empty string and breaks the command.
 
-> **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`, assuming the user has symlinked it onto their `PATH` during install (see the plugin README). If `tm` is not on `PATH`, invoke it via `"${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/scripts/tm"` — Claude Code exports `CLAUDE_PLUGIN_ROOT` to your Bash environment, so that form works regardless of where the plugin is installed.
+> **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, and claudemux ships a `bin/tm` wrapper, so `which tm` should resolve inside any Bash subshell of an interactive Claude Code session — no symlink step required.
+>
+> If for some reason `tm` is not on `PATH` (e.g. you're calling from a shell that doesn't inherit Claude Code's env), use the absolute install path instead: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic `Bash` tool call — that variable is only injected when the harness runs commands defined by the plugin (commands/hooks), not in arbitrary subshells you spawn.
 
 ## When this skill is doing useful work
 
@@ -42,11 +44,15 @@ tm ls                            list all teammate sessions (sessions named team
 tm spawn <repo> [--resume <sid>] launch a teammate in $DEV_DIR/<repo>;
                                  --resume <sid> picks up an existing session by jsonl-UUID
 tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
-tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send);
-                                 also clears the idle-signal baseline (see wait-idle)
+tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
+                                 multi-line submit quirk); clears the idle/last baseline
 tm wait-idle <repo> [timeout=600]
-                                 block until the teammate's Stop hook fires (idle)
-tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle files
+                                 block until the teammate's Stop hook fires (idle).
+                                 Prints the path of the <sid>.last file on hit.
+tm last <repo>                   cat the assistant's last-turn full text (written by
+                                 the Stop hook). Use this instead of 'tm status' when
+                                 you need the full reply — tmux scrollback truncates.
+tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle/last files
 tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
 ```
@@ -57,24 +63,34 @@ The teammate then auto-registers its own Remote Control session — the URL appe
 
 Whenever you would manually call `tmux new-session`, `tmux send-keys`, or `tmux capture-pane` on a teammate, prefer the corresponding `tm` subcommand — it bakes in the conventions, and future fixes (e.g. richer `ls` output, structured `status`) land there once for everyone.
 
-## Knowing when a teammate is done (`tm wait-idle`)
+## Knowing when a teammate is done (`tm wait-idle`) and reading the reply (`tm last`)
 
-Every Claude session goes through a Stop event at the end of each turn — the global Stop hook in `~/.claude/settings.json` listens for it and `touch`es `/tmp/claude-idle/<jsonl-uuid>`. The hook fires for every session (including the dispatcher itself), but that's harmless: nothing ever `wait-idle`s on the dispatcher's own sid. `~/.claude/settings.json` is re-read live, so changes to this hook take effect on already-running teammates without needing `/hooks` reload or a restart.
+Every Claude session goes through a Stop event at the end of each turn — the plugin's Stop hook (`hooks/on-stop.sh`, registered via `hooks/hooks.json`) listens for it and writes two files keyed by the session id:
+
+- `/tmp/claude-idle/<sid>` — zero-byte touch, the wait-idle signal.
+- `/tmp/claude-idle/<sid>.last` — plain text of the assistant's last turn (concatenated `text` content blocks since the most recent real user message; tool calls and `thinking` blocks are excluded since they aren't part of the visible reply).
+
+The hook fires for every Claude Code session (including the dispatcher itself), but that's harmless: nothing ever `wait-idle`s on the dispatcher's own sid. Edits to `hooks/on-stop.sh` or `hooks/hooks.json` take effect after `/reload-plugins` — no Claude Code restart needed ([docs](https://code.claude.com/docs/en/discover-plugins.md#apply-plugin-changes-without-restarting)).
+
+Why `.last` exists at all: `tm status` (= `tmux capture-pane`) reads the scrollback buffer, which truncates at the configured pane history limit (typically a few thousand lines). A long teammate reply gets clipped silently. `.last` is the full assistant text as recorded in the jsonl transcript — the dispatcher can `tm last <repo>` (or `Read` the file path directly) to get the complete reply, no scraping, no jsonl parsing.
 
 `tm` plumbs this into a wait primitive:
 
-1. On `tm spawn <repo>` (fresh), no sid is known yet — the jsonl file is not created until the first event logs. `tm send` captures the sid on its first call by scanning the teammate's Claude Code project directory (`~/.claude/projects/<cwd-with-slashes-replaced-by-dashes>/`) for the newest `*.jsonl` modified after send-time. The sid is stashed in `/tmp/teammate-<repo>.sid`.
-2. On `tm spawn <repo> --resume <sid>`, the sid is known immediately and gets written without waiting.
-3. `tm send` rm's `/tmp/claude-idle/<sid>` before sending, so a previous turn's idle file doesn't satisfy the next `tm wait-idle` call. This is the bit that makes multi-turn waits correct.
-4. `tm wait-idle <repo> [timeout=600]` blocks until `/tmp/claude-idle/<sid>` exists. It polls every ~3s, returns `idle: <sid>` on hit, exits non-zero on timeout.
+1. On `tm spawn <repo>` (fresh), `tm` pre-generates a UUID and hands it to `claude --session-id <uuid>`. The jsonl filename equals that UUID, and the sid is written to `/tmp/teammate-<repo>.sid` *before* the spawn returns. No jsonl scanning, no race window — `tm wait-idle` is usable immediately after spawn, without needing a prior `tm send`.
+2. On `tm spawn <repo> --resume <sid>`, the sid is given by the caller and written the same way.
+3. `tm send` rm's both `/tmp/claude-idle/<sid>` and `<sid>.last` before sending, so a previous turn's files don't satisfy the next `tm wait-idle` / `tm last`. This is the bit that makes multi-turn waits correct.
+4. `tm wait-idle <repo> [timeout=600]` blocks until `/tmp/claude-idle/<sid>` exists. It polls every ~3s, prints `idle: <sid>` + the `.last` path (with byte count) on hit, exits non-zero on timeout.
+5. `tm last <repo>` cats `<sid>.last` — the full assistant reply for the latest turn. Empty file means the assistant ended the turn without text output (e.g. it only ran tools); fall back to `tm status` in that case.
 
 Recommended pattern when delegating substantive work:
 
 ```bash
 tm send <repo> '<prompt>'
-tm wait-idle <repo> 1800   # 30-minute cap
-tm status <repo> 200       # peek the tail; or pull full output from the jsonl
+tm wait-idle <repo> 1800   # 30-minute cap; prints the .last path on hit
+tm last <repo>             # full assistant reply; no scrollback truncation
 ```
+
+Use `tm last` for the full text. Reserve `tm status` for cases where you specifically want to see the live screen (e.g. progress on a long-running tool, or to confirm the teammate is at the input prompt) — its tmux scrollback buffer truncates and is not a substitute for `tm last`.
 
 Run `tm wait-idle` in the background (Bash with `run_in_background: true`) — the harness's task-notification fires when it exits, so the dispatcher gets pinged the moment the teammate goes idle without burning context on a wakeup chain.
 
@@ -121,6 +137,7 @@ A teammate going idle immediately after a SendMessage does **not** mean it faile
 ## Common foot-guns (each one already cost a session)
 
 - `tmux send-keys -t <s> '<prompt>' Enter` silently doesn't submit — the Enter becomes a newline. Use `tm send` or two separate calls.
+- **Multi-line prompts** in Claude Code's TUI need a *second* `Enter`. Once the input box contains any `\n`, the first `Enter` is consumed as "insert newline at cursor" and only the next `Enter` (on the now-empty trailing line) actually submits. `tm send` detects newlines in the prompt and sends the second Enter automatically — but if you ever drop to raw `tmux send-keys`, you have to mirror that yourself.
 - Polling with a `grep` whose pattern appears in the *prompt you just sent* makes the wait return instantly. Match against expected *result* keywords (e.g. `Scheduled`, `Cancelled`, `error`), not prompt echoes.
 - Polling for "is the teammate done?" with regex — fragile across tasks. Use `tm wait-idle` instead; it reads a hook-driven signal file that exists for every teammate.
 - Forgetting that `tm send` resets the idle baseline — if you `tm send` then read `/tmp/claude-idle/<sid>` directly to check "done", you'll find no file even for old completed turns. That's by design; wait via `tm wait-idle`.

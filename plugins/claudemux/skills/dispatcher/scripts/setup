@@ -109,8 +109,10 @@ Verify:
        "$SCRIPT_DIR/tm" wait-idle <repo> 60
      wait-idle should return "idle: <sid>" within a minute.
 
-Tip — if you'd rather type \`tm\` directly, symlink it into your PATH:
-    ln -s "$SCRIPT_DIR/tm" ~/.local/bin/tm   # ensure ~/.local/bin is in PATH
+Tip — \`tm\` is on Claude Code's PATH automatically (the plugin ships bin/tm
+and Claude Code auto-adds each plugin's bin/ to PATH). To use it from a
+non-Claude shell too, symlink it:
+    ln -sf "$SKILL_DIR/../../bin/tm" ~/.local/bin/tm   # ensure ~/.local/bin is in PATH
 
 Notes:
   * The Stop hook touches /tmp/claude-idle/<sid> for every Claude Code session,
