@@ -70,22 +70,89 @@ extract_last_turn() {
     ' 2>/dev/null | rev_lines | jq -rs 'join("\n\n")'
 }
 
+# Return the stop_reason of the most recent assistant entry, or empty
+# string if no assistant entry exists / jq errored / stop_reason is null.
+# Tail-walks the file with rev_lines + head -1: the first emitted value
+# (= the latest assistant from end of file) closes the pipeline via
+# SIGPIPE, so the scan is bounded to ONE entry's worth of lines.
+latest_stop_reason() {
+    rev_lines "$1" 2>/dev/null \
+        | jq -r 'select(.type == "assistant") | .message.stop_reason // ""' 2>/dev/null \
+        | head -1
+}
+
+# Does this stop_reason mean the Anthropic API call ended without expecting
+# the agent loop to continue? Source: Anthropic API docs.
+#   end_turn       Model finished its natural text response.
+#   stop_sequence  A configured stop sequence was emitted.
+#   max_tokens     Token budget hit.
+#   refusal        Model refused (newer models).
+# Non-terminal — the agent loop is still mid-flight and will write more:
+#   tool_use       Paused waiting for caller to run a tool.
+#   pause_turn     Extended-thinking pause; more content coming.
+is_terminal_stop_reason() {
+    case "$1" in
+        end_turn|stop_sequence|max_tokens|refusal) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Poll the jsonl until the latest assistant entry has a terminal
+# stop_reason, signalling that the turn's final API response has been
+# persisted. Returns 0 on hit, 1 on timeout.
+#
+# The Stop hook can fire while Claude Code is still flushing the final
+# assistant entry to disk (the failure that motivated this — partial
+# extraction with N-1 of N text blocks looked "fine" but was incomplete).
+# Without this wait, every long deliverable turn risks a silent loss of
+# the last text block.
+#
+# Budget: 15 × 0.2s = 3s, well within the default 60s hook timeout.
+# Fast path (turn already at end_turn on first check) adds zero latency.
+wait_for_jsonl_terminal() {
+    local jsonl="$1" reason i
+    for ((i = 0; i < 15; i++)); do
+        reason=$(latest_stop_reason "$jsonl")
+        if [[ -n "$reason" ]] && is_terminal_stop_reason "$reason"; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 if [[ -n "${transcript:-}" && -f "$transcript" ]]; then
-    # Stop hook can fire before the final assistant text block has flushed to
-    # the jsonl on disk (observed: dispatcher's own turn with a long reply
-    # left a 1-byte .last because the text entry hadn't landed yet). Retry
-    # once after a short sleep before giving up.
-    text=$(extract_last_turn "$transcript")
-    if [[ -z "$text" ]]; then
-        sleep 0.25
+    # The Stop hook can fire before the turn's final assistant API response
+    # has been flushed to the jsonl on disk — so a naive extract can produce
+    # a .last that is silently missing the user-visible deliverable text
+    # block (the case that motivated this version: 72/73 blocks extracted,
+    # the 73rd being the actual reply, looked "fine" but was incomplete).
+    #
+    # Solution: poll the jsonl for a TERMINAL stop_reason on the most
+    # recent assistant entry. Each Anthropic API response writes a stop_
+    # reason indicating whether more output is expected. While the model is
+    # paused waiting for a tool ("tool_use") or extended thinking
+    # ("pause_turn"), the agent loop will write more content; we must wait.
+    # Once we see a terminal reason (end_turn / stop_sequence / max_tokens /
+    # refusal), the turn's final response is on disk and extraction is safe.
+    #
+    # Fast path: a turn already at end_turn returns on the first check (no
+    # waiting). Slow path: at most ~3s. If we never see terminal — the
+    # turn was interrupted, errored, or Stop fired in an unexpected order
+    # — we LEAVE .last ABSENT rather than write a misleading partial.
+    if wait_for_jsonl_terminal "$transcript"; then
         text=$(extract_last_turn "$transcript")
-    fi
-    if [[ -n "$text" ]]; then
-        printf '%s\n' "$text" > "$last_file"
+        if [[ -n "$text" ]]; then
+            printf '%s\n' "$text" > "$last_file"
+        else
+            # No visible text (e.g. tool-only turn). Drop any stale .last.
+            rm -f "$last_file"
+        fi
     else
-        # Nothing to write — drop any stale .last rather than leave a 1-byte
-        # newline-only file. Consumers can treat "file missing" as "no visible
-        # text in this turn" (e.g. tool-only turn).
+        # Diagnostic so a future debugger can distinguish "turn produced no
+        # text" from "we timed out waiting for jsonl to settle". Goes to
+        # stderr → Claude Code's hook log; user never sees it directly.
+        echo "on-stop: $sid: jsonl never reached terminal stop_reason within 3s — leaving .last absent" >&2
         rm -f "$last_file"
     fi
 fi
