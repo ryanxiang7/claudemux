@@ -1,0 +1,13 @@
+{
+  "name": "claudemux",
+  "owner": {
+    "name": "YourWildDad"
+  },
+  "plugins": [
+    {
+      "name": "claudemux",
+      "source": "./plugins/claudemux",
+      "description": "Multi-repo Claude Code orchestrator. Run one dispatcher session in the parent of your repos; spawn, message, and wait on tmux teammates."
+    }
+  ]
+}

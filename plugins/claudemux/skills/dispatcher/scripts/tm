@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# tm — tmux teammate manager for the dispatcher skill.
+#
+# Each "teammate" is a tmux session named `teammate-<repo>` running an
+# interactive `claude` in `$DEV_DIR/<repo>`, where $DEV_DIR is the dispatcher
+# directory (the parent of all sibling repos).
+#
+# Why this script exists: the protocol for driving these teammates has a few
+# non-obvious rules (most importantly, prompt text and Enter must be sent as
+# two separate tmux send-keys calls, or the prompt silently fails to submit).
+# Calling this script instead of raw tmux means every teammate is created and
+# driven the same way, and the rules are in one place where a future fix lands
+# for the entire system.
+#
+# Idle signaling: when the global Stop hook in ~/.claude/settings.json fires,
+# it touches /tmp/claude-idle/<jsonl-uuid>. This script captures each teammate's
+# jsonl-uuid into /tmp/teammate-<repo>.sid so `tm wait-idle` knows which file
+# to wait on. `tm send` rm's the signal file first so a subsequent wait-idle
+# waits for the NEW idle, not a stale one.
+
+set -euo pipefail
+
+# Resolve $DEV_DIR (the dispatcher directory — parent of all sibling repos)
+# in priority order:
+#
+#   1. $CLAUDEMUX_DEV_DIR  — explicit env override, useful for one-off testing
+#                            or running multiple dispatcher trees on one box
+#   2. ~/.config/claudemux/config  — written by `setup` when run inside the
+#                            dispatcher dir. This is the normal case.
+#
+# We deliberately do NOT try to self-locate from the script's path: when
+# claudemux is installed as a Claude Code plugin, the script lives somewhere
+# under ~/.claude/plugins/... which has no relation to the dispatcher dir.
+CONFIG_FILE="${CLAUDEMUX_CONFIG_FILE:-$HOME/.config/claudemux/config}"
+
+if [[ -n "${CLAUDEMUX_DEV_DIR:-}" ]]; then
+    DEV_DIR="$CLAUDEMUX_DEV_DIR"
+elif [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    DEV_DIR="${DEV_DIR:-}"
+fi
+
+if [[ -z "${DEV_DIR:-}" ]]; then
+    echo "tm: \$DEV_DIR is not configured." >&2
+    echo "    Run 'setup' from inside the dispatcher directory first, or" >&2
+    echo "    set CLAUDEMUX_DEV_DIR=/path/to/dispatcher-dir before invoking tm." >&2
+    exit 1
+fi
+
+PREFIX="teammate-"
+IDLE_DIR="/tmp/claude-idle"
+
+die() { echo "tm: $*" >&2; exit 1; }
+
+session_name() { echo "${PREFIX}$1"; }
+sid_file() { echo "/tmp/teammate-$1.sid"; }
+
+project_dir() {
+    # cwd → ~/.claude/projects/<cwd-with-slashes-as-dashes>/
+    local path="$DEV_DIR/$1"
+    local sanitized; sanitized="${path//\//-}"
+    echo "$HOME/.claude/projects/$sanitized"
+}
+
+require_session() {
+    local name; name=$(session_name "$1")
+    tmux has-session -t "$name" 2>/dev/null || die "no such teammate session: $name (try 'tm ls')"
+    echo "$name"
+}
+
+# Find the teammate's session id (jsonl filename UUID) by scanning the project
+# directory for a *.jsonl with mtime >= since_epoch. For fresh `claude`, the
+# file is created the moment the first event is logged — typically within ~2s
+# of the first user prompt. Polls briefly. Writes the sid to /tmp/teammate-<repo>.sid.
+capture_sid() {
+    local repo="$1"; local since_epoch="${2:-0}"
+    local dir; dir=$(project_dir "$repo")
+    local sf; sf=$(sid_file "$repo")
+    local end; end=$(( $(date +%s) + 8 ))
+
+    [[ -d "$dir" ]] || return 1
+
+    while [[ $(date +%s) -lt $end ]]; do
+        local newest="" newest_mt=0 mt
+        for f in "$dir"/*.jsonl; do
+            [[ -e "$f" ]] || continue
+            mt=$(stat -f %m "$f" 2>/dev/null || echo 0)
+            if (( mt >= since_epoch && mt > newest_mt )); then
+                newest_mt=$mt
+                newest="$f"
+            fi
+        done
+        if [[ -n "$newest" ]]; then
+            basename "$newest" .jsonl > "$sf"
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+cmd_ls() {
+    # tmux ls returns non-zero when no server is running; mask it so pipefail
+    # doesn't kill us. Empty output is the expected "no sessions" case.
+    local rows=""
+    rows=$( { tmux ls 2>/dev/null || true; } | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print $0}')
+    if [[ -z "$rows" ]]; then
+        echo "(no teammate sessions; use 'tm spawn <repo>')"
+        return 0
+    fi
+    echo "$rows"
+}
+
+cmd_spawn() {
+    local repo="${1:-}"
+    [[ -n "$repo" ]] || die "usage: tm spawn <repo> [--resume <sid>]"
+    shift
+
+    local resume_sid=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --resume) resume_sid="${2:-}"; shift 2 ;;
+            *) die "unknown flag: $1" ;;
+        esac
+    done
+
+    local path="$DEV_DIR/$repo"
+    [[ -d "$path" ]] || die "repo not found: $path"
+
+    local name; name=$(session_name "$repo")
+    if tmux has-session -t "$name" 2>/dev/null; then
+        echo "$name already exists (use 'tm status $repo' to view, or 'tm kill $repo' first)"
+        return 0
+    fi
+
+    tmux new-session -d -s "$name" -c "$path"
+    if [[ -n "$resume_sid" ]]; then
+        tmux send-keys -t "$name" "claude --resume $resume_sid" Enter
+        echo "$resume_sid" > "$(sid_file "$repo")"
+        rm -f "$IDLE_DIR/$resume_sid"
+        echo "spawned: $name (cwd=$path, resumed sid=$resume_sid)"
+    else
+        tmux send-keys -t "$name" 'claude' Enter
+        rm -f "$(sid_file "$repo")"
+        echo "spawned: $name (cwd=$path, sid will be captured on first 'tm send')"
+    fi
+    echo "use 'tm status $repo' once the startup banner appears (~5s)"
+}
+
+cmd_status() {
+    local repo="${1:-}"; local lines="${2:-80}"
+    [[ -n "$repo" ]] || die "usage: tm status <repo> [lines=80]"
+    local name; name=$(require_session "$repo")
+    tmux capture-pane -t "$name" -p -S "-${lines}"
+}
+
+cmd_send() {
+    local repo="${1:-}"; shift || true
+    [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm send <repo> <prompt...>"
+    local prompt="$*"
+    local name; name=$(require_session "$repo")
+    local sf; sf=$(sid_file "$repo")
+
+    # If sid is known, clear the baseline idle signal so wait-idle blocks
+    # until THIS prompt completes (not until the previously satisfied one).
+    if [[ -s "$sf" ]]; then
+        local sid; sid=$(cat "$sf")
+        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid"
+    fi
+
+    local since; since=$(date +%s)
+
+    # CRITICAL: prompt text and Enter must be two separate calls. Combining
+    # them in one tmux send-keys inlines Enter as a newline inside the input
+    # box and the prompt does not submit. -l (literal) avoids tmux interpreting
+    # characters in the prompt as key names.
+    tmux send-keys -t "$name" -l "$prompt"
+    tmux send-keys -t "$name" Enter
+
+    # Fresh teammate: sid wasn't known at spawn. The first send triggers a
+    # user event that materializes the jsonl file — capture sid now.
+    if [[ ! -s "$sf" ]]; then
+        capture_sid "$repo" "$since" || true
+    fi
+
+    echo "sent to $name (Enter issued separately)"
+    [[ -s "$sf" ]] && echo "sid=$(cat "$sf")"
+}
+
+cmd_wait_idle() {
+    local repo="${1:-}"; local timeout="${2:-600}"
+    [[ -n "$repo" ]] || die "usage: tm wait-idle <repo> [timeout=600]"
+    require_session "$repo" >/dev/null
+    local sf; sf=$(sid_file "$repo")
+    [[ -s "$sf" ]] || die "no sid captured for $repo — was 'tm send' called yet? Or pass --resume <sid> on spawn."
+    local sid; sid=$(cat "$sf")
+
+    local end; end=$(( $(date +%s) + timeout ))
+    while [[ $(date +%s) -lt $end ]]; do
+        if [[ -e "$IDLE_DIR/$sid" ]]; then
+            echo "idle: $sid"
+            return 0
+        fi
+        sleep 3
+    done
+    echo "tm: timeout after ${timeout}s waiting for idle signal on $repo (sid=$sid)" >&2
+    return 1
+}
+
+cmd_kill() {
+    local repo="${1:-}"
+    [[ -n "$repo" ]] || die "usage: tm kill <repo>"
+    local name; name=$(session_name "$repo")
+    local sf; sf=$(sid_file "$repo")
+    if [[ -s "$sf" ]]; then
+        local sid; sid=$(cat "$sf")
+        [[ -n "$sid" ]] && rm -f "$IDLE_DIR/$sid"
+    fi
+    rm -f "$sf"
+    if tmux has-session -t "$name" 2>/dev/null; then
+        tmux kill-session -t "$name"
+        echo "killed: $name"
+    else
+        echo "not running: $name"
+    fi
+}
+
+cmd_poll() {
+    local repo="${1:-}"; local pattern="${2:-}"; local timeout="${3:-180}"
+    [[ -n "$repo" && -n "$pattern" ]] || die "usage: tm poll <repo> <regex> [timeout=180]"
+    local name; name=$(require_session "$repo")
+
+    # Useful gotcha: do not poll for a string that appears verbatim in the
+    # prompt you just sent — capture-pane will see the prompt echo and match
+    # immediately. Match expected RESULT keywords instead (e.g. Scheduled,
+    # Cancelled, ✓, error). For "wait until teammate is done", prefer
+    # 'tm wait-idle' which uses the Stop-hook signal and doesn't need a regex.
+    local end; end=$(( $(date +%s) + timeout ))
+    while [[ $(date +%s) -lt $end ]]; do
+        if tmux capture-pane -t "$name" -p -S -300 2>/dev/null | grep -qE "$pattern"; then
+            echo "matched: $pattern"
+            return 0
+        fi
+        sleep 3
+    done
+    echo "tm: timeout after ${timeout}s waiting for /$pattern/ in $name" >&2
+    return 1
+}
+
+cmd_help() {
+    cat <<'EOF'
+tm — tmux teammate manager for the dispatcher skill
+
+USAGE
+  tm ls
+      list all teammate-<repo> sessions
+
+  tm spawn <repo> [--resume <sid>]
+      launch a claude teammate in $DEV_DIR/<repo> (the dispatcher dir
+      recorded in ~/.config/claudemux/config; override per-invocation
+      with the CLAUDEMUX_DEV_DIR env var).
+      --resume <sid> picks up an existing session by jsonl-UUID; otherwise
+      a fresh session starts and its sid is captured on the first 'tm send'
+
+  tm status <repo> [lines=80]
+      capture-pane the teammate's screen
+
+  tm send <repo> <prompt...>
+      send a prompt + Enter to the teammate (handles the dual-send).
+      Also clears the idle-signal baseline (rm /tmp/claude-idle/<sid>) so a
+      subsequent 'tm wait-idle' will wait for THIS prompt's completion,
+      not a previously satisfied one. Do NOT roll your own with raw tmux
+      send-keys, see notes inside the script.
+
+  tm wait-idle <repo> [timeout=600]
+      block until the teammate's Stop hook fires (file appears at
+      /tmp/claude-idle/<sid>). Requires the global Stop hook to be
+      installed in ~/.claude/settings.json — it writes that signal file
+      every time a teammate goes idle. See the dispatcher SKILL.md.
+
+  tm kill <repo>
+      kill the teammate session and clean up its sid/idle files
+
+  tm poll <repo> <regex> [timeout=180]
+      block until pane content matches a regex; for "wait until done"
+      prefer 'tm wait-idle' — keep this for cases where the idle hook
+      can't catch an interesting intermediate state. Pattern should match
+      the EXPECTED RESULT, not the prompt you just sent.
+
+ENVIRONMENT
+  CLAUDEMUX_DEV_DIR    override the dispatcher directory (parent of repos)
+                       for this invocation. Useful for testing or running
+                       multiple dispatcher trees on one machine.
+
+  CLAUDEMUX_CONFIG_FILE
+                       override the config file path
+                       (default: ~/.config/claudemux/config; written by setup).
+EOF
+}
+
+main() {
+    local sub="${1:-help}"
+    shift || true
+    case "$sub" in
+        ls)         cmd_ls "$@" ;;
+        spawn)      cmd_spawn "$@" ;;
+        status)     cmd_status "$@" ;;
+        send)       cmd_send "$@" ;;
+        wait-idle)  cmd_wait_idle "$@" ;;
+        kill)       cmd_kill "$@" ;;
+        poll)       cmd_poll "$@" ;;
+        help|-h|--help) cmd_help ;;
+        *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;
+    esac
+}
+
+main "$@"

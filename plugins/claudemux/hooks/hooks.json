@@ -1,0 +1,16 @@
+{
+  "description": "claudemux idle-signal: on every Stop event, touch /tmp/claude-idle/<session_id> so that `tm wait-idle <repo>` can block until a teammate finishes a turn. The hook fires for every Claude Code session (including the dispatcher itself); nothing waits on the dispatcher's own idle file, so the extra touch is harmless.",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); sid=$(printf '%s' \"$input\" | jq -r '.session_id // empty'); [ -n \"$sid\" ] && { mkdir -p /tmp/claude-idle && touch \"/tmp/claude-idle/$sid\"; } ; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
