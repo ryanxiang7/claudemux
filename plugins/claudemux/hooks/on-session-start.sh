@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# claudemux SessionStart hook. Three responsibilities, all gated by one
-# single safety check (no DEV_DIR, no env override, no config file):
+# claudemux SessionStart hook. Three responsibilities, gated by two
+# independent safety checks (no DEV_DIR, no config file):
 #
 #   1) Sid rotation. /clear (and interactive /resume) generate a fresh
 #      session_id; we update /tmp/teammate-<repo>.sid in place so the
@@ -12,14 +12,27 @@
 #   3) Audit. Each rotation is appended to /tmp/claudemux-sid-changes.log
 #      so drift events are post-hoc inspectable.
 #
-# The safety check: the firing claude's cwd must byte-equal the content
-# of exactly one /tmp/teammate-<repo>.cwd file. `tm spawn` writes that
-# file at spawn time with the PHYSICAL path of the teammate's directory
-# (via `cd && pwd -P`), and Claude Code emits cwd in the hook payload
-# also as the physical path, so the comparison is straightforward.
-# Without a matching .cwd we do nothing — random claude sessions running
-# anywhere else on the machine (including the dispatcher itself, since
-# the dispatcher's cwd has no .cwd file mapped to it) silently no-op.
+# Safety check 1 — env identity gate:
+#   `tm spawn` launches its tmux session with
+#   `tmux new-session -e CLAUDEMUX_TEAMMATE_REPO=<repo>`. claude inherits
+#   that env, hooks inherit it from claude. The env survives /clear and
+#   /resume because they don't restart the claude process. If the env is
+#   not set, this is some other claude session (the dispatcher itself,
+#   an ad-hoc `cd <repo> && claude`, a teammate launched via raw
+#   `tmux new-session` without the -e) and we no-op. This single check
+#   is what prevents a dispatcher whose cwd happens to byte-equal a
+#   recorded teammate.cwd from hijacking the teammate's .sid file via
+#   the cwd-match loop below.
+#
+# Safety check 2 — recorded-cwd byte match:
+#   Even with the env set, we still verify the firing claude's cwd
+#   byte-equals the content of /tmp/teammate-<env-repo>.cwd. `tm spawn`
+#   writes that file at spawn time with the PHYSICAL path of the
+#   teammate's directory (via `cd && pwd -P`), and Claude Code emits cwd
+#   in the hook payload also as the physical path. The match also acts
+#   as a safety against a stray `cd packages/foo && /clear` inside a
+#   teammate — different cwd → no sid rotation, the .sid pointer stays
+#   pinned to the teammate's real workspace.
 
 set -u
 
@@ -37,18 +50,23 @@ cwd=$(extract_field cwd)
 src=$(extract_field source)
 [[ -n "$sid" && -n "$cwd" ]] || exit 0
 
-# Find the teammate whose recorded cwd byte-equals the firing cwd.
-# Iterating /tmp/teammate-*.cwd is O(N) where N is the current teammate
-# count (typically 1–5); no global state, no parent-path heuristics.
-repo=""
-for cf in /tmp/teammate-*.cwd; do
-    [[ -f "$cf" ]] || continue
-    [[ "$(cat "$cf" 2>/dev/null)" == "$cwd" ]] || continue
-    base=$(basename "$cf" .cwd)        # teammate-<repo>
-    repo="${base#teammate-}"
-    break
-done
-[[ -n "$repo" ]] || exit 0
+# Env identity gate (see file header). Without CLAUDEMUX_TEAMMATE_REPO,
+# this claude was not launched by `tm spawn` — exit before doing any
+# .sid / .ready work, even if the cwd happens to match a recorded
+# teammate.cwd. This is what protects against the dispatcher (running in
+# a cwd that coincides with a sibling repo) hijacking the sid pointer.
+env_repo="${CLAUDEMUX_TEAMMATE_REPO:-}"
+[[ -n "$env_repo" ]] || exit 0
+
+# Recorded-cwd byte match. The env tells us WHICH repo we should be;
+# the .cwd file tells us where that repo actually lives on disk. If the
+# firing cwd doesn't match the recorded cwd for env_repo, something is
+# off (e.g. someone `cd`'d into a subdir before /clear) — refuse to
+# rotate, leaving the .sid pointer pinned to the teammate's workspace.
+cf="/tmp/teammate-${env_repo}.cwd"
+[[ -f "$cf" ]] || exit 0
+[[ "$(cat "$cf" 2>/dev/null)" == "$cwd" ]] || exit 0
+repo="$env_repo"
 
 sf="/tmp/teammate-${repo}.sid"
 

@@ -22,13 +22,18 @@
 #   on-stop.sh        Stop / StopFailure / PostCompact / SessionEnd →
 #                     rm <sid>.busy, write <sid>.last (Stop only), touch
 #                     <sid> (the wait-idle marker)
-#   on-session-start  SessionStart → iterate /tmp/teammate-*.cwd files,
-#                     match the firing claude's cwd byte-exactly against
-#                     one of them. On hit: update /tmp/teammate-<repo>.sid
-#                     (handles /clear-induced sid rotation) AND touch
-#                     /tmp/teammate-<repo>.ready (the spawn-readiness
-#                     signal — `tm spawn` polls for this file instead of
-#                     burning a fixed sleep).
+#   on-session-start  SessionStart → require $CLAUDEMUX_TEAMMATE_REPO (set
+#                     by `tm spawn` via `tmux new-session -e`); without
+#                     it, no-op. Then byte-match the firing claude's cwd
+#                     against /tmp/teammate-<repo>.cwd, AND require the
+#                     env's repo equal the matched repo. On hit: update
+#                     /tmp/teammate-<repo>.sid (handles /clear-induced
+#                     sid rotation) AND touch /tmp/teammate-<repo>.ready
+#                     (the spawn-readiness signal — `tm spawn` polls for
+#                     this file instead of burning a fixed sleep). The
+#                     env gate is what prevents a dispatcher whose cwd
+#                     happens to equal a recorded teammate.cwd from
+#                     hijacking the teammate's sid file.
 # We avoid race-prone jsonl scanning by pre-generating a UUID at spawn time
 # and handing it to `claude --session-id` directly — the jsonl filename then
 # equals that UUID. The sid is stashed in /tmp/teammate-<repo>.sid so
@@ -42,6 +47,23 @@ PREFIX="teammate-"
 IDLE_DIR="/tmp/claude-idle"
 
 die() { echo "tm: $*" >&2; exit 1; }
+
+# Common "<repo> not under $PWD" failure path for spawn / resume. If $PWD
+# is itself a git working tree, the user almost certainly ran tm from the
+# wrong directory (e.g. inside a working repo instead of the parent of
+# sibling repos — common when the dispatcher cwd happens to be a
+# maintained plugin/repo and not the sibling-parent). Steer them to cd
+# up; otherwise fall back to the generic "repo not found" message.
+die_repo_not_found() {
+    local verb="$1" repo="$2" path="$3"
+    if [[ -d "$PWD/.git" ]]; then
+        die "$PWD looks like a git working tree (.git exists), not a dispatcher root.
+    The dispatcher's cwd should be the PARENT of your sibling repos.
+    Try:  cd \"$(dirname "$PWD")\" && tm $verb $repo
+    (Or run tm from the dispatcher tmux session, whose cwd is set up that way.)"
+    fi
+    die "repo not found at $path — tm $verb must run from the dispatcher directory (the parent of your sibling repos), and <repo> must be a direct subdirectory of it"
+}
 
 # tmux `-t NAME` is a PREFIX match, so `has-session -t teammate-x` returns
 # true when only `teammate-x-2` exists. We use two different exact-match
@@ -171,7 +193,7 @@ cmd_spawn() {
     done
 
     local path="$PWD/$repo"
-    [[ -d "$path" ]] || die "repo not found at $path — tm spawn must run from the dispatcher directory (the parent of your sibling repos), and <repo> must be a direct subdirectory of it"
+    [[ -d "$path" ]] || die_repo_not_found spawn "$repo" "$path"
 
     # Normalize to the physical path. Claude Code emits cwd as the physical
     # path in hook payloads (macOS resolves /tmp → /private/tmp etc), so
@@ -201,7 +223,16 @@ cmd_spawn() {
     # -P -F prints the new session's internal id (e.g. `$21`); we use it
     # as the pane-target for the subsequent send-keys so we don't rely on
     # name prefix-match resolution.
-    local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" -P -F '#{session_id}')
+    #
+    # -e CLAUDEMUX_TEAMMATE_REPO=<repo> stamps a tmux-session env var that
+    # claude (and the on-session-start hook it fires) inherit. The hook
+    # uses this as a positive identity gate: only sessions launched by
+    # `tm spawn` get the env var, so the dispatcher itself (or any ad-hoc
+    # `cd <repo> && claude`) can never hijack /tmp/teammate-<repo>.sid
+    # via cwd collision. The env survives /clear and /resume because
+    # those don't restart the claude process.
+    local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" \
+        -e "CLAUDEMUX_TEAMMATE_REPO=$repo" -P -F '#{session_id}')
     local sid sf; sf=$(sid_file "$repo")
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
@@ -291,10 +322,32 @@ cmd_send() {
 }
 
 cmd_wait_idle() {
-    local repo="${1:-}"; local timeout="${2:-600}"
-    [[ -n "$repo" ]] || die "usage: tm wait-idle <repo> [timeout=600]"
+    local repo="" timeout=600 fresh=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fresh) fresh=1; shift ;;
+            -*) die "tm wait-idle: unknown flag: $1" ;;
+            *)
+                if [[ -z "$repo" ]]; then repo="$1"
+                else timeout="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    [[ -n "$repo" ]] || die "usage: tm wait-idle [--fresh] <repo> [timeout=600]"
     require_session "$repo" >/dev/null
     local sid; sid=$(resolve_sid_or_die "$repo")
+
+    # --fresh: drop the marker / .last / .busy baseline FIRST, so the next
+    # Stop hook fire is what wakes us up rather than a past turn's marker.
+    # Use this when you want to wait for the NEXT turn boundary on a
+    # teammate that's making autonomous progress (no fresh `tm send` to
+    # reset the baseline). Default mode (no --fresh) matches the old
+    # behavior — return immediately if any prior turn already ended.
+    if (( fresh )); then
+        clear_idle "$sid"
+    fi
 
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
@@ -453,7 +506,7 @@ cmd_resume() {
     [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"]  (sid from ledger preferred; auto-pick on omit)"
 
     local path="$PWD/$repo"
-    [[ -d "$path" ]] || die "repo not found at $path — tm resume must run from the dispatcher directory (the parent of your sibling repos)"
+    [[ -d "$path" ]] || die_repo_not_found resume "$repo" "$path"
     # Use the physical path for Claude Code's project-dir encoding — that's
     # what it uses to derive the encoded directory name from cwd.
     local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
@@ -527,10 +580,14 @@ cmd_states() {
                     age=$((now - lmt))
                     last="${sz}B/$(fmt_age "$age")"
                     # Sanitize the preview: strip control chars and tabs so
-                    # column -t doesn't split a column, then cut to 50 bytes.
-                    # macOS cut counts bytes, so multi-byte text may truncate
-                    # mid-character — acceptable for a one-line preview.
-                    preview=$(head -1 "$lf" | tr -d '\000-\037' | cut -c1-50)
+                    # column -t doesn't split a column, then truncate to 50
+                    # *characters* (not bytes). macOS `cut -c` counts bytes,
+                    # which mangles CJK (UTF-8 3 bytes/char → half-character
+                    # tails). perl -CSD enables UTF-8 layers on STDIN/STDOUT
+                    # regardless of locale, so substr counts characters; the
+                    # chomp avoids embedding a stray newline in the table row.
+                    preview=$(head -1 "$lf" | tr -d '\000-\037' \
+                        | perl -CSD -ne 'chomp; print substr($_, 0, 50); last')
                     [[ -z "$preview" ]] && preview="(no first line)"
                 fi
             fi
@@ -646,12 +703,17 @@ USAGE
       Optional --prompt sends a follow-up message after the resumed banner
       renders.
 
-  tm wait-idle <repo> [timeout=600]
+  tm wait-idle [--fresh] <repo> [timeout=600]
       block until the teammate's Stop hook fires (file appears at
       /tmp/claude-idle/<sid>). On hit, also reports the path of the
       <sid>.last file (the assistant's last-turn text, written by the
       same hook). Requires the plugin's Stop hook to be loaded — it
       writes both files every time a session ends a turn.
+      --fresh first clears /tmp/claude-idle/<sid>{,.last,.busy} so the
+      next Stop fire — not a past one — is what unblocks the wait. Use
+      it when monitoring an autonomously-progressing teammate where
+      you didn't just `tm send`. (`tm send` already clears the
+      baseline, so a normal send-then-wait does NOT need --fresh.)
 
   tm last <repo>
       cat the assistant's last-turn text for <repo>, captured by the

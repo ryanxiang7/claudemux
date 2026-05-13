@@ -37,7 +37,7 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 
 ## The `tm` script
 
-`tm` (bundled with this plugin under `skills/dispatcher/scripts/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly with "repo not found". The script encodes the corrections this dispatcher had to learn the hard way, especially the *two-step Enter* (combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit the prompt — the Enter becomes a literal newline inside the input box).
+`tm` (bundled with this plugin under `skills/dispatcher/scripts/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly. **If the dispatcher's cwd is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `$PWD/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. `cd` up to the sibling-parent first, or run `tm` from the actual dispatcher tmux session. The script encodes the corrections this dispatcher had to learn the hard way, especially the *two-step Enter* (combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit the prompt — the Enter becomes a literal newline inside the input box).
 
 ```
 tm ls                            list all teammate sessions (sessions named teammate-<repo>)
@@ -63,11 +63,16 @@ tm resume <repo> [<sid>] [--prompt "..."]
                                  sid, auto-picks the newest jsonl by mtime (warns on stderr,
                                  since that's rarely the one you actually wanted).
                                  Optional --prompt sends a follow-up after resume.
-tm wait-idle <repo> [timeout=600]
+tm wait-idle [--fresh] <repo> [timeout=600]
                                  block until any of Stop / StopFailure / PostCompact /
                                  SessionEnd fires (the idle-marker file appears).
                                  Prints the path of the <sid>.last file on hit
                                  (which is meaningful only after Stop).
+                                 --fresh first clears the idle/last/busy baseline so
+                                 the wait targets the NEXT turn boundary, not any
+                                 already-recorded one. Reach for it when you're
+                                 monitoring autonomous teammate progress without a
+                                 fresh `tm send` (which already resets the baseline).
 tm wait-quiet <repo> [timeout=600]
                                  block until the pane shows no spinner for ~4s
                                  (and at least 3s have passed since the last send).
@@ -119,6 +124,8 @@ Use `tm last` for the full text. Reserve `tm status` for cases where you specifi
 
 Run `tm wait-idle` in the background (Bash with `run_in_background: true`) — the harness's task-notification fires when it exits, so the dispatcher gets pinged the moment the teammate goes idle without burning context on a wakeup chain.
 
+Passive monitoring without a fresh `tm send` — e.g. the teammate is autonomously progressing through sub-agents, cron callbacks, or follow-up turns the user kicked off elsewhere — needs `tm wait-idle --fresh <repo>`. Without `--fresh`, the marker from the last turn is still on disk and `wait-idle` returns instantly. `--fresh` clears the idle / `.last` / `.busy` baseline up front so the wait targets the NEXT Stop, the same way `tm send` resets the baseline before sending.
+
 When the idle-hook signal doesn't fit (waiting for some intermediate screen state, not turn-end), fall back to `tm poll <repo> <regex>` — but for "wait until teammate is done with a normal turn", `wait-idle` is the right answer.
 
 ## When the Stop hook isn't enough: `tm wait-quiet`
@@ -154,9 +161,15 @@ When several teammates are running and you want a one-shot "who's doing what", `
 
 ### `/clear` and sid rotation
 
-`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this by recording each teammate's physical cwd at spawn time into `/tmp/teammate-<repo>.cwd`, then on every `SessionStart` event it iterates those files and looks for one whose content byte-equals the firing claude's cwd. On a hit, it overwrites `/tmp/teammate-<repo>.sid` with the new sid (handles `/clear` and interactive `/resume`) and touches `/tmp/teammate-<repo>.ready` (the spawn-readiness signal). `source=startup|compact|resume` with unchanged sid is a quiet no-op for the rotation step; readiness is touched regardless. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
+`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this with two gates on every `SessionStart` event:
 
-The byte-match-against-recorded-cwd safety check is strictly stronger than a "same parent dir" prefix check: a stray `cd packages/foo && claude` inside a teammate repo doesn't match the teammate's recorded cwd, so it cannot hijack the sid pointer. The dispatcher's own cwd (no `.cwd` file maps to it) is naturally skipped too. This is also why there is no `$DEV_DIR` env var or config file anywhere in the plugin: the only path-comparison the runtime ever needs is "is this cwd one of the recorded teammate cwds", and that's purely a filesystem lookup against `/tmp/teammate-*.cwd`.
+1. **Env identity.** `tm spawn` launches its tmux session with `tmux new-session -e CLAUDEMUX_TEAMMATE_REPO=<repo>`. claude inherits that env, and so does the hook. If the env var is unset, this is some other claude session (the dispatcher itself, an ad-hoc `cd <repo> && claude`, or a teammate started via raw `tmux new-session` without the `-e`) — the hook no-ops. The env survives `/clear` and `/resume` because they don't restart the claude process.
+
+2. **Recorded-cwd byte match.** Even with the env set, the firing claude's cwd must byte-equal the content of `/tmp/teammate-<env-repo>.cwd` (written by `tm spawn` using the PHYSICAL path via `cd && pwd -P`). A stray `cd packages/foo` inside the teammate before `/clear` won't match — the .sid pointer stays pinned to the teammate's real workspace.
+
+On a both-gates pass, the hook overwrites `/tmp/teammate-<repo>.sid` with the new sid (handles `/clear` and interactive `/resume`) and touches `/tmp/teammate-<repo>.ready` (the spawn-readiness signal). `source=startup|compact|resume` with unchanged sid is a quiet no-op for the rotation step; readiness is touched regardless. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
+
+The env gate is what makes this safe in the edge case where the dispatcher's own cwd byte-equals a recorded teammate.cwd (e.g. when you're maintaining the claudemux plugin itself and run the dispatcher from `~/Development/claudemux` while also having spawned `tm spawn claudemux` from a parent directory at some point). Without the env gate, both sessions match the same `.cwd` file and the last SessionStart to fire wins. With it, only the `tm spawn`-launched teammate ever updates the sid pointer.
 
 ## Spawning an Agent Teams teammate
 
@@ -222,6 +235,11 @@ Before doing anything substantive, check whether the notes file exists and
 `Read` it if so — it's where `/claudemux:optimize` parks dispatcher-specific
 additions that didn't warrant editing `$DEV_DIR/CLAUDE.md`. Treat its
 contents as additional skill body for this dispatcher.
+
+`/claudemux:optimize` is also what *creates* this file the first time it
+has dispatcher-specific findings to record; you don't need to pre-create
+it, and its absence simply means optimize hasn't run (or had nothing to
+park) yet.
 
 ## Task ledger (use AutoMemory)
 
