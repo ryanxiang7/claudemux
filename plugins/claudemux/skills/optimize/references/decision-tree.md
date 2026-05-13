@@ -30,7 +30,7 @@ This carrier exists because the dispatcher skill itself lives inside the claudem
 
 When a finding would benefit FUTURE plugin users (not just this dispatcher), surface it as a "propose to upstream the dispatcher skill" item in the report rather than writing to local notes — the user can then submit a plugin change.
 
-## 3. → Plugin-level skill change — propose only (`${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` or `scripts/tm`)
+## 3. → Plugin-level skill change — propose only (`${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` or `bin/tm`)
 
 Eligible when the finding would be valuable to ALL users of the claudemux plugin, not just this dispatcher. Examples:
 
@@ -38,7 +38,7 @@ Eligible when the finding would be valuable to ALL users of the claudemux plugin
 - A foot-gun general enough that every dispatcher would benefit
 - A correction to plugin-skill text that misleads in the general case
 
-**Always requires user confirmation.** The plugin install dir is read-only; the proposal should be a concrete diff the user can apply manually in the claudemux source repo (or paste into a PR). When testing such a change, always sanity-check `scripts/tm` with `bash -n` before declaring done — a broken `tm` paralyses every future dispatcher session.
+**Always requires user confirmation.** The plugin install dir is read-only; the proposal should be a concrete diff the user can apply manually in the claudemux source repo (or paste into a PR). When testing such a change, always sanity-check `bin/tm` with `bash -n` before declaring done — a broken `tm` paralyses every future dispatcher session.
 
 ## 4. → Project memory (`$PROJECT_MEMORY/*.md`)
 

@@ -74,7 +74,7 @@ In the forked context, read these in parallel where possible:
 - Every `*.md` file in `/tmp/dispatcher-optimize-logs/` (the session logs)
 - `$DISPATCHER_DIR/CLAUDE.md` (current project CLAUDE.md)
 - `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` (dispatcher skill body — read-only, but you still need it to know what's already documented)
-- `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/scripts/tm` (the helper script — read-only)
+- `${CLAUDE_PLUGIN_ROOT}/bin/tm` (the helper script — read-only)
 - `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (if it exists — user's freeform additions)
 - `$PROJECT_MEMORY/MEMORY.md` (memory index)
 - Every `*.md` file linked from `MEMORY.md`
@@ -107,7 +107,7 @@ Use `references/decision-tree.md` (in this skill) to pick the carrier for each f
 | Project memory (MEMORY.md index update) | yes | — |
 | Local dispatcher notes — small addition (≤ 5 lines, append) | yes | rewrites, deletions |
 | Dispatcher CLAUDE.md — small addition (≤ 3 sentences, existing section) | yes | rewrites, deletions, larger additions |
-| Plugin-level skill change (`dispatcher/SKILL.md` or `scripts/tm`) | NEVER auto-apply | always propose a diff for the user to apply manually; the plugin install dir is read-only |
+| Plugin-level skill change (`dispatcher/SKILL.md` or `bin/tm`) | NEVER auto-apply | always propose a diff for the user to apply manually; the plugin install dir is read-only |
 | New skill in workspace | NEVER auto-apply | always propose with full proposal |
 
 The "auto-apply" entries write directly. The "requires confirmation" entries are collected into the final report as proposals with concrete diffs the user can approve in one turn.
