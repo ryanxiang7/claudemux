@@ -82,11 +82,12 @@ And in the REPL:
 /claudemux:setup
 ```
 
-`/claudemux:setup` records your dispatcher directory in
-`~/.config/claudemux/config`, seeds a `CLAUDE.md` (the dispatcher's
-working agreement) into the directory, and offers to flip on Claude
+`/claudemux:setup` seeds a `CLAUDE.md` (the dispatcher's working
+agreement) into your current directory and offers to flip on Claude
 Code's `remoteControlAtStartup` so every teammate gets its own remote
-URL.
+URL. There is no global config file: `tm` and the hooks derive the
+dispatcher directory from `$PWD` at runtime, so wherever you `cd` and
+run `claude` IS the dispatcher.
 
 ## Quick start
 
@@ -167,21 +168,15 @@ session) and returns a short structured report. Invoke manually with
 
 ## Configuration
 
-`~/.config/claudemux/config` is the one piece of state the plugin keeps.
-It records:
+There is none. The plugin keeps no global state file. The "dispatcher
+directory" is wherever you `cd` and run `claude` — `tm` derives it from
+`$PWD` at invocation time (`tm spawn foo` → `$PWD/foo`); the SessionStart
+hook identifies each teammate by byte-matching the firing claude's cwd
+against `/tmp/teammate-<repo>.cwd` files that `tm spawn` writes. Move
+your dispatcher dir by `cd`'ing somewhere else — nothing to edit.
 
-```
-DEV_DIR="/Users/you/Development"
-```
-
-`DEV_DIR` is the **dispatcher root** — the directory your dispatcher Claude
-session runs in and the parent it expects sibling repos under. Every `tm`
-subcommand resolves repo short-names against it (`tm spawn foo` →
-`$DEV_DIR/foo`). Re-run `/claudemux:setup` (or edit the file by hand) to
-change it.
-
-> ⚠️ In docs `$DEV_DIR` is a *placeholder*, not a real shell variable. The
-> plugin scripts source the config and resolve it internally; if you copy a
+> ⚠️ In docs `$DEV_DIR` is sometimes used as a placeholder for "the
+> dispatcher directory", not as a real shell variable. If you copy a
 > command from these docs into your shell, replace `$DEV_DIR` with the
 > actual path.
 
@@ -246,8 +241,9 @@ a full Claude Code restart is the nuclear option.
 
 ## Known limitations
 
-- **Single dispatcher root.** `DEV_DIR` assumes all your sibling repos
-  share one parent directory. Multi-root setups need manual path passing.
+- **Single dispatcher root.** `tm spawn <repo>` resolves `<repo>` as
+  `$PWD/<repo>`, so all your sibling repos must share one parent
+  directory. Multi-root setups need manual path passing.
 - **macOS / Linux only.** Several scripts use BSD `stat`. Windows is
   unsupported.
 - **Cron only fires inside the dispatcher REPL.** `CronCreate` from
@@ -264,12 +260,13 @@ hit, so you don't have to re-discover them. See
 /plugin uninstall claudemux
 ```
 
-Removes the plugin and its Stop hook together. Two things are left
-behind on purpose — delete by hand if you don't want them:
+Removes the plugin and its hooks together. One thing is left behind on
+purpose — delete by hand if you don't want it:
 
-- `~/.config/claudemux/config` — the recorded `DEV_DIR`.
 - `CLAUDE.md` in your former dispatcher directory — left in place because
   you may want to keep the dispatcher policy as reference.
+
+(The plugin keeps no global state file — there's nothing else to clean up.)
 
 ## License
 

@@ -2,8 +2,12 @@
 # tm — tmux teammate manager for the dispatcher skill.
 #
 # Each "teammate" is a tmux session named `teammate-<repo>` running an
-# interactive `claude` in `$DEV_DIR/<repo>`, where $DEV_DIR is the dispatcher
-# directory (the parent of all sibling repos).
+# interactive `claude` in `<current-dir>/<repo>`. There is NO configured
+# "dispatcher directory" — tm uses $PWD as the parent of sibling repos.
+# In practice, that means you run `tm spawn <repo>` from inside the
+# dispatcher's own claude session (which has cwd == the parent of your
+# sibling repos by construction). Running tm from anywhere else builds
+# the wrong path and fails loudly with "repo not found".
 #
 # Why this script exists: the protocol for driving these teammates has a few
 # non-obvious rules (most importantly, prompt text and Enter must be sent as
@@ -18,10 +22,10 @@
 #   on-stop.sh        Stop / StopFailure / PostCompact / SessionEnd →
 #                     rm <sid>.busy, write <sid>.last (Stop only), touch
 #                     <sid> (the wait-idle marker)
-#   on-session-start  SessionStart → if cwd is $DEV_DIR/<repo> and a sid file
-#                     for that repo exists, overwrite it with the new
-#                     session_id (so /clear-induced sid rotation doesn't
-#                     orphan the dispatcher's pointer) AND touch
+#   on-session-start  SessionStart → iterate /tmp/teammate-*.cwd files,
+#                     match the firing claude's cwd byte-exactly against
+#                     one of them. On hit: update /tmp/teammate-<repo>.sid
+#                     (handles /clear-induced sid rotation) AND touch
 #                     /tmp/teammate-<repo>.ready (the spawn-readiness
 #                     signal — `tm spawn` polls for this file instead of
 #                     burning a fixed sleep).
@@ -33,34 +37,6 @@
 # / states reflects the NEW turn, not a stale one.
 
 set -euo pipefail
-
-# Resolve $DEV_DIR (the dispatcher directory — parent of all sibling repos)
-# in priority order:
-#
-#   1. $CLAUDEMUX_DEV_DIR  — explicit env override, useful for one-off testing
-#                            or running multiple dispatcher trees on one box
-#   2. ~/.config/claudemux/config  — written by `setup` when run inside the
-#                            dispatcher dir. This is the normal case.
-#
-# We deliberately do NOT try to self-locate from the script's path: when
-# claudemux is installed as a Claude Code plugin, the script lives somewhere
-# under ~/.claude/plugins/... which has no relation to the dispatcher dir.
-CONFIG_FILE="${CLAUDEMUX_CONFIG_FILE:-$HOME/.config/claudemux/config}"
-
-if [[ -n "${CLAUDEMUX_DEV_DIR:-}" ]]; then
-    DEV_DIR="$CLAUDEMUX_DEV_DIR"
-elif [[ -f "$CONFIG_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-    DEV_DIR="${DEV_DIR:-}"
-fi
-
-if [[ -z "${DEV_DIR:-}" ]]; then
-    echo "tm: \$DEV_DIR is not configured." >&2
-    echo "    Run 'setup' from inside the dispatcher directory first, or" >&2
-    echo "    set CLAUDEMUX_DEV_DIR=/path/to/dispatcher-dir before invoking tm." >&2
-    exit 1
-fi
 
 PREFIX="teammate-"
 IDLE_DIR="/tmp/claude-idle"
@@ -92,6 +68,7 @@ resolve_pane_target() {
 sid_file() { echo "/tmp/teammate-$1.sid"; }
 send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 ready_file() { echo "/tmp/teammate-$1.ready"; }
+cwd_file() { echo "/tmp/teammate-$1.cwd"; }
 
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
 # empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
@@ -185,8 +162,14 @@ cmd_spawn() {
         esac
     done
 
-    local path="$DEV_DIR/$repo"
-    [[ -d "$path" ]] || die "repo not found: $path"
+    local path="$PWD/$repo"
+    [[ -d "$path" ]] || die "repo not found at $path — tm spawn must run from the dispatcher directory (the parent of your sibling repos), and <repo> must be a direct subdirectory of it"
+
+    # Normalize to the physical path. Claude Code emits cwd as the physical
+    # path in hook payloads (macOS resolves /tmp → /private/tmp etc), so
+    # writing the physical form to <repo>.cwd lets on-session-start.sh
+    # byte-match without doing any normalization itself.
+    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
@@ -201,15 +184,21 @@ cmd_spawn() {
     local rf; rf=$(ready_file "$repo")
     rm -f "$rf"
 
+    # Record the teammate's physical cwd so the SessionStart hook can
+    # identify "is the firing claude session this teammate?" by byte-exact
+    # path match. Written BEFORE new-session so the .cwd file is in place
+    # the moment the hook can possibly fire.
+    echo "$cwd_phys" > "$(cwd_file "$repo")"
+
     # -P -F prints the new session's internal id (e.g. `$21`); we use it
     # as the pane-target for the subsequent send-keys so we don't rely on
     # name prefix-match resolution.
-    local pane; pane=$(tmux new-session -d -s "$name" -c "$path" -P -F '#{session_id}')
+    local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" -P -F '#{session_id}')
     local sid sf; sf=$(sid_file "$repo")
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
         tmux send-keys -t "$pane" "claude --resume $sid" Enter
-        echo "spawned: $name (cwd=$path, resumed sid=$sid)"
+        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid)"
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
         # No more jsonl scanning, no race window: --session-id makes the jsonl
@@ -217,7 +206,7 @@ cmd_spawn() {
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
         tmux send-keys -t "$pane" "claude --session-id $sid" Enter
-        echo "spawned: $name (cwd=$path, sid=$sid)"
+        echo "spawned: $name (cwd=$cwd_phys, sid=$sid)"
     fi
     echo "$sid" > "$sf"
     clear_idle "$sid"
@@ -331,7 +320,7 @@ cmd_kill() {
     local name; name=$(session_name "$repo")
     local sid=""
     sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
-    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")"
+    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")"
     if tmux has-session -t "=$name" 2>/dev/null; then
         tmux kill-session -t "=$name"
         echo "killed: $name"
@@ -412,15 +401,18 @@ cmd_resume() {
     done
     [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"]  (sid from ledger preferred; auto-pick on omit)"
 
-    local path="$DEV_DIR/$repo"
-    [[ -d "$path" ]] || die "repo not found: $path"
+    local path="$PWD/$repo"
+    [[ -d "$path" ]] || die "repo not found at $path — tm resume must run from the dispatcher directory (the parent of your sibling repos)"
+    # Use the physical path for Claude Code's project-dir encoding — that's
+    # what it uses to derive the encoded directory name from cwd.
+    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
         die "$name already running — 'tm kill $repo' first if you really want to start over"
     fi
 
-    local encoded; encoded=$(printf '%s' "$path" | tr / -)
+    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr / -)
     local project_dir="$HOME/.claude/projects/$encoded"
 
     if [[ -z "$sid" ]]; then
@@ -561,9 +553,10 @@ USAGE
       list all teammate-<repo> sessions
 
   tm spawn <repo> [--resume <sid>]
-      launch a claude teammate in $DEV_DIR/<repo> (the dispatcher dir
-      recorded in ~/.config/claudemux/config; override per-invocation
-      with the CLAUDEMUX_DEV_DIR env var).
+      launch a claude teammate in $PWD/<repo>. tm must be run from the
+      dispatcher directory (the parent of your sibling repos); fails with
+      "repo not found" if invoked elsewhere. <repo> must be a direct
+      subdirectory of $PWD (no nested paths).
       --resume <sid> picks up an existing session by jsonl-UUID; otherwise
       a fresh UUID is pre-generated and handed to `claude --session-id`,
       so 'tm wait-idle' works immediately without a prior 'tm send'.
@@ -640,13 +633,9 @@ USAGE
       the EXPECTED RESULT, not the prompt you just sent.
 
 ENVIRONMENT
-  CLAUDEMUX_DEV_DIR    override the dispatcher directory (parent of repos)
-                       for this invocation. Useful for testing or running
-                       multiple dispatcher trees on one machine.
-
-  CLAUDEMUX_CONFIG_FILE
-                       override the config file path
-                       (default: ~/.config/claudemux/config; written by setup).
+  (none — tm derives the dispatcher directory from $PWD at invocation
+  time, with no global config file or env override. To "switch" dispatcher
+  trees, cd to the other tree and run tm there.)
 EOF
 }
 

@@ -2,13 +2,13 @@
 
 For each finding (recurring foot-gun, undocumented convention, drifted skill instruction, missing memory), decide in priority order which carrier it should live in. The order matters — pick the highest-priority match.
 
-All paths below are relative to `$DEV_DIR` (resolved as described in `SKILL.md` — claudemux config first, then `$PWD`). `$PROJECT_MEMORY` is `~/.claude/projects/<encoded-$DEV_DIR>/memory/`.
+All paths below are relative to `$DISPATCHER_DIR` (resolved as `$PWD` at skill invocation — see `SKILL.md`). `$PROJECT_MEMORY` is `~/.claude/projects/<encoded-cwd>/memory/`.
 
-## 1. → Project CLAUDE.md (`$DEV_DIR/CLAUDE.md`)
+## 1. → Project CLAUDE.md (`$DISPATCHER_DIR/CLAUDE.md`)
 
 Eligible when the finding is a **behavioral rule** that should fire in EVERY dispatcher session, not gated on a specific skill being triggered. Examples:
 
-- "Never grep across `$DEV_DIR` — too many repos"
+- "Never grep across `$DISPATCHER_DIR` — too many repos"
 - "Cron firing rules and limits"
 - "Don't combine prompt + Enter in one tmux send-keys call"
 
@@ -16,7 +16,7 @@ Keep the CLAUDE.md addition short (1–3 sentences) and lead with the rule, then
 
 **Requires user confirmation** before any substantive change (rewrites, deletions, or any single addition > ~3 sentences). Small additions (≤ 3 sentences) under an existing section may be applied directly.
 
-## 2. → Local dispatcher notes (`$DEV_DIR/.claude/local-dispatcher-notes.md`)
+## 2. → Local dispatcher notes (`$DISPATCHER_DIR/.claude/local-dispatcher-notes.md`)
 
 Eligible when the finding is **only relevant when the dispatcher is actively spawning/managing teammates** or running a specific orchestration flow, but does not warrant editing CLAUDE.md (too narrow) or project memory (not a fact, more like a procedural addition). Examples:
 
@@ -52,7 +52,7 @@ Memory writes are **auto-applied** (no user confirmation) for: new files, additi
 
 Always update `MEMORY.md` (the index) when adding or removing files; never write content directly into `MEMORY.md`.
 
-## 5. → New skill in this workspace (`$DEV_DIR/.claude/skills/<new>/`)
+## 5. → New skill in this workspace (`$DISPATCHER_DIR/.claude/skills/<new>/`)
 
 Eligible when ≥ 5 memories cluster around the same domain AND are repeatedly retrieved together AND can't be cleanly absorbed into the dispatcher skill or local notes. Examples:
 
@@ -70,8 +70,8 @@ When density is insufficient (< 5 related memories) or the finding is too cross-
 - This plugin's install directory (`${CLAUDE_PLUGIN_ROOT}`) — read-only
 - Global `~/.claude/CLAUDE.md`
 - Global skills in `~/.claude/skills/`
-- Memory directories of sibling repo projects (`~/.claude/projects/<encoded-$DEV_DIR>-<repo>/`)
-- Any file outside `$DEV_DIR/`, `$DEV_DIR/.claude/`, and `$PROJECT_MEMORY/`
+- Memory directories of sibling repo projects (`~/.claude/projects/<encoded-$DISPATCHER_DIR>-<repo>/`)
+- Any file outside `$DISPATCHER_DIR/`, `$DISPATCHER_DIR/.claude/`, and `$PROJECT_MEMORY/`
 
 Self-evolve handles global promotion; this skill only operates inside the dispatcher workspace.
 

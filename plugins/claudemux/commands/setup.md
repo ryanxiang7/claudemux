@@ -1,5 +1,5 @@
 ---
-description: Bind claudemux to a dispatcher directory on this machine — writes ~/.config/claudemux/config, seeds CLAUDE.md from the bundled template, and optionally enables Claude Code Remote Control (with the user's consent). Run once after /plugin install. Defaults to the current working directory; pass --dev-dir <path> to override.
+description: Seed CLAUDE.md and the idle dir for a claudemux dispatcher — copies CLAUDE.md.template into the current directory (the dispatcher dir), removes any legacy ~/.config/claudemux/config (no longer used; the dispatcher dir is derived from cwd at runtime), and optionally enables Claude Code Remote Control (with the user's consent). Run once after /plugin install. Defaults to the current working directory; pass --dev-dir <path> to seed somewhere else.
 argument-hint: "[--dev-dir <path>] [--force]"
 ---
 
@@ -11,7 +11,7 @@ Do these steps in order. Stop and report at the end — don't start tmux, claude
 bash "${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/scripts/setup" $ARGUMENTS
 ```
 
-That writes `~/.config/claudemux/config` (records the dispatcher dir so `tm` can find it), copies `CLAUDE.md.template` into the dispatcher dir (skipped if one already exists; pass `--force` to overwrite), and ensures `/tmp/claude-idle/` exists.
+That copies `CLAUDE.md.template` into the dispatcher dir (skipped if one already exists; pass `--force` to overwrite), ensures `/tmp/claude-idle/` exists, and removes any leftover `~/.config/claudemux/config` from pre-Tier-3 installs (the runtime no longer reads it). Nothing records the dispatcher path anywhere — tm and the hooks derive it from `$PWD` and per-teammate cwd files at runtime.
 
 ## Step 2: offer to enable Remote Control
 

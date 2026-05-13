@@ -37,7 +37,7 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 
 ## The `tm` script
 
-`tm` (bundled with this plugin under `skills/dispatcher/scripts/tm`) is the right way to manage tmux teammates. It reads `$DEV_DIR` from `~/.config/claudemux/config` (written by `setup`); override per-invocation with `CLAUDEMUX_DEV_DIR=...`. The script encodes the corrections this dispatcher had to learn the hard way, especially the *two-step Enter* (combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit the prompt — the Enter becomes a literal newline inside the input box).
+`tm` (bundled with this plugin under `skills/dispatcher/scripts/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly with "repo not found". The script encodes the corrections this dispatcher had to learn the hard way, especially the *two-step Enter* (combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit the prompt — the Enter becomes a literal newline inside the input box).
 
 ```
 tm ls                            list all teammate sessions (sessions named teammate-<repo>)
@@ -153,9 +153,9 @@ When several teammates are running and you want a one-shot "who's doing what", `
 
 ### `/clear` and sid rotation
 
-`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this: on every `SessionStart` fired by a claude whose cwd is exactly `$DEV_DIR/<repo>` and for which the dispatcher already tracks a sid (`/tmp/teammate-<repo>.sid` exists), it overwrites that file with the new sid. `source=clear` is the case this was built for; `source=startup|compact|resume` typically arrive with an unchanged sid and short-circuit to a no-op. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
+`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this by recording each teammate's physical cwd at spawn time into `/tmp/teammate-<repo>.cwd`, then on every `SessionStart` event it iterates those files and looks for one whose content byte-equals the firing claude's cwd. On a hit, it overwrites `/tmp/teammate-<repo>.sid` with the new sid (handles `/clear` and interactive `/resume`) and touches `/tmp/teammate-<repo>.ready` (the spawn-readiness signal). `source=startup|compact|resume` with unchanged sid is a quiet no-op for the rotation step; readiness is touched regardless. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
 
-The hook only fires for cwd matching `$DEV_DIR/<repo>` exactly (no nested subdirectories, not the dispatcher root) — so a stray `cd packages/foo && claude` inside a teammate repo cannot hijack the teammate's sid pointer.
+The byte-match-against-recorded-cwd safety check is strictly stronger than a "same parent dir" prefix check: a stray `cd packages/foo && claude` inside a teammate repo doesn't match the teammate's recorded cwd, so it cannot hijack the sid pointer. The dispatcher's own cwd (no `.cwd` file maps to it) is naturally skipped too. This is also why there is no `$DEV_DIR` env var or config file anywhere in the plugin: the only path-comparison the runtime ever needs is "is this cwd one of the recorded teammate cwds", and that's purely a filesystem lookup against `/tmp/teammate-*.cwd`.
 
 ## Spawning an Agent Teams teammate
 

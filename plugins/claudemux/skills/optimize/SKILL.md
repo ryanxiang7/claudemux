@@ -1,7 +1,7 @@
 ---
 name: optimize
 description: |
-  Periodic self-review of the dispatcher workspace. Scans recent dispatcher conversations only (the jsonl files whose cwd equals $DEV_DIR — the parent of all sibling repos, configured by /claudemux:setup — NOT per-repo teammate sessions), identifies usage habits, recurring foot-guns, and drifted conventions, then promotes the findings into $DEV_DIR/CLAUDE.md, dispatcher project memory (~/.claude/projects/<encoded-$DEV_DIR>/memory/), and a user-owned dispatcher notes file at $DEV_DIR/.claude/local-dispatcher-notes.md. Runs in a forked context so the heavy log analysis does not pollute the parent dispatcher session. Trigger this skill when the user asks to "review dispatcher", "optimize dispatcher", "let dispatcher self-reflect", "派活流程审查", "dispatcher 自我反省", "dispatcher 复盘", "/claudemux:optimize", or when a scheduled cron callback fires asking for the periodic review.
+  Periodic self-review of the dispatcher workspace. Scans recent dispatcher conversations only (the jsonl files whose cwd equals the dispatcher directory — the parent of all sibling repos, derived from $PWD when this skill runs — NOT per-repo teammate sessions), identifies usage habits, recurring foot-guns, and drifted conventions, then promotes the findings into the dispatcher's CLAUDE.md, dispatcher project memory (~/.claude/projects/<encoded-cwd>/memory/), and a user-owned dispatcher notes file at .claude/local-dispatcher-notes.md. Runs in a forked context so the heavy log analysis does not pollute the parent dispatcher session. Trigger this skill when the user asks to "review dispatcher", "optimize dispatcher", "let dispatcher self-reflect", "派活流程审查", "dispatcher 自我反省", "dispatcher 复盘", "/claudemux:optimize", or when a scheduled cron callback fires asking for the periodic review.
 context: fork
 ---
 
@@ -13,24 +13,18 @@ The dispatcher accumulates lessons from every task it routes — recurring foot-
 
 This skill is that periodic pass. It runs inside a forked context (`context: fork` in frontmatter) so the log scan + cross-reading does not consume context in the parent dispatcher session.
 
-## Resolve $DEV_DIR first
+## Resolve the dispatcher dir first
 
-Every path below is relative to `$DEV_DIR` — the dispatcher directory (parent of all sibling repos). Resolve it once at the start of the run:
+Every path below is relative to the dispatcher directory (parent of all sibling repos). The dispatcher directory is wherever the dispatcher claude session is running, i.e. `$PWD` when this skill fires — there is no config file, no env override.
 
 ```bash
-# 1. Honor an explicit override (for ad-hoc runs against a different tree).
-# 2. Otherwise source the claudemux config written by /claudemux:setup.
-# 3. Otherwise fall back to the current working directory.
-if [[ -z "${DEV_DIR:-}" ]]; then
-    [[ -f "$HOME/.config/claudemux/config" ]] && source "$HOME/.config/claudemux/config"
-fi
-: "${DEV_DIR:=$PWD}"
-ENCODED_DEV_DIR=$(printf '%s' "$DEV_DIR" | tr / -)
-PROJECT_MEMORY="$HOME/.claude/projects/$ENCODED_DEV_DIR/memory"
-LOCAL_NOTES="$DEV_DIR/.claude/local-dispatcher-notes.md"
+DISPATCHER_DIR=$(pwd -P)
+ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr / -)
+PROJECT_MEMORY="$HOME/.claude/projects/$ENCODED/memory"
+LOCAL_NOTES="$DISPATCHER_DIR/.claude/local-dispatcher-notes.md"
 ```
 
-If any write below would land outside `$DEV_DIR`, `$DEV_DIR/.claude/`, or the project memory dir, treat it as a bug and stop — those three are the only writable roots for this skill. The plugin install directory (this skill's own files) is read-only; never try to self-edit.
+If any write below would land outside `$DISPATCHER_DIR`, `$DISPATCHER_DIR/.claude/`, or `$PROJECT_MEMORY`, treat it as a bug and stop — those three are the only writable roots for this skill. The plugin install directory (this skill's own files) is read-only; never try to self-edit.
 
 ## Scope — what's in, what's out
 
@@ -38,20 +32,20 @@ In scope (read AND modify):
 
 | Carrier | Path |
 |---|---|
-| Project CLAUDE.md | `$DEV_DIR/CLAUDE.md` |
+| Project CLAUDE.md | `$DISPATCHER_DIR/CLAUDE.md` |
 | Project memory | `$PROJECT_MEMORY/*.md` (where `$PROJECT_MEMORY` resolves as above) |
-| Local dispatcher notes | `$DEV_DIR/.claude/local-dispatcher-notes.md` (user-owned, free-form) |
-| New skills in this workspace | `$DEV_DIR/.claude/skills/<new>/` (with user confirmation) |
+| Local dispatcher notes | `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (user-owned, free-form) |
+| New skills in this workspace | `$DISPATCHER_DIR/.claude/skills/<new>/` (with user confirmation) |
 
 In scope (read only — signal source):
 
-- `~/.claude/projects/$ENCODED_DEV_DIR/*.jsonl` (dispatcher's own conversations only)
+- `~/.claude/projects/$ENCODED/*.jsonl` (dispatcher's own conversations only)
 
 Out of scope — never touch:
 
 - This plugin's install directory (`${CLAUDE_PLUGIN_ROOT}` — the dispatcher / optimize skills themselves are read-only)
 - Global `~/.claude/CLAUDE.md` and global skills under `~/.claude/skills/`
-- Memory directories of sibling repo projects (`~/.claude/projects/$ENCODED_DEV_DIR-<repo>/`)
+- Memory directories of sibling repo projects (`~/.claude/projects/$ENCODED-<repo>/`)
 - Teammate session jsonls inside those projects
 - Any file outside the three "in scope (modify)" paths
 
@@ -61,13 +55,13 @@ The boundary matters: self-evolve handles global promotion. This skill is dispat
 
 ### 1. Generate dispatcher session logs
 
-Run the bundled scanner, which wraps self-evolve's `scan-transcripts.js` and post-filters to keep only sessions whose `cwd == $DEV_DIR`:
+Run the bundled scanner, which wraps self-evolve's `scan-transcripts.js` and post-filters to keep only sessions whose `cwd == $DISPATCHER_DIR`:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/optimize/scripts/scan-dispatcher.sh" 7 /tmp/dispatcher-optimize-logs
 ```
 
-Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The wrapper itself resolves `$DEV_DIR` from the claudemux config (same priority order as above) — you don't need to pass it. The 7-day window is a sensible default; widen it on the first run if the dispatcher has been quiet recently, narrow it when running daily.
+Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The wrapper uses `$PWD` as the dispatcher directory at invocation time — run it from the dispatcher session. The 7-day window is a sensible default; widen it on the first run if the dispatcher has been quiet recently, narrow it when running daily.
 
 If no logs are produced (no recent dispatcher sessions), stop here and report "no signal".
 
@@ -78,10 +72,10 @@ Prerequisite: the self-evolve scanner at `~/.claude/skills/self-evolve/scripts/s
 In the forked context, read these in parallel where possible:
 
 - Every `*.md` file in `/tmp/dispatcher-optimize-logs/` (the session logs)
-- `$DEV_DIR/CLAUDE.md` (current project CLAUDE.md)
+- `$DISPATCHER_DIR/CLAUDE.md` (current project CLAUDE.md)
 - `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` (dispatcher skill body — read-only, but you still need it to know what's already documented)
 - `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/scripts/tm` (the helper script — read-only)
-- `$DEV_DIR/.claude/local-dispatcher-notes.md` (if it exists — user's freeform additions)
+- `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (if it exists — user's freeform additions)
 - `$PROJECT_MEMORY/MEMORY.md` (memory index)
 - Every `*.md` file linked from `MEMORY.md`
 

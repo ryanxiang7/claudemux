@@ -74,9 +74,11 @@ claude
 /claudemux:setup
 ```
 
-`/claudemux:setup` 会把 dispatcher 目录写进 `~/.config/claudemux/config`,把一份
-`CLAUDE.md`(dispatcher 工作约定)放进该目录,并问你是否打开 Claude Code 的
-`remoteControlAtStartup`——开了之后每个 teammate 都会有自己的 Remote Control URL。
+`/claudemux:setup` 把 `CLAUDE.md`(dispatcher 工作约定)放进当前目录,并问你是
+否打开 Claude Code 的 `remoteControlAtStartup`——开了之后每个 teammate 都会有
+自己的 Remote Control URL。**不写任何全局配置文件**:`tm` 和 hook 在运行时
+直接用 `$PWD` 推 dispatcher 目录,你 `cd` 到哪、`claude` 跑起来的那个地方就
+是 dispatcher。
 
 ## 快速上手
 
@@ -150,18 +152,14 @@ teammate 在跑斜杠命令(`/compact` 等)、不会触发 Stop 时用它。
 
 ## 配置
 
-`~/.config/claudemux/config` 是插件唯一保存的状态。它记录:
+**没有**。插件不保留任何全局状态文件。「dispatcher 目录」就是你 `cd` 过去
+跑 `claude` 的那个地方——`tm` 在调用时直接拿 `$PWD`(`tm spawn foo` →
+`$PWD/foo`);SessionStart hook 通过 `tm spawn` 写下的 `/tmp/teammate-<repo>.cwd`
+文件,把每次 SessionStart 的 cwd 跟文件内容**逐字节比对**来识别 teammate。
+要换 dispatcher 目录就直接 `cd` 到别的地方——没东西要编辑。
 
-```
-DEV_DIR="/Users/you/Development"
-```
-
-`DEV_DIR` 是 **dispatcher 根目录**——你 dispatcher Claude 会话跑在那里,sibling
-repo 都假定在它下面。所有 `tm` 子命令把 repo 短名按这个解析(`tm spawn foo` →
-`$DEV_DIR/foo`)。要改的话,重跑 `/claudemux:setup` 或手编这个文件。
-
-> ⚠️ 文档里的 `$DEV_DIR` 是**占位符**,不是真的 shell 变量。插件脚本内部读 config
-> 自己解析;如果你从文档 copy 一条命令到 shell,要把 `$DEV_DIR` 换成实际路径。
+> ⚠️ 文档里的 `$DEV_DIR` 偶尔作为「dispatcher 目录」的占位符出现,不是真的
+> shell 变量。如果你从文档 copy 一条命令到 shell,要把 `$DEV_DIR` 换成实际路径。
 
 `<dispatcher-root>/.claude/local-dispatcher-notes.md` 是可选的用户私有补充文件。
 `/claudemux:optimize` 会把 dispatcher 私域的约定追加到这里;随包的 dispatcher
@@ -216,8 +214,8 @@ claude
 
 ## 已知限制
 
-- **只支持单 dispatcher 根**。`DEV_DIR` 假定所有 sibling repo 共享一个父目录。
-  多根布局得手动传绝对路径。
+- **只支持单 dispatcher 根**。`tm spawn <repo>` 把 `<repo>` 按 `$PWD/<repo>`
+  解,所有 sibling repo 必须共享一个父目录。多根布局得手动传绝对路径。
 - **只 macOS / Linux**。多个脚本用了 BSD `stat`,Windows 不支持。
 - **Cron 只在 dispatcher REPL 里 fire**。`claude -p` 或 Agent Teams teammate 里
   `CronCreate` 返回成功但永远不触发——所有周期任务挂在 dispatcher 上。
@@ -231,11 +229,12 @@ dispatcher skill 内部沉淀了一份更长的"踩过的坑"清单,见
 /plugin uninstall claudemux
 ```
 
-会把插件和它的 Stop hook 一起摘掉。两样东西**不自动清**,要的话手动删:
+会把插件和它的 hook 一起摘掉。**一样**东西不自动清,要的话手动删:
 
-- `~/.config/claudemux/config` — 记录的 `DEV_DIR`。
 - 你 dispatcher 目录里的 `CLAUDE.md` — 留着,因为你可能想把那份 dispatcher
   约定文档作为参考保留。
+
+(插件不保留任何全局状态文件——没别的可清的。)
 
 ## 许可
 
