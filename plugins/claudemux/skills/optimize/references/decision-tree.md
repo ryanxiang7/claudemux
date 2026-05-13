@@ -52,14 +52,14 @@ Memory writes are **auto-applied** (no user confirmation) for: new files, additi
 
 Always update `MEMORY.md` (the index) when adding or removing files; never write content directly into `MEMORY.md`.
 
-## 5. → New skill in this workspace (`$DISPATCHER_DIR/.claude/skills/<new>/`)
+## 5. → Propose a new skill (report-only — never write skill files yourself)
 
 Eligible when ≥ 5 memories cluster around the same domain AND are repeatedly retrieved together AND can't be cleanly absorbed into the dispatcher skill or local notes. Examples:
 
 - A self-contained "bits-devops watcher" workflow that runs across many tasks
 - A repeatable multi-step ritual that has its own tools and references
 
-**Always requires user confirmation.** Never auto-create. When proposing, write a one-paragraph proposal containing: the cluster of memories, the proposed skill name and scope, and the trigger description.
+**Always report-only — never create skill files directly.** Where the user puts the skill (project-scoped, user-scoped, or a separate plugin) depends on their setup and isn't this skill's call. Write a one-paragraph proposal containing the cluster of memories, the proposed skill name and scope, and a draft trigger description, and let the user create it with `skill-creator` (or whatever flow they prefer).
 
 ## 6. → Retain in memory
 
@@ -73,7 +73,7 @@ When density is insufficient (< 5 related memories) or the finding is too cross-
 - Memory directories of sibling repo projects (`~/.claude/projects/<encoded-$DISPATCHER_DIR>-<repo>/`)
 - Any file outside `$DISPATCHER_DIR/`, `$DISPATCHER_DIR/.claude/`, and `$PROJECT_MEMORY/`
 
-Self-evolve handles global promotion; this skill only operates inside the dispatcher workspace.
+Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out of scope. If a finding genuinely warrants a global rule, surface it in the final report and let the user decide; do not write outside the dispatcher workspace.
 
 ## Anti-patterns
 

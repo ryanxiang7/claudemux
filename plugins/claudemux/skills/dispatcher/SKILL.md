@@ -5,7 +5,7 @@ description: Manage a multi-repo dispatcher session — Claude Code running in t
 
 # Dispatcher: multi-repo Claude orchestrator
 
-You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of several sibling git repos — typically inside a `tmux` session named `dispatcher` with Claude Code Remote Control active. Throughout this skill, `$DEV_DIR` refers to that directory: Claude Code's startup banner shows it as the "Primary working directory", and `pwd` returns it. The top-level `CLAUDE.md` in `$DEV_DIR` states your identity, goals, and the hard "don't"s — read it if it isn't already in context. This skill is the *operations* manual that goes with that policy.
+You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of several sibling git repos — typically inside a `tmux` session named `dispatcher` with Claude Code Remote Control active. Throughout this skill, `$DEV_DIR` refers to that directory: Claude Code's startup banner shows it as the "Primary working directory", and `pwd` returns it. Claude Code auto-loads `$DEV_DIR/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts, while this skill is the *operations* manual loaded when dispatcher-style work fires.
 
 > **`$DEV_DIR` is a documentation placeholder, not a shell environment variable.** When you generate a `Bash` call from any example below, substitute the actual absolute path. Pasting `$DEV_DIR` literally into a shell command resolves it to the empty string and breaks the command.
 
@@ -37,7 +37,7 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 
 ## The `tm` script
 
-`tm` (bundled with this plugin under `bin/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly. **If the dispatcher's cwd is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `$PWD/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. `cd` up to the sibling-parent first, or run `tm` from the actual dispatcher tmux session. The script encodes the corrections this dispatcher had to learn the hard way, especially the *two-step Enter* (combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit the prompt — the Enter becomes a literal newline inside the input box).
+`tm` (bundled with this plugin under `bin/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly. **If the dispatcher's cwd is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `$PWD/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. `cd` up to the sibling-parent first, or run `tm` from the actual dispatcher tmux session. The script bakes in two non-obvious tmux behaviors so you don't have to think about them: combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit (the Enter becomes a literal newline inside the input box), and multi-line prompts need a second `Enter` to submit once the input box already contains a newline.
 
 ```
 tm ls                            list all teammate sessions (sessions named teammate-<repo>)
@@ -209,7 +209,7 @@ Default response: a single line confirming the noise, no extra action. Don't `tm
 
 A teammate going idle immediately after a SendMessage does **not** mean it failed; it means the teammate finished its turn and is waiting. The Agent Teams framework also separates `shutdown_approved` (the teammate agreed to shut down) from `teammate_terminated` (the process actually exited) — wait for the latter before `TeamDelete`.
 
-## Common foot-guns (each one already cost a session)
+## Common foot-guns
 
 - `tmux send-keys -t <s> '<prompt>' Enter` silently doesn't submit — the Enter becomes a newline. Use `tm send` or two separate calls.
 - **Multi-line prompts** in Claude Code's TUI need a *second* `Enter`. Once the input box contains any `\n`, the first `Enter` is consumed as "insert newline at cursor" and only the next `Enter` (on the now-empty trailing line) actually submits. `tm send` detects newlines in the prompt and sends the second Enter automatically — but if you ever drop to raw `tmux send-keys`, you have to mirror that yourself.

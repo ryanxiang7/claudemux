@@ -35,7 +35,10 @@ In scope (read AND modify):
 | Project CLAUDE.md | `$DISPATCHER_DIR/CLAUDE.md` |
 | Project memory | `$PROJECT_MEMORY/*.md` (where `$PROJECT_MEMORY` resolves as above) |
 | Local dispatcher notes | `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (user-owned, free-form) |
-| New skills in this workspace | `$DISPATCHER_DIR/.claude/skills/<new>/` (with user confirmation) |
+
+In scope (propose only — never write):
+
+- **New skill proposals** — when a finding clusters enough material to warrant a dedicated skill, write the proposal into the final report (cluster summary + suggested name + draft trigger description) and let the user create the skill themselves via `skill-creator` or whatever flow they prefer. Don't decide where it should live; the user picks project-scoped, user-scoped, or a separate plugin.
 
 In scope (read only — signal source):
 
@@ -108,7 +111,7 @@ Use `references/decision-tree.md` (in this skill) to pick the carrier for each f
 | Local dispatcher notes — small addition (≤ 5 lines, append) | yes | rewrites, deletions |
 | Dispatcher CLAUDE.md — small addition (≤ 3 sentences, existing section) | yes | rewrites, deletions, larger additions |
 | Plugin-level skill change (`dispatcher/SKILL.md` or `bin/tm`) | NEVER auto-apply | always propose a diff for the user to apply manually; the plugin install dir is read-only |
-| New skill in workspace | NEVER auto-apply | always propose with full proposal |
+| New skill | NEVER auto-apply | always propose in the report; let the user decide where it should live and create it themselves |
 
 The "auto-apply" entries write directly. The "requires confirmation" entries are collected into the final report as proposals with concrete diffs the user can approve in one turn.
 
