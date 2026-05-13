@@ -32,6 +32,23 @@ present.
 When the user names a repo (exact or fuzzy), `cd` into it for inline work, or
 pass its absolute path to the delegate. When the target is ambiguous, ask.
 
+## Tooling
+
+All teammate operations go through `tm` (bundled with this plugin, on `PATH`
+automatically). Never roll raw `tmux new-session` / `send-keys` /
+`capture-pane` against a teammate session — `tm` bakes in the dual-Enter,
+idle-signal, and sid-rotation rules. Subcommand reference and the spawn /
+send / wait protocol live in the dispatcher skill.
+
+## Task ledger
+
+Before delegating any non-trivial work, Read the live ledger
+`active-dispatcher-tasks.md` in this project's AutoMemory directory
+(`~/.claude/projects/<dev-dir-with-slashes-as-dashes>/memory/`). Append an
+entry at spawn; move it to "Recently done" when the work merges, finishes,
+or its teammate dies. Full schema and update rules live in the dispatcher
+skill.
+
 ## Hard Don'ts
 
 - Don't `grep` / `find` across `$DEV_DIR` — it spans many unrelated repos.

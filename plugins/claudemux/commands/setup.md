@@ -5,6 +5,29 @@ argument-hint: "[--dev-dir <path>] [--force]"
 
 Do these steps in order. Stop and report at the end — don't start tmux, claude, or any teammate yourself.
 
+## Preflight: confirm the dispatcher directory
+
+`/claudemux:setup` seeds `CLAUDE.md` into the current working directory, and `tm` later derives the dispatcher dir from `$PWD` at runtime. So `$PWD` *is* the dispatcher dir — if the user is currently in the wrong place, setup will write to the wrong place.
+
+Check whether `$PWD` looks like a sane dispatcher dir:
+
+```bash
+pwd
+ls -d */ 2>/dev/null | head -10        # any sibling subdirectories?
+[[ -d "$PWD/.git" ]] && echo "warn: $PWD is itself a git working tree"
+[[ "$PWD" == "$HOME" ]] && echo "warn: $PWD is the home directory"
+```
+
+If any `warn:` line printed, or `ls -d */` shows zero sibling directories, use the AskUserQuestion tool to soft-prompt the user **before** proceeding:
+
+> "Your current cwd is `<pwd>`. claudemux will seed `CLAUDE.md` here and treat this as the dispatcher dir. That looks unusual (the dispatcher dir is normally the parent of several sibling git repos, not a git repo itself or the home directory). How do you want to proceed?"
+>
+> Options:
+> - **"Let me re-run from the right directory"** — stop the setup flow here. Tell the user to exit the current claude session, `cd` to the intended dispatcher dir, and run `/claudemux:setup` again. Do not proceed to Step 0.
+> - **"Continue here — this really is my dispatcher dir"** — note their confirmation and proceed to Step 0.
+
+If nothing looks wrong (no `warn:` and sibling directories present), silently continue to Step 0 without bothering the user.
+
 ## Step 0: verify system dependencies
 
 claudemux needs `tmux`, `jq`, and the `claude` CLI on the user's machine. Check each one and walk the user through installing whatever is missing — these are blocking prerequisites; do not skip ahead.
@@ -82,17 +105,11 @@ Options:
 - "Yes, enable it" — set `remoteControlAtStartup: true`
 - "No, leave settings.json alone" — skip; user can run `/config` or `claude --rc` later
 
-If the user says **yes**: back up settings.json first, then edit in place:
+If the user says **yes**: prefer to have **the user flip it themselves**, not Claude. Claude Code's auto-mode classifier flags any edit to `~/.claude/settings.json` as Self-Modification and pops up a permission prompt, which is more friction than just telling the user the one-line answer. Hand them either of these and let them pick:
 
-```bash
-cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%Y%m%d-%H%M%S) \
-  && jq '.remoteControlAtStartup = true' ~/.claude/settings.json > /tmp/cmx-rc.tmp \
-  && mv /tmp/cmx-rc.tmp ~/.claude/settings.json
-```
+**Option A (recommended):** Run `/config` from inside any Claude Code session and toggle "Remote Control at startup" there. One click, no permission prompt.
 
-If that command fails (permission denied, Claude Code's auto-mode classifier blocks the self-edit, jq error, anything), do **not** retry silently. Tell the user exactly what failed, and give them two equivalent manual fixes — let them pick:
-
-**Option A:** Add this key to `~/.claude/settings.json` (merge with whatever's already there):
+**Option B:** Add this key to `~/.claude/settings.json` (merge with whatever's already there):
 
 ```json
 {
@@ -100,7 +117,15 @@ If that command fails (permission denied, Claude Code's auto-mode classifier blo
 }
 ```
 
-**Option B:** Run `/config` from inside any Claude Code session and toggle Remote Control there.
+Only if the user explicitly says "you do it for me" — and you've warned them that the Self-Modification permission prompt will appear — attempt the automated edit:
+
+```bash
+cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%Y%m%d-%H%M%S) \
+  && jq '.remoteControlAtStartup = true' ~/.claude/settings.json > /tmp/cmx-rc.tmp \
+  && mv /tmp/cmx-rc.tmp ~/.claude/settings.json
+```
+
+If the auto-edit fails (permission denied, classifier blocks, jq error, missing `~/.claude/settings.json`), do **not** retry silently — fall back to Option A or B above and tell the user exactly what failed.
 
 If the user says **no**: note "Remote Control not changed."
 

@@ -36,9 +36,14 @@ mkdir -p "$OUT"
 rm -f "$OUT"/*.md
 
 if [[ ! -d "$PROJECT_DIR" ]]; then
+    # No Claude Code project dir for this cwd at all — caller has never run
+    # `claude` from $PWD as a recorded session. Distinct from "no signal"
+    # (project dir exists but no jsonl in the look-back window): callers
+    # branch on the STATUS line below.
+    echo "STATUS: no-project-dir"
     echo "scan-dispatcher: no project dir at $PROJECT_DIR — this dispatcher hasn't recorded any sessions yet" >&2
     echo "$OUT"
-    exit 0
+    exit 2
 fi
 
 # find -mtime -N: files modified within the last N*24h. Both BSD (macOS)
@@ -148,5 +153,13 @@ for jsonl in "${JSONLS[@]}"; do
     written=$((written+1))
 done
 
+# Emit STATUS line so callers don't have to count files themselves.
+# - no-signal: project dir exists but produced zero usable logs in the window
+# - ok:        at least one session log was written
+if (( written == 0 )); then
+    echo "STATUS: no-signal"
+else
+    echo "STATUS: ok"
+fi
 echo "scan-dispatcher: wrote $written session log(s), skipped $skipped (under min_turns=$MIN_TURNS)"
 echo "$OUT"

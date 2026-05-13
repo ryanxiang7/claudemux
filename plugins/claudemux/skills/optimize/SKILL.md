@@ -65,15 +65,21 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/optimize/scripts/scan-dispatcher.sh" 7 /tmp/d
 
 Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The scanner uses `$PWD` (physical path) to locate `~/.claude/projects/<encoded>/` — Claude Code encodes each project's cwd as the directory name, so that single directory contains EXACTLY the dispatcher's own sessions (per-repo teammate sessions live under different encoded dirs, so there's no cross-project leakage). Run it from the dispatcher session. Use the default 7-day window unless the user requests a different one ("the last 24 hours" → 1, "the last month" → 30).
 
-After the scanner exits, confirm at least one log was produced before continuing:
+The scanner emits a `STATUS:` line on stdout. Grep it and branch — these three states have **different** meanings for the user, so do not collapse them:
+
+| STATUS line | Exit code | What it means | What to do |
+|---|---|---|---|
+| `STATUS: no-project-dir` | 2 | Claude Code has never recorded a session for `$PWD`. The user installed claudemux but hasn't actually run `claude` from this directory yet. | Stop the skill. Report: "this dispatcher dir has no recorded sessions yet — start a dispatcher with `tmux new-session -s dispatcher -c <DISPATCHER_DIR>` and run `claude` inside it, use it for a while, then re-run optimize." |
+| `STATUS: no-signal` | 0 | Project dir exists, but no jsonl in the look-back window has ≥ `MIN_TURNS=2` user turns. | Stop the skill. Report: "no recent activity to review (last <days> days)." Suggest widening (`days=30`) or coming back later. |
+| `STATUS: ok` | 0 | At least one session log was written. | Proceed to step 2. |
+
+Capture stdout to grep for STATUS, e.g.:
 
 ```bash
-shopt -s nullglob
-logs=(/tmp/dispatcher-optimize-logs/*.md)
-(( ${#logs[@]} > 0 )) || { echo "no signal — no recent dispatcher sessions"; exit 0; }
+SCAN_OUT=$(bash "${CLAUDE_PLUGIN_ROOT}/skills/optimize/scripts/scan-dispatcher.sh" 7 /tmp/dispatcher-optimize-logs)
+echo "$SCAN_OUT"
+STATUS=$(echo "$SCAN_OUT" | grep '^STATUS:' | tail -1)
 ```
-
-If `logs` is empty (no recent dispatcher sessions, or all under `MIN_TURNS=2`), stop here and report "no signal" to the parent context.
 
 Prerequisite: `jq` on `PATH` (standard on macOS via `brew install jq`, on Debian/Ubuntu via `apt-get install jq`). No other external dependencies — the scanner is self-contained bash + jq.
 
