@@ -81,14 +81,15 @@ extract_last_turn() {
     ' 2>/dev/null | rev_lines | jq -rs 'join("\n\n")'
 }
 
-# Return the stop_reason of the most recent assistant entry, or empty
-# string if no assistant entry exists / jq errored / stop_reason is null.
-# Tail-walks the file with rev_lines + head -1: the first emitted value
-# (= the latest assistant from end of file) closes the pipeline via
-# SIGPIPE, so the scan is bounded to ONE entry's worth of lines.
-latest_stop_reason() {
+# Return "<stop_reason>|<content_types>" for the most recent assistant
+# entry in the jsonl (content_types comma-separated, e.g. "text" or
+# "thinking,tool_use"), or empty on error / no assistant entry yet.
+# Tail-walks with rev_lines + head -1: SIGPIPE bounds the scan to one
+# entry's worth of lines.
+latest_assistant_summary() {
     rev_lines "$1" 2>/dev/null \
-        | jq -r 'select(.type == "assistant") | .message.stop_reason // ""' 2>/dev/null \
+        | jq -r 'select(.type == "assistant")
+            | "\(.message.stop_reason // "")|\((.message.content // []) | map(.type) | join(","))"' 2>/dev/null \
         | head -1
 }
 
@@ -108,23 +109,39 @@ is_terminal_stop_reason() {
     esac
 }
 
-# Poll the jsonl until the latest assistant entry has a terminal
-# stop_reason, signalling that the turn's final API response has been
-# persisted. Returns 0 on hit, 1 on timeout.
+# Is the latest assistant entry SETTLED — i.e. safe to treat the turn as
+# truly over? Two conditions:
+#   1. stop_reason is terminal (see above).
+#   2. content contains at least one `text` or `tool_use` block.
 #
-# The Stop hook can fire while Claude Code is still flushing the final
-# assistant entry to disk (the failure that motivated this — partial
-# extraction with N-1 of N text blocks looked "fine" but was incomplete).
-# Without this wait, every long deliverable turn risks a silent loss of
-# the last text block.
-#
-# Budget: 15 × 0.2s = 3s, well within the default 60s hook timeout.
-# Fast path (turn already at end_turn on first check) adds zero latency.
+# Why (2): Claude Code can split an extended-thinking turn into separate
+# API responses — a thinking-only response with stop_reason=end_turn
+# followed by a text response with stop_reason=end_turn. Without (2), the
+# hook fast-pathed on the thinking-only entry, extracted no text, and
+# rm'd .last seconds before the real deliverable landed. Requiring a non-
+# thinking block forces the wait to continue until the visible/actionable
+# part of the turn has been flushed.
+is_assistant_settled() {
+    local summary="$1" reason types
+    [[ -n "$summary" ]] || return 1
+    reason="${summary%%|*}"
+    types="${summary#*|}"
+    is_terminal_stop_reason "$reason" || return 1
+    case ",$types," in
+        *,text,*|*,tool_use,*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Poll the jsonl until the latest assistant entry is "settled" (terminal
+# stop_reason AND has text/tool_use content). Returns 0 on hit, 1 on
+# timeout. Budget 15 × 0.2s = 3s, well within the default 60s hook
+# timeout. Fast path adds zero latency when the entry is already settled.
 wait_for_jsonl_terminal() {
-    local jsonl="$1" reason i
+    local jsonl="$1" summary i
     for ((i = 0; i < 15; i++)); do
-        reason=$(latest_stop_reason "$jsonl")
-        if [[ -n "$reason" ]] && is_terminal_stop_reason "$reason"; then
+        summary=$(latest_assistant_summary "$jsonl")
+        if is_assistant_settled "$summary"; then
             return 0
         fi
         sleep 0.2
@@ -162,7 +179,12 @@ if [[ -n "${transcript:-}" && -f "$transcript" ]]; then
         text=$(extract_last_turn "$transcript")
         if [[ -n "$text" ]]; then
             printf '%s\n' "$text" > "$last_file"
-            diag_log "phase=write text_bytes=${#text}"
+            # ${#text} is character count, not bytes — under UTF-8 that's
+            # half-ish to a third of the on-disk size for CJK text. Read
+            # the actual file size with stat for the "what shipped" number,
+            # and keep the char count as a secondary signal.
+            file_bytes=$(stat -f %z "$last_file" 2>/dev/null || echo ?)
+            diag_log "phase=write file_bytes=$file_bytes text_chars=${#text}"
         else
             diag_log "phase=rm-empty (terminal stop_reason but extract empty — tool-only or thinking-only final entry?)"
             rm -f "$last_file"
