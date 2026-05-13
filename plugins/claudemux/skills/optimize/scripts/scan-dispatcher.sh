@@ -69,7 +69,12 @@ for jsonl in "${JSONLS[@]}"; do
         continue
     fi
 
-    first_ts=$(jq -r 'select(.timestamp != null) | .timestamp' "$jsonl" 2>/dev/null | head -1)
+    # `first(inputs|...)` lets jq short-circuit after the first match and exit
+    # cleanly. We avoid `jq ... | head -1` here: on a large jsonl, head closes
+    # its stdin after one line, jq is killed by SIGPIPE → rc=141, and with
+    # `set -o pipefail` that kills the whole script mid-loop. (last_ts via
+    # `tail -1` is safe: tail reads its entire stdin, so no SIGPIPE on jq.)
+    first_ts=$(jq -rn 'first(inputs | .timestamp // empty)' "$jsonl" 2>/dev/null)
     last_ts=$(jq -r 'select(.timestamp != null) | .timestamp' "$jsonl" 2>/dev/null | tail -1)
 
     out_file="$OUT/${sid}.md"
