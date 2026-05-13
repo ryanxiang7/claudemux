@@ -89,12 +89,15 @@ for jsonl in "${JSONLS[@]}"; do
         printf -- '---\n\n'
 
         # Walk entries in append (chronological) order. Emit:
-        #   USER  — string-typed user prompts (tool_result entries dropped)
-        #   ASST  — assistant text blocks
-        #   TOOL  — assistant tool_use blocks, summarized as "<name>: <one-liner>"
-        # Thinking blocks and tool_result blobs are dropped — both inflate token
-        # cost on the consumer side (the optimize skill body) without adding
-        # signal for usage-habit / foot-gun analysis.
+        #   USER   — string-typed user prompts
+        #   ASST   — assistant text blocks
+        #   TOOL   — assistant tool_use blocks, summarized as "<name>: <one-liner>"
+        #   ERROR  — user tool_result blocks with is_error=true, summarized
+        # Successful tool_results (is_error=false), thinking blocks, and
+        # is_error=false tool_result blobs are dropped — they inflate token
+        # cost without adding signal. We keep is_error=true because "which
+        # commands the dispatcher ran that failed" is exactly the kind of
+        # foot-gun signal /claudemux:optimize looks for.
         #
         # Sidechain entries (sub-agent turns) are kept so the optimize pass
         # can see what work the dispatcher delegated; they share the same
@@ -115,9 +118,21 @@ for jsonl in "${JSONLS[@]}"; do
                 else short(input | tostring)
                 end;
 
+            # tool_result.content can be either a string or an array of
+            # content blocks (Anthropic API spec). Coerce to a single string.
+            def tr_text(c):
+                if (c | type) == "string" then c
+                elif (c | type) == "array" then
+                    (c | map(select(.type == "text") | .text) | join("\n"))
+                else "" end;
+
             (.timestamp // "") as $ts
             | if .type == "user" and (.message.content | type) == "string" then
                 "## USER (\($ts))\n\(.message.content)\n"
+              elif .type == "user" and (.message.content | type) == "array" then
+                .message.content[]
+                | select(.type == "tool_result" and (.is_error // false) == true)
+                | "## ERROR (\($ts))\n\(short(tr_text(.content)))\n"
               elif .type == "assistant" and (.message.content | type) == "array" then
                 .message.content[]
                 | if .type == "text" then
