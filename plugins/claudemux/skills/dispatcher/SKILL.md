@@ -5,7 +5,7 @@ description: Manage a multi-repo dispatcher session — Claude Code running in t
 
 # Dispatcher: multi-repo Claude orchestrator
 
-You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of several sibling git repos — typically inside a `tmux` session named `dispatcher` with Claude Code Remote Control active. Throughout this skill, `$DEV_DIR` refers to that directory: Claude Code's startup banner shows it as the "Primary working directory", and `pwd` returns it. Claude Code auto-loads `$DEV_DIR/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts, while this skill is the *operations* manual loaded when dispatcher-style work fires.
+You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of several sibling git repos — by convention inside a `tmux` session named `dispatcher` with Claude Code Remote Control active. The session name is a human-friendly tag, not an identity signal: verify you are the dispatcher by checking that `$DEV_DIR/CLAUDE.md` exists and `$PWD` is the parent of sibling repos, not by inspecting the `tmux` session name. Throughout this skill, `$DEV_DIR` refers to that directory: Claude Code's startup banner shows it as the "Primary working directory", and `pwd` returns it. Claude Code auto-loads `$DEV_DIR/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts, while this skill is the *operations* manual loaded when dispatcher-style work fires.
 
 > **`$DEV_DIR` is a documentation placeholder, not a shell environment variable.** When you generate a `Bash` call from any example below, substitute the actual absolute path. Pasting `$DEV_DIR` literally into a shell command resolves it to the empty string and breaks the command.
 
@@ -155,21 +155,9 @@ When several teammates are running and you want a one-shot "who's doing what", `
 
 `BUSY` is a stat() of one file — cheap, no pane scraping. `LAST` and `PREVIEW` come from the Stop hook artifacts. The three together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
 
-### Spawn readiness
+### Spawn readiness and `/clear` sid rotation
 
-`tm spawn` no longer relies on a fixed `sleep` before the REPL is usable. It pre-removes `/tmp/teammate-<repo>.ready`, launches `tmux`+`claude`, then polls that file (60 × 0.3 s = 18 s cap). The SessionStart hook touches the file the moment the new claude session signals start — typically 2–4 s on a warm Mac — and the poll returns. On timeout, spawn prints a `WARN` and returns anyway so the caller can probe with `tm send` and get a real error if claude failed to boot. The file is per-repo (not per-sid) and lives outside the `/tmp/claude-idle/` namespace.
-
-### `/clear` and sid rotation
-
-`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this with two gates on every `SessionStart` event:
-
-1. **Env identity.** `tm spawn` launches its tmux session with `tmux new-session -e CLAUDEMUX_TEAMMATE_REPO=<repo>`. claude inherits that env, and so does the hook. If the env var is unset, this is some other claude session (the dispatcher itself, an ad-hoc `cd <repo> && claude`, or a teammate started via raw `tmux new-session` without the `-e`) — the hook no-ops. The env survives `/clear` and `/resume` because they don't restart the claude process.
-
-2. **Recorded-cwd byte match.** Even with the env set, the firing claude's cwd must byte-equal the content of `/tmp/teammate-<env-repo>.cwd` (written by `tm spawn` using the PHYSICAL path via `cd && pwd -P`). A stray `cd packages/foo` inside the teammate before `/clear` won't match — the .sid pointer stays pinned to the teammate's real workspace.
-
-On a both-gates pass, the hook overwrites `/tmp/teammate-<repo>.sid` with the new sid (handles `/clear` and interactive `/resume`) and touches `/tmp/teammate-<repo>.ready` (the spawn-readiness signal). `source=startup|compact|resume` with unchanged sid is a quiet no-op for the rotation step; readiness is touched regardless. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
-
-The env gate is what makes this safe in the edge case where the dispatcher's own cwd byte-equals a recorded teammate.cwd (e.g. when you're maintaining the claudemux plugin itself and run the dispatcher from `~/Development/claudemux` while also having spawned `tm spawn claudemux` from a parent directory at some point). Without the env gate, both sessions match the same `.cwd` file and the last SessionStart to fire wins. With it, only the `tm spawn`-launched teammate ever updates the sid pointer.
+`tm spawn` blocks (≤ 18 s) until `on-session-start.sh` touches `/tmp/teammate-<repo>.ready`, so the REPL is usable the moment `tm spawn` returns. The same hook keeps `/tmp/teammate-<repo>.sid` in sync when `/clear` or interactive `/resume` rotates the underlying `session_id`, gated by env identity (`CLAUDEMUX_TEAMMATE_REPO`) **plus** recorded-cwd byte match — so the dispatcher's own SessionStart events can't hijack a teammate's `.sid`. The full mechanism, the edge case where dispatcher cwd byte-equals a recorded `teammate.cwd`, and the debugging checklist live in `references/sid-rotation.md`. Read that only when `.sid` looks wrong; normal dispatcher work doesn't need it.
 
 ## Spawning an Agent Teams teammate
 

@@ -1,7 +1,6 @@
 ---
 name: optimize
-description: |
-  Periodic self-review of the dispatcher workspace. Scans recent dispatcher conversations only (the jsonl files whose cwd equals the dispatcher directory — the parent of all sibling repos, derived from $PWD when this skill runs — NOT per-repo teammate sessions), identifies usage habits, recurring foot-guns, and drifted conventions, then promotes the findings into the dispatcher's CLAUDE.md, dispatcher project memory (~/.claude/projects/<encoded-cwd>/memory/), and a user-owned dispatcher notes file at .claude/local-dispatcher-notes.md. Runs in a forked context so the heavy log analysis does not pollute the parent dispatcher session. Trigger this skill when the user asks to "review dispatcher", "optimize dispatcher", "let dispatcher self-reflect", "派活流程审查", "dispatcher 自我反省", "dispatcher 复盘", "/claudemux:optimize", or when a scheduled cron callback fires asking for the periodic review.
+description: Periodic self-review of the dispatcher's own conversation history. Surfaces uncaptured corrections, recurring foot-guns, and drifted conventions, and promotes each finding into the right carrier (CLAUDE.md, project memory, or local dispatcher notes). Trigger when the user asks to "复盘 / 自我反省 / 派活流程审查 / review dispatcher / optimize dispatcher / let dispatcher self-reflect / /claudemux:optimize", or when a scheduled cron callback fires the periodic review.
 context: fork
 ---
 
@@ -163,7 +162,9 @@ Carrier: <which file>
 <short notes on patterns you saw but didn't have enough density to promote yet>
 ```
 
-Keep the report under ~200 lines. The user reads this, not the underlying logs.
+Keep the report under ~200 lines — the user reads this, not the underlying logs. If you end up with more than 8 confirmation-pending items, list P2 entries as one-line titles only (no proposal body) so the report stays scannable; P0 and P1 always get the full proposal body.
+
+If any step in this skill errors (jsonl corruption, a `Read` that fails, a Bash exit ≠ 0), return a one-line failure summary to the parent context naming the failing step — never swallow the error and continue silently. The parent dispatcher needs to know the review did not complete so it can surface that to the user.
 
 ## Scheduling
 

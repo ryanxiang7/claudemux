@@ -121,3 +121,9 @@ Print a short summary (5–7 lines):
   ```
 
 End there. Do not launch tmux, claude, or any teammate from this setup flow — the user runs that command themselves and the new `claude` session takes over.
+
+## Re-running
+
+`/claudemux:setup` is fully idempotent: `setup.sh` skips writing `CLAUDE.md` when the existing copy already matches the template, `mkdir -p /tmp/claude-idle` is harmless on an existing dir, and the legacy-config cleanup is a no-op when nothing is left to remove. If the user later says "再跑一次 setup" / "再帮我配一下" / "verify the install", just re-run the command — no special handling needed.
+
+The one branch that does need user input is `setup.sh` reporting `CLAUDE.md exists and differs from template — leaving in place`: ask via AskUserQuestion whether to overwrite (re-run with `--force`) or keep the customized CLAUDE.md.
