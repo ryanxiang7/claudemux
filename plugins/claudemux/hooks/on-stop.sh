@@ -13,6 +13,16 @@
 
 set -u
 
+# Diagnostic log — appended on every Stop fire, one line per phase. Lives
+# under the idle dir so the existing TTL sweep cleans it up after 7 days.
+# Always-on (cheap); when investigating a misbehaving turn, `cat` this file
+# to see what the hook saw and which branch it took.
+DIAG_LOG="/tmp/claude-idle/_on-stop.log"
+diag_log() {
+    local ts; ts=$(date +%Y-%m-%dT%H:%M:%S)
+    printf '%s sid=%s %s\n' "$ts" "${sid:-unknown}" "$*" >> "$DIAG_LOG" 2>/dev/null
+}
+
 input=$(cat || true)
 [[ -n "${input:-}" ]] || exit 0
 
@@ -27,6 +37,7 @@ IFS=$'\t' read -r sid transcript < <(
 
 idle_dir="/tmp/claude-idle"
 mkdir -p "$idle_dir" 2>/dev/null || exit 0
+diag_log "phase=enter transcript=${transcript:-<empty>}"
 
 # Occasionally sweep stale idle/last files older than 7 days. The hook is the
 # only writer to $idle_dir, but `tm kill` only cleans entries for sessions it
@@ -122,42 +133,51 @@ wait_for_jsonl_terminal() {
 }
 
 if [[ -n "${transcript:-}" && -f "$transcript" ]]; then
+    # Snapshot tail-5 entries at fire time — type|stop_reason|content_types
+    # — so we can later tell whether the jsonl already had a text-bearing
+    # final entry, or only an earlier thinking-only one.
+    tail_summary=$(tail -5 "$transcript" 2>/dev/null | jq -r '
+        [(.type // "?"),
+         (.message.stop_reason // "-"),
+         (if .type == "assistant" then ((.message.content // []) | map(.type) | join(",")) else "-" end)
+        ] | join("|")
+    ' 2>/dev/null | tr '\n' ';')
+    diag_log "phase=tail-summary jsonl_size=$(stat -f %z "$transcript" 2>/dev/null || echo ?) tail5=[${tail_summary%;}]"
+
     # The Stop hook can fire before the turn's final assistant API response
     # has been flushed to the jsonl on disk — so a naive extract can produce
     # a .last that is silently missing the user-visible deliverable text
-    # block (the case that motivated this version: 72/73 blocks extracted,
-    # the 73rd being the actual reply, looked "fine" but was incomplete).
+    # block. We poll for a TERMINAL stop_reason on the most recent assistant
+    # entry to decide it's safe to extract.
     #
-    # Solution: poll the jsonl for a TERMINAL stop_reason on the most
-    # recent assistant entry. Each Anthropic API response writes a stop_
-    # reason indicating whether more output is expected. While the model is
-    # paused waiting for a tool ("tool_use") or extended thinking
-    # ("pause_turn"), the agent loop will write more content; we must wait.
-    # Once we see a terminal reason (end_turn / stop_sequence / max_tokens /
-    # refusal), the turn's final response is on disk and extraction is safe.
-    #
-    # Fast path: a turn already at end_turn returns on the first check (no
-    # waiting). Slow path: at most ~3s. If we never see terminal — the
-    # turn was interrupted, errored, or Stop fired in an unexpected order
-    # — we LEAVE .last ABSENT rather than write a misleading partial.
+    # Known weakness being investigated: a turn that splits into multiple
+    # API calls (e.g. one thinking-only call followed by a text call) has
+    # MULTIPLE terminal entries. If the earlier one is in the jsonl but the
+    # final text one isn't yet, fast-path passes prematurely and we extract
+    # nothing — historically rm'd .last, which destroyed prior content too.
+    # Diagnostic logging here lets us see the timing on a real repro before
+    # tightening the predicate.
     if wait_for_jsonl_terminal "$transcript"; then
+        diag_log "phase=wait-end result=terminal"
         text=$(extract_last_turn "$transcript")
         if [[ -n "$text" ]]; then
             printf '%s\n' "$text" > "$last_file"
+            diag_log "phase=write text_bytes=${#text}"
         else
-            # No visible text (e.g. tool-only turn). Drop any stale .last.
+            diag_log "phase=rm-empty (terminal stop_reason but extract empty — tool-only or thinking-only final entry?)"
             rm -f "$last_file"
         fi
     else
-        # Diagnostic so a future debugger can distinguish "turn produced no
-        # text" from "we timed out waiting for jsonl to settle". Goes to
-        # stderr → Claude Code's hook log; user never sees it directly.
-        echo "on-stop: $sid: jsonl never reached terminal stop_reason within 3s — leaving .last absent" >&2
-        rm -f "$last_file"
+        # CHANGED: previously rm -f'd .last here. Timeout means "we don't
+        # know" not "confirmed empty"; destroying any prior .last that may
+        # still be valid amplifies the break (advisor flagged this). Leave
+        # whatever exists alone.
+        diag_log "phase=timeout (jsonl never reached terminal stop_reason within 3s — leaving .last as-is)"
     fi
 fi
 
 # Touch the idle signal LAST. Any waiter that races on the touch and
 # immediately reads .last will find the .last in place.
 touch "$idle_dir/$sid"
+diag_log "phase=touch-idle"
 exit 0
