@@ -137,6 +137,14 @@ require_session() {
     echo "$name"
 }
 
+# Enumerate every running teammate's short repo name. Used by --all
+# fan-out commands. Source of truth is tmux (a stale sid file without
+# a live session doesn't count).
+iter_repos() {
+    { tmux ls 2>/dev/null || true; } \
+        | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print substr($1, length(p)+1)}'
+}
+
 cmd_ls() {
     # tmux ls returns non-zero when no server is running; mask it so pipefail
     # doesn't kill us. Empty output is the expected "no sessions" case.
@@ -327,6 +335,49 @@ cmd_kill() {
     else
         echo "not running: $name"
     fi
+}
+
+cmd_reload() {
+    # Fan out /reload-plugins to one, many, or all teammates. Sugar over
+    # `tm send <repo> /reload-plugins` so the dispatcher doesn't have to
+    # type it per pane after publishing a plugin update.
+    local all=0
+    local repos=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all) all=1; shift ;;
+            -h|--help) die "usage: tm reload <repo>... | --all" ;;
+            -*) die "tm reload: unknown flag: $1" ;;
+            *) repos+=("$1"); shift ;;
+        esac
+    done
+
+    if (( all )); then
+        [[ ${#repos[@]} -eq 0 ]] || die "tm reload: --all conflicts with explicit repos"
+        while IFS= read -r r; do
+            [[ -n "$r" ]] && repos+=("$r")
+        done < <(iter_repos)
+        if [[ ${#repos[@]} -eq 0 ]]; then
+            echo "(no teammate sessions to reload)"
+            return 0
+        fi
+    elif [[ ${#repos[@]} -eq 0 ]]; then
+        die "usage: tm reload <repo>... | --all"
+    fi
+
+    local repo rc=0
+    for repo in "${repos[@]}"; do
+        echo "→ $repo: /reload-plugins"
+        # cmd_send is chatty on stdout; suppress so only the per-repo
+        # banner above shows. Track first failure to surface a non-zero
+        # exit, but keep iterating so a missing teammate doesn't block
+        # the rest of the fan-out.
+        if ! cmd_send "$repo" "/reload-plugins" >/dev/null 2>&1; then
+            echo "  (failed — is this teammate running? try 'tm ls')" >&2
+            rc=1
+        fi
+    done
+    return $rc
 }
 
 cmd_ask() {
@@ -611,6 +662,13 @@ USAGE
   tm kill <repo>
       kill the teammate session and clean up its sid/idle/send-at files
 
+  tm reload <repo>... | --all
+      fan out /reload-plugins to one, many, or every teammate. Sugar
+      over 'tm send <repo> /reload-plugins' so you don't have to type it
+      per pane after publishing a plugin update. --all enumerates from
+      `tmux ls`; missing/dead teammates are skipped with a stderr note
+      and exit status reflects whether every send succeeded.
+
   tm states
       one-line summary per teammate: REPO, SID (first 8 chars), BUSY (yes if
       the pane shows a working spinner), LAST (size + age of <sid>.last from
@@ -652,6 +710,7 @@ main() {
         wait-idle)  cmd_wait_idle "$@" ;;
         last)       cmd_last "$@" ;;
         kill)       cmd_kill "$@" ;;
+        reload)     cmd_reload "$@" ;;
         states)     cmd_states "$@" ;;
         wait-quiet) cmd_wait_quiet "$@" ;;
         poll)       cmd_poll "$@" ;;

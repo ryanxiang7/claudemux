@@ -77,6 +77,7 @@ tm last <repo>                   cat the assistant's last-turn full text (writte
                                  the Stop hook). Use this instead of 'tm status' when
                                  you need the full reply — tmux scrollback truncates.
 tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle/last/send-at files
+tm reload <repo>... | --all      fan out /reload-plugins to one, many, or every teammate
 tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
 ```
