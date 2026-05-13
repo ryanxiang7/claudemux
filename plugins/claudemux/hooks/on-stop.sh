@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
-# claudemux Stop hook.
+# claudemux "session-idle" hook.
 #
-# Writes two files on every Stop event:
-#   /tmp/claude-idle/<sid>        zero-byte touch — the wait-idle signal
-#   /tmp/claude-idle/<sid>.last   plain text of the assistant's last turn
+# Bound to ALL of: Stop, StopFailure, PostCompact, SessionEnd. These are
+# every event that transitions the session from "actively working" back
+# to "ready for input" (or "gone"). On every fire:
+#   1) rm /tmp/claude-idle/<sid>.busy           (clear the BUSY marker)
+#   2) (Stop only) extract the assistant's last-turn text into <sid>.last
+#   3) touch /tmp/claude-idle/<sid>             (the wait-idle signal)
 #
 # The .last file lets the dispatcher recover a full reply without scraping
-# tmux scrollback (which truncates) and without parsing jsonl itself.
+# tmux scrollback (which truncates) and without parsing jsonl itself. It
+# is meaningful only for Stop — the other three events don't have an
+# assistant turn to extract:
+#   - StopFailure: API error; whatever the model emitted before the error
+#                  may not constitute a settled turn
+#   - PostCompact: the jsonl has just been REWRITTEN; "last assistant"
+#                  doesn't correspond to anything the user said
+#   - SessionEnd:  session is going away; nothing to extract
+# For those we still want the BUSY clear and the idle marker (so anything
+# that was wait-idle'ing wakes up promptly), but we skip the .last work.
 #
-# Hook stdin is the harness JSON: { session_id, transcript_path, ... }.
-# We always exit 0 — the harness does not want a hook to fail the turn.
+# Hook stdin is the harness JSON: { session_id, transcript_path,
+# hook_event_name, ... }. We always exit 0 — the harness does not want a
+# hook to fail the turn.
 
 set -u
 
@@ -26,18 +39,21 @@ diag_log() {
 input=$(cat || true)
 [[ -n "${input:-}" ]] || exit 0
 
-# Pull both fields in one jq invocation — jq is the dominant per-Stop cost
-# (~8ms cold start each), and this hook runs on EVERY Claude Code session
-# on the machine.
-sid=""; transcript=""
-IFS=$'\t' read -r sid transcript < <(
-    printf '%s' "$input" | jq -r '[.session_id // "", .transcript_path // ""] | @tsv' 2>/dev/null || true
+# Pull three fields in one jq invocation — jq is the dominant per-fire
+# cost (~8ms cold start each), and this hook runs on EVERY Claude Code
+# session on the machine across four hook events.
+sid=""; transcript=""; event=""
+IFS=$'\t' read -r sid transcript event < <(
+    printf '%s' "$input" | jq -r '[.session_id // "", .transcript_path // "", .hook_event_name // ""] | @tsv' 2>/dev/null || true
 )
 [[ -n "${sid:-}" ]] || exit 0
 
 idle_dir="/tmp/claude-idle"
 mkdir -p "$idle_dir" 2>/dev/null || exit 0
-diag_log "phase=enter transcript=${transcript:-<empty>}"
+diag_log "phase=enter event=${event:-?} transcript=${transcript:-<empty>}"
+
+# BUSY marker is cleared on ALL four events. Cheap, no branching needed.
+rm -f "$idle_dir/$sid.busy" 2>/dev/null
 
 # Occasionally sweep stale idle/last files older than 7 days. The hook is the
 # only writer to $idle_dir, but `tm kill` only cleans entries for sessions it
@@ -149,7 +165,9 @@ wait_for_jsonl_terminal() {
     return 1
 }
 
-if [[ -n "${transcript:-}" && -f "$transcript" ]]; then
+# .last extraction is meaningful only for Stop. StopFailure, PostCompact,
+# and SessionEnd reach the touch-idle below without touching .last.
+if [[ "$event" == "Stop" && -n "${transcript:-}" && -f "$transcript" ]]; then
     # Snapshot tail-5 entries at fire time — type|stop_reason|content_types
     # — so we can later tell whether the jsonl already had a text-bearing
     # final entry, or only an earlier thinking-only one.
@@ -199,7 +217,10 @@ if [[ -n "${transcript:-}" && -f "$transcript" ]]; then
 fi
 
 # Touch the idle signal LAST. Any waiter that races on the touch and
-# immediately reads .last will find the .last in place.
+# immediately reads .last will find the .last in place. We always touch
+# regardless of event so wait-idle wakes up on StopFailure / PostCompact /
+# SessionEnd too (without those, /compact and API-error turns would hang
+# wait-idle forever).
 touch "$idle_dir/$sid"
-diag_log "phase=touch-idle"
+diag_log "phase=touch-idle event=${event:-?}"
 exit 0

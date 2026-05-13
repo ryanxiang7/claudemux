@@ -12,16 +12,25 @@
 # driven the same way, and the rules are in one place where a future fix lands
 # for the entire system.
 #
-# Idle signaling: the plugin's Stop hook (hooks/on-stop.sh) writes two files
-# on every turn-end:
-#   /tmp/claude-idle/<sid>        zero-byte touch — what wait-idle blocks on
-#   /tmp/claude-idle/<sid>.last   plain text of the assistant's last reply
+# Idle signaling is fully hook-driven by the claudemux plugin:
+#   on-busy.sh        UserPromptSubmit / UserPromptExpansion / PreToolUse /
+#                     PreCompact → touch /tmp/claude-idle/<sid>.busy
+#   on-stop.sh        Stop / StopFailure / PostCompact / SessionEnd →
+#                     rm <sid>.busy, write <sid>.last (Stop only), touch
+#                     <sid> (the wait-idle marker)
+#   on-session-start  SessionStart → if cwd is $DEV_DIR/<repo> and a sid file
+#                     for that repo exists, overwrite it with the new
+#                     session_id (so /clear-induced sid rotation doesn't
+#                     orphan the dispatcher's pointer) AND touch
+#                     /tmp/teammate-<repo>.ready (the spawn-readiness
+#                     signal — `tm spawn` polls for this file instead of
+#                     burning a fixed sleep).
 # We avoid race-prone jsonl scanning by pre-generating a UUID at spawn time
 # and handing it to `claude --session-id` directly — the jsonl filename then
 # equals that UUID. The sid is stashed in /tmp/teammate-<repo>.sid so
-# `tm wait-idle` / `tm last` know which files to read. `tm send` rm's both
-# files first so a subsequent wait-idle / last waits on / returns the NEW
-# turn's content, not a stale one.
+# `tm wait-idle` / `tm last` / `tm states` know which files to read. `tm send`
+# rm's the idle marker + .last + .busy first so a subsequent wait-idle / last
+# / states reflects the NEW turn, not a stale one.
 
 set -euo pipefail
 
@@ -58,9 +67,31 @@ IDLE_DIR="/tmp/claude-idle"
 
 die() { echo "tm: $*" >&2; exit 1; }
 
+# tmux `-t NAME` is a PREFIX match, so `has-session -t teammate-x` returns
+# true when only `teammate-x-2` exists. We use two different exact-match
+# tactics depending on the call's target context:
+#
+#   - Session-target calls (has-session, kill-session) take the `=NAME`
+#     exact-match modifier. Keep these as `-t "=$name"`.
+#
+#   - Pane-target calls (send-keys, capture-pane, display-message) do
+#     NOT accept `=NAME` (tmux 3.6+ rejects with "can't find pane: =NAME").
+#     For these, resolve the session's INTERNAL id (e.g. `$4`) — that id
+#     is byte-unambiguous — and pass it as the target.
+#
+# `resolve_pane_target <repo>` returns the internal `$N` for a teammate
+# session by iterating list-sessions and matching the session name
+# EXACTLY (awk `$2 == name`). At spawn time, prefer the `-P -F` trick on
+# new-session so the id is returned without a second tmux call.
 session_name() { echo "${PREFIX}$1"; }
+resolve_pane_target() {
+    local name; name=$(session_name "$1")
+    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null \
+        | awk -v n="$name" '$2 == n {print $1; exit}'
+}
 sid_file() { echo "/tmp/teammate-$1.sid"; }
 send_at_file() { echo "/tmp/teammate-$1.send-at"; }
+ready_file() { echo "/tmp/teammate-$1.ready"; }
 
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
 # empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
@@ -77,11 +108,12 @@ resolve_sid_or_die() {
     printf '%s' "$sid"
 }
 
-# Drop the Stop-hook artifacts for <sid> (touch + .last) together so a
-# subsequent wait-idle / last sees the NEW turn, not a stale one. Used at
-# spawn, send, and kill — the two paths must move in lockstep.
+# Drop all hook artifacts for <sid> together — idle marker, last-turn
+# text, and the busy marker — so a subsequent wait-idle / last / states
+# sees the NEW turn, not a stale one. Used at spawn, send, and kill; the
+# three paths must move in lockstep.
 clear_idle() {
-    [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last"
+    [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last" "$IDLE_DIR/$1.busy"
 }
 
 # Format an absolute second-count as a short relative age (e.g. "12s", "3m", "2h").
@@ -94,23 +126,27 @@ fmt_age() {
     fi
 }
 
-# Detect whether the teammate's pane shows the Claude Code "working" spinner.
+# Detect whether the teammate is currently working. Pure hook-driven:
+# the claudemux on-busy.sh hook touches /tmp/claude-idle/<sid>.busy on
+# UserPromptSubmit / UserPromptExpansion / PreToolUse / PreCompact, and
+# on-stop.sh removes it on Stop / StopFailure / PostCompact / SessionEnd.
+# So the existence of <sid>.busy IS the BUSY signal — no pane scraping,
+# no spinner regex, no v2.1.140+ "mid-tool with no spinner" blind spot.
 #
-# The TUI renders a status line like:
-#     ✢ Combobulating… (5m 5s · ↓ 15.6k tokens)
-# while the model is processing, and removes that line once the turn is over
-# OR a subcommand like /compact finishes. The "(<N>s · " portion is the most
-# robust marker — the spinner glyph and verb both vary, but the elapsed-time
-# format is stable. Match against the last ~30 lines of the pane (enough to
-# include the status line above the input box without scanning all scrollback).
+# Returns 1 (not busy) if we have no sid for this repo yet, or if the
+# .busy file doesn't exist.
 #
-# Known blind spot: a permission prompt also shows no spinner; pane_busy
-# returns 0 but the teammate is actually blocked. wait-quiet documents this.
+# Known blind spots (intentional — these are not BUSY events as far as
+# claude.ai is concerned, so they fire no hook):
+#   - /help, /effort, /agents and other purely-TUI slash commands: the
+#     teammate may be showing a dialog but reports BUSY=no
+#   - permission prompts: claude is blocked waiting for y/n with no
+#     hook fired (Notification event exists per docs but we don't bind
+#     it — adding would let us flag this case, see SKILL.md)
 pane_busy() {
-    local repo="$1" name
-    name=$(session_name "$repo")
-    tmux capture-pane -t "$name" -p -S -30 2>/dev/null \
-        | grep -qE '\(([0-9]+m )?[0-9]+s · '
+    local repo="$1" sid
+    sid=$(resolve_sid "$repo") || return 1
+    [[ -f "$IDLE_DIR/$sid.busy" ]]
 }
 
 # Generate a lowercase UUID. macOS uuidgen emits uppercase; Claude Code
@@ -120,7 +156,7 @@ new_sid() { uuidgen | tr '[:upper:]' '[:lower:]'; }
 
 require_session() {
     local name; name=$(session_name "$1")
-    tmux has-session -t "$name" 2>/dev/null || die "no such teammate session: $name (try 'tm ls')"
+    tmux has-session -t "=$name" 2>/dev/null || die "no such teammate session: $name (try 'tm ls')"
     echo "$name"
 }
 
@@ -153,16 +189,26 @@ cmd_spawn() {
     [[ -d "$path" ]] || die "repo not found: $path"
 
     local name; name=$(session_name "$repo")
-    if tmux has-session -t "$name" 2>/dev/null; then
+    if tmux has-session -t "=$name" 2>/dev/null; then
         echo "$name already exists (use 'tm status $repo' to view, or 'tm kill $repo' first)"
         return 0
     fi
 
-    tmux new-session -d -s "$name" -c "$path"
+    # Clear the readiness signal BEFORE launching claude. The
+    # SessionStart hook (on-session-start.sh) re-touches this file once
+    # claude's REPL is up; the poll loop below blocks until it appears,
+    # replacing the previous fixed "sleep 8".
+    local rf; rf=$(ready_file "$repo")
+    rm -f "$rf"
+
+    # -P -F prints the new session's internal id (e.g. `$21`); we use it
+    # as the pane-target for the subsequent send-keys so we don't rely on
+    # name prefix-match resolution.
+    local pane; pane=$(tmux new-session -d -s "$name" -c "$path" -P -F '#{session_id}')
     local sid sf; sf=$(sid_file "$repo")
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
-        tmux send-keys -t "$name" "claude --resume $sid" Enter
+        tmux send-keys -t "$pane" "claude --resume $sid" Enter
         echo "spawned: $name (cwd=$path, resumed sid=$sid)"
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
@@ -170,19 +216,39 @@ cmd_spawn() {
         # filename equal to this UUID, and the global Stop hook touches
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
-        tmux send-keys -t "$name" "claude --session-id $sid" Enter
+        tmux send-keys -t "$pane" "claude --session-id $sid" Enter
         echo "spawned: $name (cwd=$path, sid=$sid)"
     fi
     echo "$sid" > "$sf"
     clear_idle "$sid"
-    echo "use 'tm status $repo' once the startup banner appears (~5s)"
+
+    # Poll for spawn readiness. The hook fires once the SessionStart
+    # event reaches it; in practice that's within 2–4 s on a warm Mac,
+    # so the 18 s cap (60 × 0.3 s) is generous. On timeout we surface a
+    # warning but return successfully — callers can still try `tm send`
+    # and will get a clear failure if claude really didn't come up.
+    local i ready_after_ms=""
+    for i in $(seq 1 60); do
+        if [[ -f "$rf" ]]; then
+            ready_after_ms=$(( i * 300 ))
+            break
+        fi
+        sleep 0.3
+    done
+    if [[ -n "$ready_after_ms" ]]; then
+        echo "ready: ${name} (SessionStart fired after ~${ready_after_ms} ms)"
+    else
+        echo "WARN: $name did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing; subsequent 'tm send' will fail loudly if the REPL is not up." >&2
+    fi
 }
 
 cmd_status() {
     local repo="${1:-}"; local lines="${2:-80}"
     [[ -n "$repo" ]] || die "usage: tm status <repo> [lines=80]"
-    local name; name=$(require_session "$repo")
-    tmux capture-pane -t "$name" -p -S "-${lines}"
+    require_session "$repo" >/dev/null
+    local pane; pane=$(resolve_pane_target "$repo")
+    [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
+    tmux capture-pane -t "$pane" -p -S "-${lines}"
 }
 
 cmd_send() {
@@ -190,6 +256,8 @@ cmd_send() {
     [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm send <repo> <prompt...>"
     local prompt="$*"
     local name; name=$(require_session "$repo")
+    local pane; pane=$(resolve_pane_target "$repo")
+    [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
 
     # Clear the baseline idle + last-turn files so a subsequent wait-idle /
     # last reflects THIS prompt's outcome, not a previously satisfied turn.
@@ -206,8 +274,8 @@ cmd_send() {
     # them in one tmux send-keys inlines Enter as a newline inside the input
     # box and the prompt does not submit. -l (literal) avoids tmux interpreting
     # characters in the prompt as key names.
-    tmux send-keys -t "$name" -l "$prompt"
-    tmux send-keys -t "$name" Enter
+    tmux send-keys -t "$pane" -l "$prompt"
+    tmux send-keys -t "$pane" Enter
 
     # Multi-line prompts need a SECOND Enter: once the input box contains
     # any newline, the first Enter is consumed as "insert newline at cursor"
@@ -218,7 +286,7 @@ cmd_send() {
     # TM_SEND_GAP if a loaded box or different terminal needs more.
     if [[ "$prompt" == *$'\n'* ]]; then
         sleep "${TM_SEND_GAP:-0.2}"
-        tmux send-keys -t "$name" Enter
+        tmux send-keys -t "$pane" Enter
     fi
 
     echo "sent to $name (Enter issued separately)"
@@ -263,9 +331,9 @@ cmd_kill() {
     local name; name=$(session_name "$repo")
     local sid=""
     sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
-    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")"
-    if tmux has-session -t "$name" 2>/dev/null; then
-        tmux kill-session -t "$name"
+    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")"
+    if tmux has-session -t "=$name" 2>/dev/null; then
+        tmux kill-session -t "=$name"
         echo "killed: $name"
     else
         echo "not running: $name"
@@ -348,7 +416,7 @@ cmd_resume() {
     [[ -d "$path" ]] || die "repo not found: $path"
 
     local name; name=$(session_name "$repo")
-    if tmux has-session -t "$name" 2>/dev/null; then
+    if tmux has-session -t "=$name" 2>/dev/null; then
         die "$name already running — 'tm kill $repo' first if you really want to start over"
     fi
 
@@ -463,7 +531,9 @@ cmd_wait_quiet() {
 cmd_poll() {
     local repo="${1:-}"; local pattern="${2:-}"; local timeout="${3:-180}"
     [[ -n "$repo" && -n "$pattern" ]] || die "usage: tm poll <repo> <regex> [timeout=180]"
-    local name; name=$(require_session "$repo")
+    require_session "$repo" >/dev/null
+    local pane; pane=$(resolve_pane_target "$repo")
+    [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
 
     # Useful gotcha: do not poll for a string that appears verbatim in the
     # prompt you just sent — capture-pane will see the prompt echo and match
@@ -472,7 +542,7 @@ cmd_poll() {
     # 'tm wait-idle' which uses the Stop-hook signal and doesn't need a regex.
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
-        if tmux capture-pane -t "$name" -p -S -300 2>/dev/null | grep -qE "$pattern"; then
+        if tmux capture-pane -t "$pane" -p -S -300 2>/dev/null | grep -qE "$pattern"; then
             echo "matched: $pattern"
             return 0
         fi
@@ -497,6 +567,9 @@ USAGE
       --resume <sid> picks up an existing session by jsonl-UUID; otherwise
       a fresh UUID is pre-generated and handed to `claude --session-id`,
       so 'tm wait-idle' works immediately without a prior 'tm send'.
+      Blocks on /tmp/teammate-<repo>.ready (touched by the SessionStart
+      hook once the REPL is up) for up to 18s before returning, so no
+      ad-hoc sleep is needed before the first 'tm send'.
 
   tm status <repo> [lines=80]
       capture-pane the teammate's screen

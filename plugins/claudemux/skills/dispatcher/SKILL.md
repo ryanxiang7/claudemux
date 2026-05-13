@@ -64,15 +64,15 @@ tm resume <repo> [<sid>] [--prompt "..."]
                                  since that's rarely the one you actually wanted).
                                  Optional --prompt sends a follow-up after resume.
 tm wait-idle <repo> [timeout=600]
-                                 block until the teammate's Stop hook fires (idle).
-                                 Prints the path of the <sid>.last file on hit.
-                                 Does NOT fire for /compact, /clear, or other
-                                 non-turn-end paths — use tm wait-quiet for those.
+                                 block until any of Stop / StopFailure / PostCompact /
+                                 SessionEnd fires (the idle-marker file appears).
+                                 Prints the path of the <sid>.last file on hit
+                                 (which is meaningful only after Stop).
 tm wait-quiet <repo> [timeout=600]
                                  block until the pane shows no spinner for ~4s
                                  (and at least 3s have passed since the last send).
-                                 Sister to wait-idle: pane-driven instead of hook-driven,
-                                 so it catches /compact and /clear too.
+                                 Reserve for TUI-only commands that fire NO hook
+                                 (/help, /effort dialogs, permission prompts).
 tm last <repo>                   cat the assistant's last-turn full text (written by
                                  the Stop hook). Use this instead of 'tm status' when
                                  you need the full reply — tmux scrollback truncates.
@@ -102,7 +102,7 @@ Why `.last` exists at all: `tm status` (= `tmux capture-pane`) reads the scrollb
 
 1. On `tm spawn <repo>` (fresh), `tm` pre-generates a UUID and hands it to `claude --session-id <uuid>`. The jsonl filename equals that UUID, and the sid is written to `/tmp/teammate-<repo>.sid` *before* the spawn returns. No jsonl scanning, no race window — `tm wait-idle` is usable immediately after spawn, without needing a prior `tm send`.
 2. On `tm spawn <repo> --resume <sid>`, the sid is given by the caller and written the same way.
-3. `tm send` rm's both `/tmp/claude-idle/<sid>` and `<sid>.last` before sending, so a previous turn's files don't satisfy the next `tm wait-idle` / `tm last`. This is the bit that makes multi-turn waits correct.
+3. `tm send` rm's `/tmp/claude-idle/<sid>`, `<sid>.last`, AND `<sid>.busy` before sending, so a previous turn's files don't satisfy the next `tm wait-idle` / `tm last` / `tm states`. This is the bit that makes multi-turn waits correct.
 4. `tm wait-idle <repo> [timeout=600]` blocks until `/tmp/claude-idle/<sid>` exists. It polls every ~3s, prints `idle: <sid>` + the `.last` path (with byte count) on hit, exits non-zero on timeout.
 5. `tm last <repo>` cats `<sid>.last` — the full assistant reply for the latest turn. Empty file means the assistant ended the turn without text output (e.g. it only ran tools); fall back to `tm status` in that case.
 
@@ -122,23 +122,16 @@ When the idle-hook signal doesn't fit (waiting for some intermediate screen stat
 
 ## When the Stop hook isn't enough: `tm wait-quiet`
 
-Some teammate operations finish without triggering a turn-end Stop event, so `tm wait-idle` waits forever for a signal that will never arrive. Observed cases:
+`tm wait-idle` blocks on the idle marker that `on-stop.sh` touches. Since this plugin binds `on-stop.sh` to **four** events — Stop, StopFailure, PostCompact, SessionEnd — the cases that used to hang `wait-idle` (`/compact` not firing Stop, API errors not firing Stop) now wake it up correctly. Use `wait-idle` as the default everywhere.
 
-- `/compact` — rewrites the jsonl and returns to the input prompt, no Stop fires.
-- `/clear` — starts a fresh conversation in place; no Stop on the old turn.
-- (Suspected) other slash-commands that operate on the TUI rather than the model loop.
-
-For these, use `tm wait-quiet <repo>`. It watches the *pane* instead of the hook: it returns once the Claude Code TUI status spinner (the `✢ Verbing… (Ns · ↓ Nk tokens)` line) has been gone for ~4 consecutive seconds and at least 3 seconds have passed since the last `tm send`. Pattern:
+`tm wait-quiet <repo>` remains for **TUI-only commands that fire no hook at all** — `/help`, `/effort`, `/agents` opening dialogs, permission prompts. These leave the pane in a non-idle state without triggering any of the eight transition events; only pane inspection can tell you the teammate is "stuck on something the dispatcher doesn't model". `wait-quiet` polls the pane and returns when the model spinner has been absent for ~4 seconds AND at least 3 seconds have passed since the last `tm send`.
 
 ```bash
-tm send <repo> '/compact'
-tm wait-quiet <repo> 300
-# teammate is now ready for the next message
+tm send <repo> '/help'
+tm wait-quiet <repo> 30
 ```
 
-`wait-quiet` works for normal turns too, so it's a safe default if you don't know whether your message triggers a Stop. The reason to keep `wait-idle` around: it reports the `.last` path on hit (the full assistant text), which `wait-quiet` can't, because operations like `/compact` don't produce visible assistant text at all.
-
-Known blind spot: a permission prompt blocks claude with no spinner. `wait-quiet` will return "ready" but the teammate is actually stuck on a y/n decision. If you suspect a prompt, follow with `tm status <repo>` to see the pane.
+Known blind spot: a permission prompt blocks claude with no spinner. `wait-quiet` will return "ready" but the teammate is actually stuck on a y/n decision. If you suspect a prompt, follow with `tm status <repo>` to see the pane. (The `Notification` hook event with `notification_type=permission_prompt` could be bound in the future to surface this state directly; not done yet.)
 
 ## Fleet snapshot: `tm states`
 
@@ -147,12 +140,22 @@ When several teammates are running and you want a one-shot "who's doing what", `
 | Column | Meaning |
 |---|---|
 | `REPO` | short repo name (= tmux session minus the `teammate-` prefix) |
-| `SID` | first 8 chars of the session id |
-| `BUSY` | `yes` if the pane currently shows the working spinner, else `no` |
-| `LAST` | byte count and age of `<sid>.last` (the last-turn text written by the Stop hook), or `-` if no turn has ended yet |
+| `SID` | first 8 chars of the session id (kept fresh across `/clear` by the SessionStart hook — see below) |
+| `BUSY` | `yes` if `/tmp/claude-idle/<sid>.busy` exists. The plugin's `on-busy.sh` hook touches that file on UserPromptSubmit / UserPromptExpansion / PreToolUse / PreCompact, and `on-stop.sh` removes it on Stop / StopFailure / PostCompact / SessionEnd. **Known false-negative**: purely-TUI commands (`/help`, `/effort`, `/agents` dialogs, permission prompts) fire zero hooks, so BUSY can read `no` while the pane is actually showing a blocking dialog. Use `tm status <repo>` if you need ground truth. |
+| `LAST` | byte count and age of `<sid>.last` (the last-turn text written by `on-stop.sh` on Stop), or `-` if no turn has ended yet |
 | `PREVIEW` | first 50 chars of `<sid>.last`, control chars stripped |
 
-`BUSY` is a live read of the pane; `LAST` and `PREVIEW` come from the Stop hook artifacts. The two together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
+`BUSY` is a stat() of one file — cheap, no pane scraping. `LAST` and `PREVIEW` come from the Stop hook artifacts. The three together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
+
+### Spawn readiness
+
+`tm spawn` no longer relies on a fixed `sleep` before the REPL is usable. It pre-removes `/tmp/teammate-<repo>.ready`, launches `tmux`+`claude`, then polls that file (60 × 0.3 s = 18 s cap). The SessionStart hook touches the file the moment the new claude session signals start — typically 2–4 s on a warm Mac — and the poll returns. On timeout, spawn prints a `WARN` and returns anyway so the caller can probe with `tm send` and get a real error if claude failed to boot. The file is per-repo (not per-sid) and lives outside the `/tmp/claude-idle/` namespace.
+
+### `/clear` and sid rotation
+
+`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this: on every `SessionStart` fired by a claude whose cwd is exactly `$DEV_DIR/<repo>` and for which the dispatcher already tracks a sid (`/tmp/teammate-<repo>.sid` exists), it overwrites that file with the new sid. `source=clear` is the case this was built for; `source=startup|compact|resume` typically arrive with an unchanged sid and short-circuit to a no-op. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
+
+The hook only fires for cwd matching `$DEV_DIR/<repo>` exactly (no nested subdirectories, not the dispatcher root) — so a stray `cd packages/foo && claude` inside a teammate repo cannot hijack the teammate's sid pointer.
 
 ## Spawning an Agent Teams teammate
 
