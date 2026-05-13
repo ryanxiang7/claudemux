@@ -49,23 +49,23 @@ Out of scope — never touch:
 - Teammate session jsonls inside those projects
 - Any file outside the three "in scope (modify)" paths
 
-The boundary matters: self-evolve handles global promotion. This skill is dispatcher-only. Drifting outside scope conflates the two and makes both harder to reason about.
+The boundary matters: global promotion (machine-wide CLAUDE.md / global skills) is a separate concern outside this skill's scope. This skill is dispatcher-only — drifting outside scope conflates the two and makes both harder to reason about.
 
 ## Execution flow
 
 ### 1. Generate dispatcher session logs
 
-Run the bundled scanner, which wraps self-evolve's `scan-transcripts.js` and post-filters to keep only sessions whose `cwd == $DISPATCHER_DIR`:
+Run the bundled scanner, which converts the dispatcher's recent JSONL transcripts into readable MD logs:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/optimize/scripts/scan-dispatcher.sh" 7 /tmp/dispatcher-optimize-logs
 ```
 
-Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The wrapper uses `$PWD` as the dispatcher directory at invocation time — run it from the dispatcher session. The 7-day window is a sensible default; widen it on the first run if the dispatcher has been quiet recently, narrow it when running daily.
+Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The scanner uses `$PWD` (physical path) to locate `~/.claude/projects/<encoded>/` — Claude Code encodes each project's cwd as the directory name, so that single directory contains EXACTLY the dispatcher's own sessions (per-repo teammate sessions live under different encoded dirs, so there's no cross-project leakage). Run it from the dispatcher session. The 7-day window is a sensible default; widen it on the first run if the dispatcher has been quiet recently, narrow it when running daily.
 
-If no logs are produced (no recent dispatcher sessions), stop here and report "no signal".
+If no logs are produced (no recent dispatcher sessions, or all under `MIN_TURNS=2`), stop here and report "no signal".
 
-Prerequisite: the self-evolve scanner at `~/.claude/skills/self-evolve/scripts/scan-transcripts.js` must exist. If it doesn't, the wrapper exits non-zero and points at the missing path; install self-evolve (or skip this skill) — claudemux does not bundle it.
+Prerequisite: `jq` on `PATH` (standard on macOS via `brew install jq`, on Debian/Ubuntu via `apt-get install jq`). No other external dependencies — the scanner is self-contained bash + jq.
 
 ### 2. Read all the signal sources
 
