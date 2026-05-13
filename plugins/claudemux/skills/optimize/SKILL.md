@@ -7,11 +7,7 @@ context: fork
 
 # Dispatcher Self-Optimize
 
-## Why this skill exists
-
-The dispatcher accumulates lessons from every task it routes — recurring foot-guns, half-formed conventions the user stated once and never repeated, ledger drift, skill instructions that didn't quite fire when they should have. Without a periodic pass, those lessons stay buried in jsonl history and the next session re-learns them from scratch.
-
-This skill is that periodic pass. It runs inside a forked context (`context: fork` in frontmatter) so the log scan + cross-reading does not consume context in the parent dispatcher session.
+Periodically scan the dispatcher's own conversation history, surface uncaptured corrections / foot-guns / conventions, and promote them into the right carrier (CLAUDE.md, project memory, or local dispatcher notes). Runs in a forked context (`context: fork` frontmatter) so the log analysis stays out of the parent dispatcher session.
 
 ## Resolve the dispatcher dir first
 
@@ -25,6 +21,10 @@ LOCAL_NOTES="$DISPATCHER_DIR/.claude/local-dispatcher-notes.md"
 ```
 
 If any write below would land outside `$DISPATCHER_DIR`, `$DISPATCHER_DIR/.claude/`, or `$PROJECT_MEMORY`, treat it as a bug and stop — those three are the only writable roots for this skill. The plugin install directory (this skill's own files) is read-only; never try to self-edit.
+
+`$DISPATCHER_DIR/.claude/` may not exist yet on a fresh dispatcher; `mkdir -p "$DISPATCHER_DIR/.claude"` before the first write to the local notes file.
+
+`${CLAUDE_PLUGIN_ROOT}` is injected by Claude Code into the environment of plugin-defined commands, hooks, and skill bodies — including this one — so `Bash` calls you make from inside this skill body can use it directly to read `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` or `${CLAUDE_PLUGIN_ROOT}/bin/tm`. Do not assume it is set in unrelated subshells.
 
 ## Scope — what's in, what's out
 
@@ -52,7 +52,7 @@ Out of scope — never touch:
 - Teammate session jsonls inside those projects
 - Any file outside the three "in scope (modify)" paths
 
-The boundary matters: global promotion (machine-wide CLAUDE.md / global skills) is a separate concern outside this skill's scope. This skill is dispatcher-only — drifting outside scope conflates the two and makes both harder to reason about.
+Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out of scope here. If a finding genuinely warrants a global rule, surface it in the final report and let the user decide; never write outside the three "in scope (modify)" paths.
 
 ## Execution flow
 
@@ -64,9 +64,17 @@ Run the bundled scanner, which converts the dispatcher's recent JSONL transcript
 bash "${CLAUDE_PLUGIN_ROOT}/skills/optimize/scripts/scan-dispatcher.sh" 7 /tmp/dispatcher-optimize-logs
 ```
 
-Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The scanner uses `$PWD` (physical path) to locate `~/.claude/projects/<encoded>/` — Claude Code encodes each project's cwd as the directory name, so that single directory contains EXACTLY the dispatcher's own sessions (per-repo teammate sessions live under different encoded dirs, so there's no cross-project leakage). Run it from the dispatcher session. The 7-day window is a sensible default; widen it on the first run if the dispatcher has been quiet recently, narrow it when running daily.
+Arguments: `[days=7] [output_dir=/tmp/dispatcher-optimize-logs]`. The scanner uses `$PWD` (physical path) to locate `~/.claude/projects/<encoded>/` — Claude Code encodes each project's cwd as the directory name, so that single directory contains EXACTLY the dispatcher's own sessions (per-repo teammate sessions live under different encoded dirs, so there's no cross-project leakage). Run it from the dispatcher session. Use the default 7-day window unless the user requests a different one ("the last 24 hours" → 1, "the last month" → 30).
 
-If no logs are produced (no recent dispatcher sessions, or all under `MIN_TURNS=2`), stop here and report "no signal".
+After the scanner exits, confirm at least one log was produced before continuing:
+
+```bash
+shopt -s nullglob
+logs=(/tmp/dispatcher-optimize-logs/*.md)
+(( ${#logs[@]} > 0 )) || { echo "no signal — no recent dispatcher sessions"; exit 0; }
+```
+
+If `logs` is empty (no recent dispatcher sessions, or all under `MIN_TURNS=2`), stop here and report "no signal" to the parent context.
 
 Prerequisite: `jq` on `PATH` (standard on macOS via `brew install jq`, on Debian/Ubuntu via `apt-get install jq`). No other external dependencies — the scanner is self-contained bash + jq.
 
@@ -113,11 +121,11 @@ Use `references/decision-tree.md` (in this skill) to pick the carrier for each f
 | Plugin-level skill change (`dispatcher/SKILL.md` or `bin/tm`) | NEVER auto-apply | always propose a diff for the user to apply manually; the plugin install dir is read-only |
 | New skill | NEVER auto-apply | always propose in the report; let the user decide where it should live and create it themselves |
 
-The "auto-apply" entries write directly. The "requires confirmation" entries are collected into the final report as proposals with concrete diffs the user can approve in one turn.
+The "auto-apply" entries write directly. The "requires confirmation" entries are collected into the final report as proposals with concrete diffs the user can approve in one turn. See `references/decision-tree.md` for the exact auto-apply boundaries (e.g. which memory operations qualify as "routine cleanup", how to phrase a propose-only diff).
 
 Before applying any change, dedup: if the rule is already in CLAUDE.md, the dispatcher skill, or the local notes file, don't re-add. If a memory already says the same thing, edit it in place instead of creating a duplicate.
 
-Why "local dispatcher notes" rather than editing the dispatcher skill: the skill is shipped inside the claudemux plugin install dir, which is read-only and gets overwritten on plugin update. The local notes file is user-owned and survives upgrades. The dispatcher skill's body points at it, so additions there are reachable by future dispatcher sessions without modifying the plugin.
+Write user-specific findings to local dispatcher notes, **not** to the dispatcher skill body. The skill body is shipped inside the claudemux plugin install dir, which is read-only and gets overwritten on plugin update; the notes file is user-owned and survives upgrades. The dispatcher skill's body already points at the notes file, so additions there are reachable by future dispatcher sessions automatically.
 
 ### 5. Post-promotion cleanup
 

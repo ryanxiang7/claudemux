@@ -219,7 +219,11 @@ A teammate going idle immediately after a SendMessage does **not** mean it faile
 - Long `sleep` chains are blocked by the harness sandbox. For "wait until X", use `until <check>; do sleep 4; done` with a time-bounded outer loop, or run the watcher in `run_in_background` and let it notify you on completion.
 - Spawning a teammate or `claude -p` just to host a cron job — cron will not fire there, the job creation looks successful, you will only find out by missing the trigger time. Host cron on this dispatcher.
 - `grep` / `find` across `$DEV_DIR` — it contains many unrelated repos. Always narrow to a specific repo first.
-- The auto-mode classifier blocks the dispatcher from editing its **own** `settings.local.json` to grant itself new tool permissions (flagged as "Self-Modification"). Hand the user the exact JSON snippet to paste, or tell them to use `/permissions`.
+- The auto-mode classifier blocks the dispatcher from editing its **own** `settings.local.json` to grant itself new tool permissions (flagged as "Self-Modification"). Hand the user a minimal JSON snippet to merge into `~/.claude/settings.local.json`, or point them at `/permissions` to do it interactively. Example snippet (merge with whatever's already there):
+
+  ```json
+  { "permissions": { "allow": ["Bash(<command>:*)"] } }
+  ```
 - The `/hooks` slash-command UI only surfaces tool-related hooks (PreToolUse / PostToolUse / etc.) — `Stop` hooks do **not** appear in that menu, but they still fire. Don't conclude "hook missing" from the `/hooks` UI alone; check `~/.claude/settings.json` directly and watch for the signal file (`/tmp/claude-idle/<jsonl-uuid>`).
 
 ## Local dispatcher notes (`$DEV_DIR/.claude/local-dispatcher-notes.md`)
