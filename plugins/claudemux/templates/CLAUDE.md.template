@@ -19,7 +19,7 @@ When the user names a repo (exact or fuzzy), `cd` into it for inline work (it's 
 
 ## Tooling
 
-All teammate operations go through `tm` (bundled with this plugin, on `PATH` automatically). Never roll raw `tmux new-session` / `send-keys` / `capture-pane` against a teammate session — `tm` bakes in the dual-Enter, idle-signal, and sid-rotation rules. Subcommand reference and the spawn / send / wait protocol live in the dispatcher skill.
+All teammate operations go through `tm` (bundled with this plugin, on `PATH` automatically) — it bakes in the dual-Enter, idle-signal, and sid-rotation rules that a raw `tmux new-session` / `send-keys` / `capture-pane` call would each have to re-derive and tends to get wrong. Subcommand reference and the spawn / send / wait protocol live in the dispatcher skill.
 
 ## Task ledger
 
