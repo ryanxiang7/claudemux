@@ -27,6 +27,7 @@ Before editing any Markdown in this repository, identify who reads that surface:
 
 - Prefer "do this, because ..." over prohibition-heavy wording. Positive action plus reason is easier for future agents to follow.
 - Keep development-process commentary out of shipped agent documents. Only write durable behavior rules and operational facts that make sense to a fresh agent.
+- Do not explain why a rejected alternative is wrong. A fresh agent has never seen that alternative, so a warning like "do not convert this back to X" or "this used to be Y" names an unfamiliar thing and raises a question instead of answering one — it reads as noise. State the rule to follow now; drop the history of what it replaced. If a foot-gun genuinely needs guarding, encode the guard in the executable contract (script, hook, validation), not in prose aimed at a reader who lacks the context to act on it.
 - Separate trigger text from behavior. If a surface is not actually used for automatic invocation, write it as user-visible documentation instead of trigger prose.
 - Keep fixed command names, flags, paths, output strings, JSON keys, and code fences exact unless the task is to change that contract.
 

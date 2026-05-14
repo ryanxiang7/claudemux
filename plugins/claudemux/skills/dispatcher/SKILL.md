@@ -190,7 +190,7 @@ Implications:
 
 ## Local dispatcher notes
 
-User-specific notes accumulated by `/claudemux:optimize` live in `.claude/local-dispatcher-notes.md` under the dispatcher directory. The seeded `CLAUDE.md` `@import`s that file at session start, so its contents are already in your context — you do not need to Read it separately. It's user-owned and survives plugin upgrades (anything that would be lost on a plugin update is written here, not into the plugin-shipped skill body).
+User-specific notes accumulated by `/claudemux:optimize` live in `.claude/local-dispatcher-notes.md` under the dispatcher directory. At the start of a dispatcher session, check whether that file exists and Read it if so — it holds user-owned dispatcher conventions you need in context before routing any work. It's user-owned and survives plugin upgrades: anything that would be lost on a plugin update is written here, not into the plugin-shipped skill body.
 
 ## Task ledger (use AutoMemory)
 
