@@ -2,13 +2,13 @@
 
 For each finding (recurring foot-gun, undocumented convention, drifted skill instruction, missing memory), decide in priority order which carrier it should live in. The order matters — pick the highest-priority match.
 
-All paths below are relative to `$DISPATCHER_DIR` (resolved as `$PWD` at skill invocation — see `SKILL.md`). `$PROJECT_MEMORY` is `~/.claude/projects/<encoded-cwd>/memory/`.
+All paths below are relative to the dispatcher directory (the dispatcher's `$PWD` at skill invocation — see `SKILL.md`). "AutoMemory" means `~/.claude/projects/<encoded-cwd>/memory/`.
 
-## 1. → Project CLAUDE.md (`$DISPATCHER_DIR/CLAUDE.md`)
+## 1. → Project CLAUDE.md (the dispatcher's `CLAUDE.md`)
 
 Eligible when the finding is a **behavioral rule** that should fire in EVERY dispatcher session, not gated on a specific skill being triggered. Examples:
 
-- "Never grep across `$DISPATCHER_DIR` — too many repos"
+- "Never grep across the dispatcher directory — too many repos"
 - "Cron firing rules and limits"
 - "Don't combine prompt + Enter in one tmux send-keys call"
 
@@ -16,7 +16,7 @@ Keep the CLAUDE.md addition short (1–3 sentences) and lead with the rule, then
 
 **Requires user confirmation** before any substantive change (rewrites, deletions, or any single addition > ~3 sentences). Small additions (≤ 3 sentences) under an existing section may be applied directly.
 
-## 2. → Local dispatcher notes (`$DISPATCHER_DIR/.claude/local-dispatcher-notes.md`)
+## 2. → Local dispatcher notes (`.claude/local-dispatcher-notes.md` under the dispatcher directory)
 
 Eligible when the finding is **only relevant when the dispatcher is actively spawning/managing teammates** or running a specific orchestration flow, but does not warrant editing CLAUDE.md (too narrow) or project memory (not a fact, more like a procedural addition). Examples:
 
@@ -40,7 +40,7 @@ Eligible when the finding would be valuable to ALL users of the claudemux plugin
 
 **Always requires user confirmation.** The plugin install dir is read-only; the proposal should be a concrete diff the user can apply manually in the claudemux source repo (or paste into a PR). When testing such a change, always sanity-check `bin/tm` with `bash -n` before declaring done — a broken `tm` paralyses every future dispatcher session.
 
-## 4. → Project memory (`$PROJECT_MEMORY/*.md`)
+## 4. → Project memory (any `*.md` file inside the AutoMemory directory)
 
 The default storage for findings that are too **situational** to be a CLAUDE.md rule, too **dispatcher-internal** to belong in a sibling repo, and too **standalone** to fold into the dispatcher skill. Examples:
 
@@ -70,8 +70,8 @@ When density is insufficient (< 5 related memories) or the finding is too cross-
 - This plugin's install directory (`${CLAUDE_PLUGIN_ROOT}`) — read-only
 - Global `~/.claude/CLAUDE.md`
 - Global skills in `~/.claude/skills/`
-- Memory directories of sibling repo projects (`~/.claude/projects/<encoded-$DISPATCHER_DIR>-<repo>/`)
-- Any file outside `$DISPATCHER_DIR/`, `$DISPATCHER_DIR/.claude/`, and `$PROJECT_MEMORY/`
+- AutoMemory directories of sibling repo projects (each repo has its own encoded directory under `~/.claude/projects/`)
+- Any file outside the three "in scope (modify)" roots listed in `SKILL.md`
 
 Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out of scope. If a finding genuinely warrants a global rule, surface it in the final report and let the user decide; do not write outside the dispatcher workspace.
 

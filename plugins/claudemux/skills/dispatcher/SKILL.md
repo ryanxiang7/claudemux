@@ -5,13 +5,9 @@ description: Manage a multi-repo dispatcher session — Claude Code running in t
 
 # Dispatcher: multi-repo Claude orchestrator
 
-You are running as the **dispatcher** in `$DEV_DIR` — the parent directory of several sibling git repos. You are the dispatcher when `$DEV_DIR/CLAUDE.md` exists and `$PWD` is that parent-of-sibling-repos directory; the surrounding tmux session name (`dispatcher` by convention, with Claude Code Remote Control active) is not the identity signal. Throughout this skill, `$DEV_DIR` refers to that directory: Claude Code's startup banner shows it as the "Primary working directory", and `pwd` returns it. Claude Code auto-loads `$DEV_DIR/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts, while this skill is the *operations* manual loaded when dispatcher-style work fires.
+You are running as the **dispatcher** — Claude Code launched in the parent directory of several sibling git repos (your `$PWD`). You are the dispatcher when `$PWD/CLAUDE.md` exists and `$PWD` is that parent-of-sibling-repos directory; the surrounding tmux session name (`dispatcher` by convention, with Claude Code Remote Control active) is not the identity signal. Claude Code auto-loads `$PWD/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts. This skill is the *operations* manual loaded on top when dispatcher-style work fires.
 
-> **`$DEV_DIR` is a documentation placeholder, not a shell environment variable.** When you generate a `Bash` call from any example below, substitute the actual absolute path. Pasting `$DEV_DIR` literally into a shell command resolves it to the empty string and breaks the command.
-
-> **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, and claudemux ships `bin/tm` (the real script — no wrapper layer), so `which tm` should resolve inside any Bash subshell of an interactive Claude Code session — no symlink step required.
->
-> If for some reason `tm` is not on `PATH` (e.g. you're calling from a shell that doesn't inherit Claude Code's env), use the absolute install path instead: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic `Bash` tool call — that variable is only injected when the harness runs commands defined by the plugin (commands/hooks), not in arbitrary subshells you spawn.
+> **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, so `which tm` resolves inside any Bash subshell of an interactive Claude Code session. If for some reason `tm` is not on `PATH` (e.g. a shell that doesn't inherit Claude Code's env), use the absolute install path: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic `Bash` tool call — that variable is only injected when the harness runs commands defined by the plugin (commands/hooks/skill bodies), not in arbitrary subshells you spawn from elsewhere.
 
 ## When this skill is doing useful work
 
@@ -28,7 +24,7 @@ Three ways to push work outward. Pick once, up front — switching mid-task is p
 
 | Form | Pick when | Skip when |
 |---|---|---|
-| Inline `Bash` in the target repo (`cd "$DEV_DIR/<repo>" && …`) | One-shot read or trivial change, output fits in this turn | Anything that should produce its own conversation, run a model loop, or persist beyond one turn |
+| Inline `Bash` in the target repo (`cd <repo> && …`, where `<repo>` is a subdirectory of `$PWD`) | One-shot read or trivial change, output fits in this turn | Anything that should produce its own conversation, run a model loop, or persist beyond one turn |
 | `claude -p` headless in the target repo | One-shot task that needs a full `claude` turn (code edit, multi-tool reasoning) but is still fire-and-forget | You need a cron / loop / wakeup; you want to keep talking to it later |
 | `Agent` teammate via Agent Teams (`team_name=<...>` on the Agent tool) | Parallel work across multiple repos that needs to share a task list or message each other | You need cron firing inside the teammate; you need teammate-level `cwd`; you need session resume; you need nested sub-teams |
 | `tmux` teammate (interactive `claude` in a new `tmux` pane, launched by `tm spawn`) | Long-running work that needs a real REPL, must host its own cron, or wants its own Remote Control session for the user to drive directly | Throwaway one-shot work, or anything you'd be embarrassed to keep around for hours |
@@ -45,7 +41,7 @@ tm states                        one-line-per-teammate fleet snapshot: REPO, SID
                                  LAST (size+age of .last), PREVIEW (first 50 chars of .last).
                                  The "what's everyone doing" view — prefer this over running
                                  tm ls + tm status across each session.
-tm spawn <repo> [--resume <sid>] launch a teammate in $DEV_DIR/<repo>;
+tm spawn <repo> [--resume <sid>] launch a teammate inside the sibling repo (cwd = $PWD/<repo>);
                                  --resume <sid> picks up an existing session by jsonl-UUID
 tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
 tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
@@ -87,7 +83,7 @@ tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
 ```
 
-`<repo>` is the short name (a directory under `$DEV_DIR`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$DEV_DIR/my-repo` and runs `claude` inside it.
+`<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it.
 
 The teammate then auto-registers its own Remote Control session — the URL appears in the startup banner (visible via `tm status <repo>`). The user can drive that teammate directly from claude.ai/code or mobile, in parallel with you.
 
@@ -159,19 +155,9 @@ When several teammates are running and you want a one-shot "who's doing what", `
 
 `tm spawn` blocks (≤ 18 s) until `on-session-start.sh` touches `/tmp/teammate-<repo>.ready`, so the REPL is usable the moment `tm spawn` returns. The same hook keeps `/tmp/teammate-<repo>.sid` in sync when `/clear` or interactive `/resume` rotates the underlying `session_id`, gated by env identity (`CLAUDEMUX_TEAMMATE_REPO`) **plus** recorded-cwd byte match — so the dispatcher's own SessionStart events can't hijack a teammate's `.sid`. The full mechanism, the edge case where dispatcher cwd byte-equals a recorded `teammate.cwd`, and the debugging checklist live in `references/sid-rotation.md`. Read that only when `.sid` looks wrong; normal dispatcher work doesn't need it.
 
-## Spawning an Agent Teams teammate
+## Agent Teams teammates (rare path)
 
-Use the `Agent` tool with `team_name=<existing-team>` and `name=<teammate-name>`. The spawn prompt **must** include three things or the teammate will silently misbehave:
-
-1. **Explicit working directory.** Teammate `cwd` inherits this dispatcher's (`$DEV_DIR`) and cannot be set at spawn time. Write into the prompt: ``Your working directory is `$DEV_DIR/<repo>`; cd there before doing anything else.`` (Use the actual absolute path in the prompt — the teammate runs without this skill in context and won't expand `$DEV_DIR`.) The repo's own CLAUDE.md will *not* auto-load — instruct the teammate to `Read` it if needed.
-
-2. **Hard SendMessage requirement.** Teammates default to silent idle and will not message back even when the prompt politely asks. Use this exact framing in the prompt:
-
-   > ⚠️ Required: SendMessage to="team-lead" with the result. Not allowed to only idle. Not sending = not done.
-
-3. **Scope.** Teammates cannot spawn their own teammates (no nested teams). If a sub-team is needed, you (the lead) must spawn it.
-
-`--resume` does not restore an Agent Teams teammate after dispatcher restart. Treat teammates as ephemeral; pin persistent state into files inside the target repo if you need continuity.
+`tm spawn` is the default. Reach for Agent Teams only when you genuinely need a shared task list or peer SendMessage across multiple teammates. The spawn-prompt checklist (especially the explicit-cwd workaround — Agent Teams teammates inherit the dispatcher's cwd and cannot be reassigned at spawn time), the hard SendMessage requirement, and the idle-notification noise filter live in `references/agent-teams.md`. Read that file before spawning your first Agent Teams teammate; skip it otherwise.
 
 ## Cron host rule
 
@@ -185,18 +171,6 @@ Implications:
 - Recurring jobs auto-expire after 7 days.
 - For approximate times, pick an off-minute (e.g. `7 * * * *`, not `0 * * * *`) — the platform-wide fleet aliases on `:00` and `:30`.
 
-## Filtering idle-notification noise
-
-Agent Teams teammates emit `{"type":"idle_notification","from":"...","idleReason":"available"}` after every turn. These arrive as conversation turns even when there is no new information.
-
-Default response: a single line confirming the noise, no extra action. Don't `tm status` or `capture-pane` reflexively on every idle ping — that floods your own context. Only investigate state proactively when:
-
-- the user explicitly asks for it,
-- you sent a teammate work and a long enough time has passed that something should have come back,
-- or an idle notification follows an explicit message you sent and you need to confirm the message was acted on.
-
-A teammate going idle immediately after a SendMessage does **not** mean it failed; it means the teammate finished its turn and is waiting. The Agent Teams framework also separates `shutdown_approved` (the teammate agreed to shut down) from `teammate_terminated` (the process actually exited) — wait for the latter before `TeamDelete`.
-
 ## Common foot-guns
 
 - `tmux send-keys -t <s> '<prompt>' Enter` silently doesn't submit — the Enter becomes a newline. Use `tm send` or two separate calls.
@@ -206,7 +180,7 @@ A teammate going idle immediately after a SendMessage does **not** mean it faile
 - Forgetting that `tm send` resets the idle baseline — if you `tm send` then read `/tmp/claude-idle/<sid>` directly to check "done", you'll find no file even for old completed turns. That's by design; wait via `tm wait-idle`.
 - Long `sleep` chains are blocked by the harness sandbox. For "wait until X", use `until <check>; do sleep 4; done` with a time-bounded outer loop, or run the watcher in `run_in_background` and let it notify you on completion.
 - Spawning a teammate or `claude -p` just to host a cron job — cron will not fire there, the job creation looks successful, you will only find out by missing the trigger time. Host cron on this dispatcher.
-- `grep` / `find` across `$DEV_DIR` — it contains many unrelated repos. Always narrow to a specific repo first.
+- `grep` / `find` across the dispatcher directory (your `$PWD`) — it contains many unrelated repos. Always narrow to a specific repo first.
 - The auto-mode classifier blocks the dispatcher from editing its **own** `settings.local.json` to grant itself new tool permissions (flagged as "Self-Modification"). Hand the user a minimal JSON snippet to merge into `~/.claude/settings.local.json`, or point them at `/permissions` to do it interactively. Example snippet (merge with whatever's already there):
 
   ```json
@@ -214,31 +188,17 @@ A teammate going idle immediately after a SendMessage does **not** mean it faile
   ```
 - The `/hooks` slash-command UI only surfaces tool-related hooks (PreToolUse / PostToolUse / etc.) — `Stop` hooks do **not** appear in that menu, but they still fire. Don't conclude "hook missing" from the `/hooks` UI alone; check `~/.claude/settings.json` directly and watch for the signal file (`/tmp/claude-idle/<jsonl-uuid>`).
 
-## Local dispatcher notes (`$DEV_DIR/.claude/local-dispatcher-notes.md`)
+## Local dispatcher notes
 
-This skill ships inside the claudemux plugin install directory, which is
-read-only and gets overwritten on plugin update. Anything user-specific —
-foot-guns this particular dispatcher hits, conventions the user has stated
-once, project-local procedural additions — lives in
-`$DEV_DIR/.claude/local-dispatcher-notes.md` instead. The file is user-owned,
-free-form, and persists across plugin upgrades.
-
-Before doing anything substantive, check whether the notes file exists and
-`Read` it if so — it's where `/claudemux:optimize` parks dispatcher-specific
-additions that didn't warrant editing `$DEV_DIR/CLAUDE.md`. Treat its
-contents as additional skill body for this dispatcher.
-
-`/claudemux:optimize` is also what *creates* this file the first time it
-has dispatcher-specific findings to record; you don't need to pre-create
-it, and its absence simply means optimize hasn't run (or had nothing to
-park) yet.
+User-specific notes accumulated by `/claudemux:optimize` live in `.claude/local-dispatcher-notes.md` under the dispatcher directory. The seeded `CLAUDE.md` `@import`s that file at session start, so its contents are already in your context — you do not need to Read it separately. It's user-owned and survives plugin upgrades (anything that would be lost on a plugin update is written here, not into the plugin-shipped skill body).
 
 ## Task ledger (use AutoMemory)
 
 The dispatcher keeps a single live ledger named `active-dispatcher-tasks.md` in
-this project's AutoMemory directory (Claude Code derives the directory from
-`$DEV_DIR` — it's `~/.claude/projects/<dev-dir-with-slashes-as-dashes>/memory/`,
-and the `MEMORY.md` index in the same folder lists it). Read it on boot,
+this project's AutoMemory directory (Claude Code derives it from your `$PWD`;
+the resolved path is `~/.claude/projects/<encoded-cwd>/memory/`, where
+`<encoded-cwd>` is `$PWD` with `/` and `.` both replaced by `-`; the
+`MEMORY.md` index in the same folder lists it). Read it on boot,
 before any cross-task decision, and whenever the user asks "what's running"
 or "看看现在在跑啥". If the ledger file doesn't exist yet, create it from the
 shape described below.
@@ -249,7 +209,7 @@ When you spawn a teammate (any form: inline Bash, `claude -p`, Agent teammate,
 | Field | How to obtain |
 |---|---|
 | `id` | `t-<YYYYMMDD-HHMM>-<short-tag>` — short-tag is a 1-2 word slug of the intent |
-| `repo` | absolute path under `$DEV_DIR/` |
+| `repo` | the repo's absolute path (a sibling subdirectory under your `$PWD`) |
 | `branch` | `git -C <repo> branch --show-current` at spawn time |
 | `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for inline / `-p` |
 | `sid` | the teammate's claude session id (for tmux teammates: `cat /tmp/teammate-<repo>.sid`; for Agent Teams: not applicable). This is the field `tm resume <repo> <sid>` consumes when you come back to the task in a future dispatcher session — record it at spawn time, not after the teammate has died. |

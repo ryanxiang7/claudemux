@@ -8,32 +8,27 @@ context: fork
 
 Periodically scan the dispatcher's own conversation history, surface uncaptured corrections / foot-guns / conventions, and promote them into the right carrier (CLAUDE.md, project memory, or local dispatcher notes). Runs in a forked context (`context: fork` frontmatter) so the log analysis stays out of the parent dispatcher session.
 
-## Resolve the dispatcher dir first
+## Where this skill writes
 
-Every path below is relative to the dispatcher directory (parent of all sibling repos). The dispatcher directory is wherever the dispatcher claude session is running, i.e. `$PWD` when this skill fires — there is no config file, no env override.
+This skill runs in the dispatcher's `$PWD` (the parent of sibling repos — no config file, no env override) and writes only inside three roots derived from it:
 
-```bash
-DISPATCHER_DIR=$(pwd -P)
-ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr './' '-')   # both '/' and '.' → '-'
-PROJECT_MEMORY="$HOME/.claude/projects/$ENCODED/memory"
-LOCAL_NOTES="$DISPATCHER_DIR/.claude/local-dispatcher-notes.md"
-```
+- **The dispatcher's `CLAUDE.md`** (seeded by `/claudemux:setup`).
+- **The dispatcher's `.claude/local-dispatcher-notes.md`** — user-owned, free-form. `.claude/` may not exist yet on a fresh dispatcher; `mkdir -p .claude` before the first write.
+- **The project's AutoMemory directory** — Claude Code stores it at `~/.claude/projects/<encoded-cwd>/memory/`, where `<encoded-cwd>` is `$PWD` with both `/` and `.` replaced by `-`.
 
-If any write below would land outside `$DISPATCHER_DIR`, `$DISPATCHER_DIR/.claude/`, or `$PROJECT_MEMORY`, treat it as a bug and stop — those three are the only writable roots for this skill. The plugin install directory (this skill's own files) is read-only; never try to self-edit.
+If a write would land anywhere else, treat it as a bug and stop. The plugin install directory (this skill's own files) is read-only; never try to self-edit.
 
-`$DISPATCHER_DIR/.claude/` may not exist yet on a fresh dispatcher; `mkdir -p "$DISPATCHER_DIR/.claude"` before the first write to the local notes file.
-
-`${CLAUDE_PLUGIN_ROOT}` is injected by Claude Code into the environment of plugin-defined commands, hooks, and skill bodies — including this one — so `Bash` calls you make from inside this skill body can use it directly to read `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` or `${CLAUDE_PLUGIN_ROOT}/bin/tm`. Do not assume it is set in unrelated subshells.
+`${CLAUDE_PLUGIN_ROOT}` is injected by Claude Code into the environment of plugin-defined commands, hooks, and skill bodies — including this one — so `Bash` calls from inside this skill body can read `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` or `${CLAUDE_PLUGIN_ROOT}/bin/tm` directly. Don't assume it is set in unrelated subshells.
 
 ## Scope — what's in, what's out
 
 In scope (read AND modify):
 
-| Carrier | Path |
+| Carrier | Where |
 |---|---|
-| Project CLAUDE.md | `$DISPATCHER_DIR/CLAUDE.md` |
-| Project memory | `$PROJECT_MEMORY/*.md` (where `$PROJECT_MEMORY` resolves as above) |
-| Local dispatcher notes | `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (user-owned, free-form) |
+| Project CLAUDE.md | the dispatcher's `CLAUDE.md` (resolves under `$PWD`) |
+| Project memory | any `*.md` file inside the AutoMemory directory |
+| Local dispatcher notes | the dispatcher's `.claude/local-dispatcher-notes.md` (user-owned, free-form) |
 
 In scope (propose only — never write):
 
@@ -41,17 +36,17 @@ In scope (propose only — never write):
 
 In scope (read only — signal source):
 
-- `~/.claude/projects/$ENCODED/*.jsonl` (dispatcher's own conversations only)
+- The dispatcher's own JSONL transcripts (the scanner does the lookup; you don't normally Read these directly).
 
 Out of scope — never touch:
 
-- This plugin's install directory (`${CLAUDE_PLUGIN_ROOT}` — the dispatcher / optimize skills themselves are read-only)
-- Global `~/.claude/CLAUDE.md` and global skills under `~/.claude/skills/`
-- Memory directories of sibling repo projects (`~/.claude/projects/$ENCODED-<repo>/`)
-- Teammate session jsonls inside those projects
-- Any file outside the three "in scope (modify)" paths
+- This plugin's install directory (`${CLAUDE_PLUGIN_ROOT}` — the dispatcher / optimize skills themselves are read-only).
+- Global `~/.claude/CLAUDE.md` and global skills under `~/.claude/skills/`.
+- AutoMemory directories of sibling repo projects (each repo has its own encoded directory under `~/.claude/projects/`).
+- Teammate session jsonls inside those projects.
+- Any file outside the three "in scope (modify)" roots listed above.
 
-Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out of scope here. If a finding genuinely warrants a global rule, surface it in the final report and let the user decide; never write outside the three "in scope (modify)" paths.
+Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out of scope here. If a finding genuinely warrants a global rule, surface it in the final report and let the user decide; never write outside the three "in scope (modify)" roots.
 
 ## Execution flow
 
@@ -87,13 +82,13 @@ Prerequisite: `jq` on `PATH` (standard on macOS via `brew install jq`, on Debian
 
 In the forked context, read these in parallel where possible:
 
-- Every `*.md` file in `/tmp/dispatcher-optimize-logs/` (the session logs)
-- `$DISPATCHER_DIR/CLAUDE.md` (current project CLAUDE.md)
-- `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` (dispatcher skill body — read-only, but you still need it to know what's already documented)
-- `${CLAUDE_PLUGIN_ROOT}/bin/tm` (the helper script — read-only)
-- `$DISPATCHER_DIR/.claude/local-dispatcher-notes.md` (if it exists — user's freeform additions)
-- `$PROJECT_MEMORY/MEMORY.md` (memory index)
-- Every `*.md` file linked from `MEMORY.md`
+- Every `*.md` file in `/tmp/dispatcher-optimize-logs/` (the session logs from step 1).
+- The dispatcher's `CLAUDE.md`.
+- `${CLAUDE_PLUGIN_ROOT}/skills/dispatcher/SKILL.md` (dispatcher skill body — read-only, but you need it to know what's already documented).
+- `${CLAUDE_PLUGIN_ROOT}/bin/tm` (the helper script — read-only).
+- The dispatcher's `.claude/local-dispatcher-notes.md`, if present (probe with `test -f` first; absent file is not an error).
+- The `MEMORY.md` index inside the AutoMemory directory, if present.
+- Every `*.md` file linked from `MEMORY.md`.
 
 You need both sides — the lessons in the logs and the current state of the carriers — to decide what's already captured and what's not.
 
