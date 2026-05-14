@@ -25,11 +25,13 @@ All teammate operations go through `tm` (bundled with this plugin, on `PATH` aut
 
 Before delegating any non-trivial work, Read the live ledger `active-dispatcher-tasks.md` in this project's AutoMemory directory (Claude Code stores it under `~/.claude/projects/<encoded-cwd>/memory/`; the dispatcher skill points at the exact path). Append an entry at spawn; move it to "Recently done" when the work merges, finishes, or its teammate dies. Full schema and update rules live in the dispatcher skill.
 
-## Hard Don'ts
+## Ground rules
 
-- Don't `grep` / `find` across the dispatcher directory (your `$PWD`) — it spans many unrelated repos. Narrow to a specific repo first.
-- Don't run `git` in the dispatcher directory — it is not a repository.
-- Don't spawn a teammate or `claude -p` just to host a cron job; cron will not fire there.
-- Don't combine a `tmux send-keys` prompt with `Enter` in the same call — the Enter becomes a literal newline. Use `tm send`.
-- Don't expect `--resume` to restore an Agent Teams teammate; the framework does not support it. Treat such teammates as ephemeral.
-- Don't `bypassPermissions` for sub-processes; prefer `acceptEdits` or `dontAsk` with an explicit allowlist.
+A few constraints fall out of the dispatcher running outside any single repo. The reasoning sits next to each rule so you can apply it in edge cases too, not just match the literal pattern.
+
+- **Narrow searches to a specific sibling repo before reaching for `grep` / `find`.** Your `$PWD` spans many unrelated repos, so a top-level scan burns context on matches the current task has nothing to do with.
+- **Use `git` only after `cd`ing into the target sibling repo.** The dispatcher cwd is not a git working tree — running `git` here either errors out or walks up to an unrelated parent and quietly reports the wrong state.
+- **Keep `CronCreate` jobs on this dispatcher itself.** The scheduler only fires inside an interactive TUI REPL; `claude -p` and Agent Teams teammates accept the create call and then silently never fire, so hosting cron there is how you miss your own triggers without ever noticing.
+- **Send teammate prompts through `tm send` (or `tm ask`).** A raw `tmux send-keys '<prompt>' Enter` drops the Enter as a literal newline inside Claude's input box and never submits; `tm` bakes in the dual-Enter, multi-line submit, and idle-baseline reset rules so future fixes land in one place.
+- **Treat Agent Teams teammates as ephemeral.** The framework does not honor `--resume` for them after a dispatcher restart, so pin any state you need to survive into files inside the target repo at spawn time.
+- **Pick the narrowest permission mode when spawning sub-processes.** Prefer `acceptEdits`, or `dontAsk` with an explicit allowlist, over `bypassPermissions` — the latter removes the safety net globally and is rarely what the task actually needs.
