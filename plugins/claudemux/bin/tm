@@ -201,6 +201,17 @@ cmd_spawn() {
     # byte-match without doing any normalization itself.
     local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
 
+    # The dispatcher directory ($PWD) is on every teammate's upward
+    # CLAUDE.md walk, so without this Claude Code loads the dispatcher's
+    # own CLAUDE.md/CLAUDE.local.md as teammate "project instructions".
+    # Inject claudeMdExcludes via --settings (the flagSettings tier,
+    # merged before the memory walk runs) so the teammate skips exactly
+    # those two files but still loads the target repo's own CLAUDE.md.
+    # The flag rides only on the teammate launch command, never the
+    # dispatcher's own process.
+    local dispatcher_phys; dispatcher_phys=$(pwd -P)
+    local md_excludes; md_excludes="{\"claudeMdExcludes\":[\"$dispatcher_phys/CLAUDE.md\",\"$dispatcher_phys/CLAUDE.local.md\"]}"
+
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
         echo "$name already exists (use 'tm status $repo' to view, or 'tm kill $repo' first)"
@@ -236,7 +247,7 @@ cmd_spawn() {
     local sid sf; sf=$(sid_file "$repo")
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
-        tmux send-keys -t "$pane" "claude --resume $sid" Enter
+        tmux send-keys -t "$pane" "claude --resume $sid --settings '$md_excludes'" Enter
         echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid)"
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
@@ -244,7 +255,7 @@ cmd_spawn() {
         # filename equal to this UUID, and the global Stop hook touches
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
-        tmux send-keys -t "$pane" "claude --session-id $sid" Enter
+        tmux send-keys -t "$pane" "claude --session-id $sid --settings '$md_excludes'" Enter
         echo "spawned: $name (cwd=$cwd_phys, sid=$sid)"
     fi
     echo "$sid" > "$sf"

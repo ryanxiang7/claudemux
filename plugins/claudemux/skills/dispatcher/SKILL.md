@@ -83,7 +83,7 @@ tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
 ```
 
-`<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it.
+`<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
 
 The teammate then auto-registers its own Remote Control session — the URL appears in the startup banner (visible via `tm status <repo>`). The user can drive that teammate directly from claude.ai/code or mobile, in parallel with you.
 
