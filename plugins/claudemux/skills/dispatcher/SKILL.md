@@ -81,6 +81,12 @@ tm kill <repo>                   tmux kill-session the teammate and clean up its
 tm reload <repo>... | --all      fan out /reload-plugins to one, many, or every teammate
 tm poll <repo> <regex> [timeout=180]
                                  block until pane content matches the regex
+tm archive <id> [--status '...'] move a finished task from the active ledger to the
+                                 archive; reads the compressed outcome from stdin
+                                 (see "Archiving a finished task" below)
+tm ctx <repo>... | --all [--window 200k|1m]
+                                 report a teammate's real context-window usage from
+                                 its session transcript (see "Fleet snapshot" below)
 ```
 
 `<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
@@ -150,6 +156,12 @@ When several teammates are running and you want a one-shot "who's doing what", `
 | `PREVIEW` | first 50 chars of `<sid>.last`, control chars stripped |
 
 `BUSY` is a stat() of one file — cheap, no pane scraping. `LAST` and `PREVIEW` come from the Stop hook artifacts. The three together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
+
+### Context-window usage: `tm ctx`
+
+To know how full a teammate's context window is, use `tm ctx <repo>` (or `tm ctx --all`). It reads the teammate's session transcript and reports the real prompt size — do not rely on the TUI status-bar percentage, which is approximate and absent in many environments.
+
+`tm ctx` reports the most recent assistant turn's prompt size (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`), a next-turn estimate (plus that turn's `output_tokens`), and the percentage of the context window. The window size is not recorded in the transcript: a peak usage above ~210k proves a 1M window, otherwise `tm ctx` assumes 200k and labels it `assumed 200k`. Pass `--window 200k|1m` when you know the window and the heuristic can't yet tell.
 
 ### Spawn readiness and `/clear` sid rotation
 
@@ -235,16 +247,22 @@ When the work hits a terminal state (MR merged / Dev Task closed / explicit
 "done" / teammate killed):
 
 1. If the entry has a `watch` cron job, `CronDelete` it first.
-2. Write a **compressed** archive entry — outcome recall, not working memory:
-   - `id`
-   - `repo` + `branch`
-   - `intent` — one line
-   - `outcome` — one or two lines: the conclusion plus key artifacts (commit
-     SHAs, MR URL, Dev Task URL)
-   - `closed` — date
-3. Prepend it to the top of `dispatcher-tasks-archive.md` (newest first, so a
-   partial Read of the file head gets recent history cheaply).
-4. Delete the full entry from `active-dispatcher-tasks.md`.
+2. Compose the **outcome** — one or two lines: the conclusion plus key
+   artifacts (commit SHAs, MR URL, Dev Task URL). This is the only part that
+   needs your judgment; everything else is copied or stamped mechanically.
+3. Run `tm archive <id>` with that outcome on stdin:
+
+   ```
+   echo "<outcome text>" | tm archive t-20260515-1430-foo
+   ```
+
+   `tm archive` copies `repo` / `branch` / `intent` verbatim from the active
+   entry, stamps today's date as `closed`, and carries over the active
+   header's `[status]` tag — pass `--status '<tag>'` to change it (e.g. a
+   task that was `[PAUSED]` and is now `done`). It prepends the compressed
+   entry to the top of `dispatcher-tasks-archive.md` (newest first; creates
+   that file from its shape if it doesn't exist), then deletes the full entry
+   from `active-dispatcher-tasks.md`.
 
 An archive entry is a pointer plus a conclusion, not a knowledge store. The
 deep analysis lives on the task's branch, commit messages, and tracker record —
@@ -252,9 +270,9 @@ the archive entry just points there. If some analysis is durably reusable
 knowledge (not task-specific), promote it to its own `project` or `feedback`
 memory file instead of leaving it in the archive.
 
-Don't try to over-engineer this with a separate database. The markdown files
-*are* the system; Read + Edit them like any other text. A future helper script
-can come later if it earns its keep.
+The markdown files *are* the system — no database. `tm archive` handles the
+mechanical move; for everything else (reading the ledger, fixing a field,
+editing active entries) Read + Edit them like any other text.
 
 ## Auto-watch MR / CI / review
 

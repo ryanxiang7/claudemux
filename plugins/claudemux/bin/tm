@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tm — tmux teammate manager for the dispatcher skill.
+# tm — the dispatcher's CLI: tmux teammate manager, plus task-ledger and
+# context-usage helpers for dispatcher bookkeeping.
 #
 # Each "teammate" is a tmux session named `teammate-<repo>` running an
 # interactive `claude` in `<current-dir>/<repo>`. There is NO configured
@@ -91,6 +92,14 @@ sid_file() { echo "/tmp/teammate-$1.sid"; }
 send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 ready_file() { echo "/tmp/teammate-$1.ready"; }
 cwd_file() { echo "/tmp/teammate-$1.cwd"; }
+
+# Resolve the dispatcher's own AutoMemory directory. Claude Code derives it
+# from cwd: $PWD with every '/' and '.' replaced by '-'. tm runs from the
+# dispatcher directory by contract, so $PWD is the right base.
+memory_dir() {
+    local encoded; encoded=$(printf '%s' "$PWD" | tr './' '-')
+    printf '%s/.claude/projects/%s/memory' "$HOME" "$encoded"
+}
 
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
 # empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
@@ -663,6 +672,221 @@ cmd_poll() {
     return 1
 }
 
+# Move a finished task from the active ledger to the archive — the mechanical
+# half of "Archiving a finished task" in the dispatcher skill. Cuts the entry
+# block out of active-dispatcher-tasks.md, copies repo/branch/intent verbatim
+# from it, stamps the closed date, and prepends a compressed entry to
+# dispatcher-tasks-archive.md (newest on top), creating that file from its
+# shape if absent. The judgment half — the one/two-line outcome — is the
+# dispatcher's and arrives on stdin.
+cmd_archive() {
+    local id="" status=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --status)   status="${2:-}"; shift 2 ;;
+            --status=*) status="${1#--status=}"; shift ;;
+            -*)         die "tm archive: unknown flag: $1" ;;
+            *)          if [[ -z "$id" ]]; then id="$1"; else die "tm archive: unexpected arg: $1"; fi; shift ;;
+        esac
+    done
+    [[ -n "$id" ]] || die "usage: tm archive <id> [--status '<tag>']   (outcome text on stdin)"
+
+    local mdir; mdir=$(memory_dir)
+    local active="$mdir/active-dispatcher-tasks.md"
+    local archive="$mdir/dispatcher-tasks-archive.md"
+    [[ -f "$active" ]] || die "no active ledger at $active"
+
+    # The outcome — the one part that needs dispatcher judgment — comes in on
+    # stdin so multi-word / URL-bearing text needs no argv quoting.
+    local outcome; outcome=$(cat)
+    [[ -n "${outcome//[[:space:]]/}" ]] || die "outcome text required on stdin, e.g.:  echo '...' | tm archive $id"
+
+    # Locate the entry block. The active header carries a trailing status tag
+    # (e.g. '### t-... [PAUSED — ...]'), so match the id by prefix, not whole
+    # line. The block runs to the next '### ' / '## ' header or EOF.
+    # grep exits non-zero on no-match; with pipefail that would abort the
+    # whole function inside a command substitution, so each grep pipeline that
+    # may legitimately not match ends with `|| true`.
+    local start; start=$(grep -n -E "^### ${id}([[:space:]]|$)" "$active" | head -1 | cut -d: -f1 || true)
+    if [[ -z "$start" ]]; then
+        die "id not found in active ledger: $id
+  available: $(grep -oE '^### [^ ]+' "$active" | sed 's/^### //' | paste -sd' ' - 2>/dev/null || true)"
+    fi
+    local matches; matches=$(grep -c -E "^### ${id}([[:space:]]|$)" "$active" || true)
+    (( matches == 1 )) || die "id matches $matches entries in active ledger: $id"
+
+    local total; total=$(wc -l < "$active")
+    local rel; rel=$(tail -n +"$((start + 1))" "$active" | grep -n -E '^(### |## )' | head -1 | cut -d: -f1 || true)
+    local end
+    if [[ -n "$rel" ]]; then end=$((start + rel - 1)); else end="$total"; fi
+
+    local block; block=$(sed -n "${start},${end}p" "$active")
+
+    # Carry over the active header's [status] tag unless --status overrides it.
+    if [[ -z "$status" ]]; then
+        local hdr; hdr=$(printf '%s\n' "$block" | head -1)
+        if [[ "$hdr" =~ \[(.+)\][[:space:]]*$ ]]; then
+            status="${BASH_REMATCH[1]}"
+        else
+            status="done"
+        fi
+    fi
+
+    local repo branch intent
+    repo=$(printf '%s\n' "$block"   | grep -m1 -E '^- repo:'   | sed -E 's/^- repo:[[:space:]]*//'   || true)
+    branch=$(printf '%s\n' "$block" | grep -m1 -E '^- branch:' | sed -E 's/^- branch:[[:space:]]*//' || true)
+    intent=$(printf '%s\n' "$block" | grep -m1 -E '^- intent:' | sed -E 's/^- intent:[[:space:]]*//' || true)
+    [[ -n "$repo" ]]   || repo="(unknown)"
+    [[ -n "$branch" ]] || branch="(unknown)"
+    [[ -n "$intent" ]] || intent="(unknown)"
+
+    local today; today=$(date +%Y-%m-%d)
+    local entry="### ${id}  [${status}]
+- repo/branch: ${repo} / ${branch}
+- intent: ${intent}
+- outcome: ${outcome}
+- closed: ${today}"
+
+    # Create the archive from its shape if it doesn't exist yet.
+    if [[ ! -f "$archive" ]]; then
+        mkdir -p "$mdir"
+        cat > "$archive" <<'ARCHIVE_EOF'
+---
+name: dispatcher-tasks-archive
+description: "On-demand archive of closed dispatcher tasks, compressed to outcome + artifacts. NOT a boot read — only consult when looking up past task history. Live in-flight tasks live in active-dispatcher-tasks.md."
+metadata:
+  node_type: memory
+  type: project
+---
+
+# Dispatcher task archive
+
+Closed tasks moved here from `active-dispatcher-tasks.md`, compressed to a
+pointer + conclusion (not a knowledge base). Newest on top. Reusable analysis
+that outlives a task should be promoted to its own memory file, not kept here.
+
+<!-- split by month (dispatcher-tasks-archive-YYYY-MM.md) if this file grows past a few hundred entries -->
+ARCHIVE_EOF
+    fi
+
+    # Prepend the entry: insert above the first existing '### ' entry, or after
+    # the header block if the archive has no entries yet.
+    local tmp; tmp=$(mktemp)
+    local first; first=$(grep -n -E '^### ' "$archive" | head -1 | cut -d: -f1 || true)
+    if [[ -n "$first" ]]; then
+        head -n "$((first - 1))" "$archive" > "$tmp"
+        printf '%s\n\n' "$entry" >> "$tmp"
+        tail -n +"$first" "$archive" >> "$tmp"
+    else
+        cat "$archive" > "$tmp"
+        printf '\n%s\n' "$entry" >> "$tmp"
+    fi
+    mv "$tmp" "$archive"
+
+    # Remove the original block from the active ledger.
+    local tmp2; tmp2=$(mktemp)
+    sed "${start},${end}d" "$active" > "$tmp2"
+    mv "$tmp2" "$active"
+
+    echo "archived $id  [$status] -> $(basename "$archive")  (removed from active ledger)"
+}
+
+# Report a teammate's real context-window usage from its session transcript.
+# The TUI status-bar percentage is unreliable and absent in many environments;
+# the jsonl usage block is the source of truth.
+#
+# ctx_used (current prompt size) = input_tokens + cache_creation_input_tokens
+#   + cache_read_input_tokens of the most recent assistant message.
+# next-turn estimate adds that message's output_tokens — this turn's output
+#   becomes next turn's input.
+#
+# Window size is not recorded in the transcript. We detect 1M one-directionally:
+# a 200k-window session auto-compacts well before 200k, so a peak ctx above
+# ~210k proves a 1M window. Below that we assume 200k and label it as assumed;
+# --window overrides.
+cmd_ctx() {
+    local window_override=""
+    local repos=()
+    local all=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)      all=1; shift ;;
+            --window)   window_override="${2:-}"; shift 2 ;;
+            --window=*) window_override="${1#--window=}"; shift ;;
+            -*)         die "tm ctx: unknown flag: $1" ;;
+            *)          repos+=("$1"); shift ;;
+        esac
+    done
+
+    if [[ -n "$window_override" ]]; then
+        case "$window_override" in
+            200k|1m) ;;
+            *) die "tm ctx: --window must be 200k or 1m" ;;
+        esac
+    fi
+
+    if (( all )); then
+        local r
+        while IFS= read -r r; do [[ -n "$r" ]] && repos+=("$r"); done < <(iter_repos)
+    fi
+    [[ ${#repos[@]} -gt 0 ]] || die "usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]"
+
+    local repo
+    for repo in "${repos[@]}"; do
+        ctx_one "$repo" "$window_override"
+    done
+}
+
+# Print one teammate's context line. Soft-fails (prints a '?' line, returns 0)
+# so 'tm ctx --all' keeps going across teammates with no readable transcript.
+ctx_one() {
+    local repo="$1" window_override="$2"
+    local sid; sid=$(resolve_sid "$repo") || { echo "$repo: ? (no sid file)"; return 0; }
+
+    # The teammate's cwd (recorded at spawn) is the base for its own AutoMemory
+    # path — the teammate runs in $PWD/<repo>, not the dispatcher's $PWD.
+    local cwd_f; cwd_f=$(cwd_file "$repo")
+    local tcwd
+    if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$PWD/$repo"; fi
+    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
+    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
+    [[ -f "$jsonl" ]] || { echo "$repo: ? (no transcript at $jsonl)"; return 0; }
+
+    # One pass: latest assistant usage (for current/next ctx) + peak ctx across
+    # the whole transcript (for one-directional 1M-window detection).
+    local line
+    line=$(jq -r -s '
+        [ .[] | select(.type == "assistant" and (.message.usage != null)) | .message.usage ] as $u
+        | if ($u | length) == 0 then "EMPTY"
+          else ($u[-1]) as $l
+            | "\($l.input_tokens + $l.cache_creation_input_tokens + $l.cache_read_input_tokens) \($l.output_tokens) \([ $u[] | .input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens ] | max)"
+          end' "$jsonl" 2>/dev/null || true)
+    if [[ -z "$line" || "$line" == "EMPTY" ]]; then
+        echo "$repo: ? (no assistant usage in transcript)"; return 0
+    fi
+    local used out peak
+    read -r used out peak <<< "$line"
+
+    local next=$((used + out))
+
+    # Window: explicit flag wins; else a peak above ~210k proves 1M; else 200k.
+    local window window_note
+    if [[ "$window_override" == "1m" ]]; then
+        window=1000000; window_note="flag"
+    elif [[ "$window_override" == "200k" ]]; then
+        window=200000; window_note="flag"
+    elif (( peak > 210000 )); then
+        window=1000000; window_note="detected 1M"
+    else
+        window=200000; window_note="assumed 200k"
+    fi
+
+    local pct=$(( used * 100 / window ))
+    local wlabel; if (( window >= 1000000 )); then wlabel="1M"; else wlabel="200k"; fi
+    printf '%s: %s tokens · ~%s next turn · %s%% of %s (%s)\n' \
+        "$repo" "$used" "$next" "$pct" "$wlabel" "$window_note"
+}
+
 cmd_help() {
     cat <<'EOF'
 tm — tmux teammate manager for the dispatcher skill
@@ -763,6 +987,23 @@ USAGE
       can't catch an interesting intermediate state. Pattern should match
       the EXPECTED RESULT, not the prompt you just sent.
 
+  tm archive <id> [--status '<tag>']
+      move a finished task from the active ledger to the archive. Reads the
+      compressed one/two-line outcome from stdin; copies repo/branch/intent
+      verbatim from the active entry and stamps today's date as closed.
+      Prepends to dispatcher-tasks-archive.md (newest on top), creating it
+      from its shape if absent, then deletes the entry from
+      active-dispatcher-tasks.md. Without --status the active header's
+      [status] tag is carried over; pass --status to change it (e.g. a
+      paused task that has now finished).
+
+  tm ctx <repo>... | --all  [--window 200k|1m]
+      report a teammate's real context-window usage from its session
+      transcript (the TUI percentage is unreliable and often absent).
+      Prints current prompt size, next-turn estimate, and percent of window.
+      Window size is not in the transcript: a peak above ~210k proves a 1M
+      window, otherwise 200k is assumed (and labelled so); --window forces it.
+
 ENVIRONMENT
   (none — tm derives the dispatcher directory from $PWD at invocation
   time, with no global config file or env override. To "switch" dispatcher
@@ -787,6 +1028,8 @@ main() {
         states)     cmd_states "$@" ;;
         wait-quiet) cmd_wait_quiet "$@" ;;
         poll)       cmd_poll "$@" ;;
+        archive)    cmd_archive "$@" ;;
+        ctx)        cmd_ctx "$@" ;;
         help|-h|--help) cmd_help ;;
         *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;
     esac
