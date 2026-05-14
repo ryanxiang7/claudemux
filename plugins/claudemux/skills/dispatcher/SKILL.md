@@ -194,17 +194,27 @@ User-specific notes accumulated by `/claudemux:optimize` live in `.claude/local-
 
 ## Task ledger (use AutoMemory)
 
-The dispatcher keeps a single live ledger named `active-dispatcher-tasks.md` in
-this project's AutoMemory directory (Claude Code derives it from your `$PWD`;
-the resolved path is `~/.claude/projects/<encoded-cwd>/memory/`, where
-`<encoded-cwd>` is `$PWD` with `/` and `.` both replaced by `-`; the
-`MEMORY.md` index in the same folder lists it). Read it on boot,
-before any cross-task decision, and whenever the user asks "what's running"
-or "看看现在在跑啥". If the ledger file doesn't exist yet, create it from the
-shape described below.
+The ledger is two files in this project's AutoMemory directory (Claude Code
+derives it from your `$PWD`; the resolved path is
+`~/.claude/projects/<encoded-cwd>/memory/`, where `<encoded-cwd>` is `$PWD`
+with `/` and `.` both replaced by `-`; the `MEMORY.md` index in the same
+folder lists both):
+
+- `active-dispatcher-tasks.md` — only in-flight tasks, one `## Active` section.
+  Small by construction. **Read it on boot**, before any cross-task decision,
+  and whenever the user asks "what's running" / "看看现在在跑啥".
+- `dispatcher-tasks-archive.md` — closed tasks, compressed. **Never read on
+  boot.** Read it on demand only — when the user asks about a past task or you
+  need history to make a decision.
+
+If either file doesn't exist yet, create it from the shape below.
+
+### Active entries
 
 When you spawn delegated repo work (`claude -p`, Agent teammate, or `tm spawn`),
-append an entry to the `## Active` section. Required fields:
+append an entry to the `## Active` section. An active entry is working memory:
+keep whatever you need to resume the task — root-cause notes, option menus,
+resume instructions all belong here while the task is in flight. Required fields:
 
 | Field | How to obtain |
 |---|---|
@@ -219,12 +229,31 @@ append an entry to the `## Active` section. Required fields:
 | `last_checked` | timestamp of last poll, or `never` |
 | `created` | timestamp at spawn |
 
-When the work finishes (MR merged / Dev Task closed / explicit "done" / teammate
-killed), move the entry from `## Active` to `## Recently done`. Keep the last
-~10 there; drop older. The exact entry shape is in the ledger file itself.
+### Archiving a finished task
 
-Don't try to over-engineer this with a separate database. The markdown file
-*is* the system; Read + Edit it like any other text. A future helper script
+When the work hits a terminal state (MR merged / Dev Task closed / explicit
+"done" / teammate killed):
+
+1. If the entry has a `watch` cron job, `CronDelete` it first.
+2. Write a **compressed** archive entry — outcome recall, not working memory:
+   - `id`
+   - `repo` + `branch`
+   - `intent` — one line
+   - `outcome` — one or two lines: the conclusion plus key artifacts (commit
+     SHAs, MR URL, Dev Task URL)
+   - `closed` — date
+3. Prepend it to the top of `dispatcher-tasks-archive.md` (newest first, so a
+   partial Read of the file head gets recent history cheaply).
+4. Delete the full entry from `active-dispatcher-tasks.md`.
+
+An archive entry is a pointer plus a conclusion, not a knowledge store. The
+deep analysis lives on the task's branch, commit messages, and tracker record —
+the archive entry just points there. If some analysis is durably reusable
+knowledge (not task-specific), promote it to its own `project` or `feedback`
+memory file instead of leaving it in the archive.
+
+Don't try to over-engineer this with a separate database. The markdown files
+*are* the system; Read + Edit them like any other text. A future helper script
 can come later if it earns its keep.
 
 ## Auto-watch MR / CI / review
@@ -245,6 +274,6 @@ Loop shape:
    - On **review comments**: same pattern — relay the reviewer comment text plus the file/line to the teammate.
    - Update `last_checked` in the ledger row.
 3. Record the cron job id back into the row's `watch` field so the watch can be torn down later (`CronDelete <id>`).
-4. When the task hits a terminal state (merged / closed / abandoned), `CronDelete` the watch and move the row to `## Recently done`.
+4. When the task hits a terminal state (merged / closed / abandoned), `CronDelete` the watch and archive the task (compress + move to `dispatcher-tasks-archive.md`, see "Archiving a finished task" above).
 
 The dispatcher idle-only firing rule still applies — long human conversation with you delays the watch tick. That is acceptable; CI / review state does not need second-level freshness.

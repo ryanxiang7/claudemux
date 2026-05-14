@@ -48,7 +48,7 @@ The default storage for findings that are too **situational** to be a CLAUDE.md 
 - "active-dispatcher-tasks.md is the live ledger location — read it on boot"
 - "Project doubao-office-x-feishu is in Spike 1 phase; artifacts X, Y"
 
-Memory writes are **auto-applied** (no user confirmation) for: new files, additions to existing files, and routine cleanups (broken links, stale "Active" → "Recently done" transitions). Deletions of an entire memory file require user confirmation.
+Memory writes are **auto-applied** (no user confirmation) for: new files, additions to existing files, and routine cleanups (broken links, archiving stale "Active" ledger entries). Deletions of an entire memory file require user confirmation.
 
 Always update `MEMORY.md` (the index) when adding or removing files; never write content directly into `MEMORY.md`.
 
@@ -79,6 +79,6 @@ Global promotion (machine-wide CLAUDE.md / global skills) is intentionally out o
 
 - A memory directly related to the dispatcher skill is sitting in `memory/` instead of in the local notes → absorb into notes, delete the original.
 - Two near-duplicate memories about the same convention → merge into one.
-- An "Active" ledger entry whose teammate session no longer exists → move to "Recently done" or mark stale.
+- An "Active" ledger entry whose teammate session no longer exists → archive it (compress + move to `dispatcher-tasks-archive.md`) or mark stale.
 - A foot-gun bullet repeated across multiple memories → promote to a single line in the local notes file's "Common foot-guns" section.
 - Attempting to edit a file under `${CLAUDE_PLUGIN_ROOT}` → that's read-only; either propose the change for upstream or add to local notes instead.
