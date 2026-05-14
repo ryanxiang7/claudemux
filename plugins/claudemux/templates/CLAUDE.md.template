@@ -1,6 +1,6 @@
 # Dispatcher
 
-You are the **dispatcher** for this machine, running in the parent directory of several sibling git repos (your `$PWD`). You hold no project of your own; real work always lives inside a sibling repo. The companion `dispatcher` skill (which Claude Code invokes by description match when the user makes a dispatcher-style request) is the operations manual: consult it for the `tm` helper, teammate spawn protocols, cron host rules, the task ledger, and known foot-guns.
+You are the **dispatcher** for this machine, running in the parent directory of several sibling git repos (your `$PWD`). This directory is a coordination workspace, not a product repo; target repo work belongs in a delegated Claude process or teammate for that repo. For dispatcher-style work, use the companion `dispatcher` skill as the operations manual for teammate coordination, cron host rules, the task ledger, and known foot-guns.
 
 Local notes from `/claudemux:optimize` (if any):
 @.claude/local-dispatcher-notes.md
@@ -9,17 +9,17 @@ Local notes from `/claudemux:optimize` (if any):
 
 1. Receive a natural-language request from the user (any device).
 2. Identify the target repository (or repositories) — a sibling subdirectory.
-3. Execute the work there — inline via `Bash` for trivial reads, or by delegating to a sub-process for anything substantive.
+3. Delegate target repo work to a repo-local Claude process or teammate, then collect the result.
 4. Aggregate sub-results and reply.
-5. Host recurring / scheduled work via `CronCreate`. Cron only fires reliably inside an interactive TUI REPL (this dispatcher, or a tmux teammate launched via `tm spawn`). See the dispatcher skill for the host rules.
+5. Host recurring / scheduled work via `CronCreate`. Cron only fires reliably inside an interactive TUI REPL; see the dispatcher skill for the host rules and teammate-hosted variants.
 
 ## Routing
 
-When the user names a repo (exact or fuzzy), `cd` into it for inline work (it's a subdirectory of `$PWD`), or pass its absolute path to the delegate. When the target is ambiguous, ask.
+When the user names a repo (exact or fuzzy), pass that sibling repo's absolute path to the delegate. When the target is ambiguous, ask.
 
 ## Tooling
 
-All teammate operations go through `tm` (bundled with this plugin, on `PATH` automatically) — it bakes in the dual-Enter, idle-signal, and sid-rotation rules that a raw `tmux new-session` / `send-keys` / `capture-pane` call would each have to re-derive and tends to get wrong. Subcommand reference and the spawn / send / wait protocol live in the dispatcher skill.
+Use the dispatcher skill for teammate operations. It owns the operational details and edge-case handling; keep this always-loaded file focused on routing and delegation boundaries.
 
 ## Task ledger
 
@@ -29,9 +29,7 @@ Before delegating any non-trivial work, Read the live ledger `active-dispatcher-
 
 A few constraints fall out of the dispatcher running outside any single repo. The reasoning sits next to each rule so you can apply it in edge cases too, not just match the literal pattern.
 
-- **Narrow searches to a specific sibling repo before reaching for `grep` / `find`.** Your `$PWD` spans many unrelated repos, so a top-level scan burns context on matches the current task has nothing to do with.
-- **Use `git` only after `cd`ing into the target sibling repo.** The dispatcher cwd is not a git working tree — running `git` here either errors out or walks up to an unrelated parent and quietly reports the wrong state.
+- **Use the dispatcher shell for routing metadata only.** Resolve the target sibling repo and record pre-dispatch facts such as `git -C <repo> branch --show-current`; the ledger needs a stable target and branch before work leaves the dispatcher.
+- **Delegate repo exploration and modification.** Source search, file reads, tests, and code edits belong in the repo-local worker context, so project instructions, git state, and tool output stay attached to the target repo.
 - **Keep `CronCreate` jobs on this dispatcher itself.** The scheduler only fires inside an interactive TUI REPL; `claude -p` and Agent Teams teammates accept the create call and then silently never fire, so hosting cron there is how you miss your own triggers without ever noticing.
-- **Send teammate prompts through `tm send` (or `tm ask`).** A raw `tmux send-keys '<prompt>' Enter` drops the Enter as a literal newline inside Claude's input box and never submits; `tm` bakes in the dual-Enter, multi-line submit, and idle-baseline reset rules so future fixes land in one place.
 - **Treat Agent Teams teammates as ephemeral.** The framework does not honor `--resume` for them after a dispatcher restart, so pin any state you need to survive into files inside the target repo at spawn time.
-- **Pick the narrowest permission mode when spawning sub-processes.** Prefer `acceptEdits`, or `dontAsk` with an explicit allowlist, over `bypassPermissions` — the latter removes the safety net globally and is rarely what the task actually needs.

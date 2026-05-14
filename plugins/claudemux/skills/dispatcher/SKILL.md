@@ -1,31 +1,31 @@
 ---
 name: dispatcher
-description: Manage a multi-repo dispatcher session — Claude Code running in the parent directory of several local git repos, used to coordinate work across them. Bundles the `tm` helper script for tmux-teammate operations (ls / spawn / status / send / kill / poll) and codifies the spawn-and-comms protocol so you don't re-derive it. Trigger this skill whenever the user asks to spawn / dispatch / kill / message a teammate, mentions "派一个 / 派活 / 派 teammate / 派 X 去 / 看看 X 在干啥 / 问问 X / dispatcher / 多仓 / 跨仓 / orchestrator", schedules a recurring task on this machine, wants to coordinate work across sibling repos, or interacts from the top-level dispatcher directory itself rather than from any specific repo. Use even when the user does not name the skill — these workflows touch Agent Teams limits, tmux teammate protocol, and local cron-host constraints that are easy to get wrong in one shot.
+description: Manage dispatcher-style coordination across sibling git repos from a parent workspace. Use when the user asks to spawn, dispatch, message, resume, inspect teammate state, or kill a teammate; coordinate work across multiple sibling repos; check what teammates are doing; host or manage local scheduled work; or maintain the dispatcher task ledger/watch loop. Also use when the user names dispatcher concepts such as "派一个 / 派活 / 派 teammate / 派 X 去 / 看看 X 在干啥 / 问问 X / dispatcher / 多仓 / 跨仓 / orchestrator".
+user-invocable: false
 ---
 
 # Dispatcher: multi-repo Claude orchestrator
 
-You are running as the **dispatcher** — Claude Code launched in the parent directory of several sibling git repos (your `$PWD`). You are the dispatcher when `$PWD/CLAUDE.md` exists and `$PWD` is that parent-of-sibling-repos directory; the surrounding tmux session name (`dispatcher` by convention, with Claude Code Remote Control active) is not the identity signal. Claude Code auto-loads `$PWD/CLAUDE.md` (seeded by `/claudemux:setup`) at session start; it carries the always-on identity, goals, and hard Don'ts. This skill is the *operations* manual loaded on top when dispatcher-style work fires.
+Use this skill as the operations manual for dispatcher-style work from a parent directory of sibling git repos: `tm`, teammate delegation, wait/readback, cron hosting, Agent Teams caveats, and the task ledger. The dispatcher routes target repo work to a repo-local Claude process or teammate, then waits, reads back, updates the ledger, and reports the result. Start by resolving the target sibling repo and choosing one delegation form; load diagnostic references only when the normal flow does not fit.
 
 > **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, so `which tm` resolves inside any Bash subshell of an interactive Claude Code session. If for some reason `tm` is not on `PATH` (e.g. a shell that doesn't inherit Claude Code's env), use the absolute install path: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic `Bash` tool call — that variable is only injected when the harness runs commands defined by the plugin (commands/hooks/skill bodies), not in arbitrary subshells you spawn from elsewhere.
 
-## When this skill is doing useful work
+## Confirm dispatcher scope
 
 - The user asks to push work into another repo ("派一个到 `<repo>`", "去 `<repo>` 看看 X").
 - The user asks about an existing teammate ("看看 alarm 在干啥", "问问 monorepo-1 现在的 git status").
 - The user asks for a scheduled / recurring local job.
-- The user is operating from this directory rather than from any specific sibling repo.
+- The user asks to coordinate across multiple sibling repos or maintain the dispatcher ledger/watch loop.
 
-When the user is clearly inside one specific repo (terminal cwd is that repo, request is about that repo only), defer to the project-level skill for that repo instead.
+If the request is a normal single-repo or single-file task inside a covered sibling repo, resolve the target repo and delegate the work into that repo. This keeps repo-local instructions, git state, and tool output inside the worker context instead of mixing them into the dispatcher.
 
 ## Pick the right delegation form
 
-Three ways to push work outward. Pick once, up front — switching mid-task is painful.
+Three ways to push work outward. Pick once, up front — switching mid-task is painful. Use the dispatcher's own shell for dispatcher bookkeeping (`tm`, ledger edits, cron setup); use a delegated Claude process or teammate for target repo inspection or modification.
 
 | Form | Pick when | Skip when |
 |---|---|---|
-| Inline `Bash` in the target repo (`cd <repo> && …`, where `<repo>` is a subdirectory of `$PWD`) | One-shot read or trivial change, output fits in this turn | Anything that should produce its own conversation, run a model loop, or persist beyond one turn |
-| `claude -p` headless in the target repo | One-shot task that needs a full `claude` turn (code edit, multi-tool reasoning) but is still fire-and-forget | You need a cron / loop / wakeup; you want to keep talking to it later |
+| `claude -p` headless in the target repo | One-shot repo task that can finish in a single delegated turn, including reads, small edits, or focused analysis | You need a cron / loop / wakeup; you want to keep talking to it later |
 | `Agent` teammate via Agent Teams (`team_name=<...>` on the Agent tool) | Parallel work across multiple repos that needs to share a task list or message each other | You need cron firing inside the teammate; you need teammate-level `cwd`; you need session resume; you need nested sub-teams |
 | `tmux` teammate (interactive `claude` in a new `tmux` pane, launched by `tm spawn`) | Long-running work that needs a real REPL, must host its own cron, or wants its own Remote Control session for the user to drive directly | Throwaway one-shot work, or anything you'd be embarrassed to keep around for hours |
 
@@ -180,7 +180,7 @@ Implications:
 - Forgetting that `tm send` resets the idle baseline — if you `tm send` then read `/tmp/claude-idle/<sid>` directly to check "done", you'll find no file even for old completed turns. That's by design; wait via `tm wait-idle`.
 - Long `sleep` chains are blocked by the harness sandbox. For "wait until X", use `until <check>; do sleep 4; done` with a time-bounded outer loop, or run the watcher in `run_in_background` and let it notify you on completion.
 - Spawning a teammate or `claude -p` just to host a cron job — cron will not fire there, the job creation looks successful, you will only find out by missing the trigger time. Host cron on this dispatcher.
-- `grep` / `find` across the dispatcher directory (your `$PWD`) — it contains many unrelated repos. Always narrow to a specific repo first.
+- `grep` / `find` across the dispatcher directory (your `$PWD`) mixes unrelated repos into the dispatcher context. Resolve the target repo, then ask the repo-local worker to search there.
 - The auto-mode classifier blocks the dispatcher from editing its **own** `settings.local.json` to grant itself new tool permissions (flagged as "Self-Modification"). Hand the user a minimal JSON snippet to merge into `~/.claude/settings.local.json`, or point them at `/permissions` to do it interactively. Example snippet (merge with whatever's already there):
 
   ```json
@@ -203,15 +203,15 @@ before any cross-task decision, and whenever the user asks "what's running"
 or "看看现在在跑啥". If the ledger file doesn't exist yet, create it from the
 shape described below.
 
-When you spawn a teammate (any form: inline Bash, `claude -p`, Agent teammate,
-`tm spawn`), append an entry to the `## Active` section. Required fields:
+When you spawn delegated repo work (`claude -p`, Agent teammate, or `tm spawn`),
+append an entry to the `## Active` section. Required fields:
 
 | Field | How to obtain |
 |---|---|
 | `id` | `t-<YYYYMMDD-HHMM>-<short-tag>` — short-tag is a 1-2 word slug of the intent |
 | `repo` | the repo's absolute path (a sibling subdirectory under your `$PWD`) |
 | `branch` | `git -C <repo> branch --show-current` at spawn time |
-| `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for inline / `-p` |
+| `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for `claude -p` |
 | `sid` | the teammate's claude session id (for tmux teammates: `cat /tmp/teammate-<repo>.sid`; for Agent Teams: not applicable). This is the field `tm resume <repo> <sid>` consumes when you come back to the task in a future dispatcher session — record it at spawn time, not after the teammate has died. |
 | `intent` | one short line — what the user actually asked for |
 | `artifacts` | URLs to any Dev Task / MR / Feishu doc as they appear (start empty, fill later) |
