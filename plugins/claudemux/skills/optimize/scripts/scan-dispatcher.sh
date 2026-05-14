@@ -3,10 +3,12 @@
 # readable MD logs that /claudemux:optimize ingests.
 #
 # Uses $PWD (physical path) to locate ~/.claude/projects/<encoded>/ —
-# Claude Code encodes each project's cwd as its directory name (slashes →
-# dashes), so that single directory contains EXACTLY the dispatcher's own
-# conversations. Per-repo teammate sessions live under different encoded
-# dirs (one per repo), so no cross-project post-filter is needed.
+# Claude Code encodes each project's cwd as its directory name, mapping
+# both '/' AND '.' to '-' (verified: ~/.claude → -Users-<user>--claude,
+# the double dash comes from the leading '.' on '.claude'). That single
+# encoded directory contains EXACTLY the dispatcher's own conversations.
+# Per-repo teammate sessions live under different encoded dirs (one per
+# repo), so no cross-project post-filter is needed.
 #
 # Self-contained: depends only on bash and jq. No external skill or
 # scanner is required.
@@ -29,7 +31,7 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 DISPATCHER_DIR=$(pwd -P)
-ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr / -)
+ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr './' '-')
 PROJECT_DIR="$HOME/.claude/projects/$ENCODED"
 
 mkdir -p "$OUT"

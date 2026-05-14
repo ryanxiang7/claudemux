@@ -14,7 +14,7 @@ Every path below is relative to the dispatcher directory (parent of all sibling 
 
 ```bash
 DISPATCHER_DIR=$(pwd -P)
-ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr / -)
+ENCODED=$(printf '%s' "$DISPATCHER_DIR" | tr './' '-')   # both '/' and '.' → '-'
 PROJECT_MEMORY="$HOME/.claude/projects/$ENCODED/memory"
 LOCAL_NOTES="$DISPATCHER_DIR/.claude/local-dispatcher-notes.md"
 ```
