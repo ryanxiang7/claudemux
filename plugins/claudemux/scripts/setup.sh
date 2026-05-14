@@ -33,22 +33,18 @@ IDLE_DIR="/tmp/claude-idle"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/claudemux/config"
 
 force=0
-dev_dir_arg=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --force) force=1; shift ;;
-        --dev-dir) dev_dir_arg="${2:-}"; shift 2 ;;
         -h|--help)
             cat <<EOF
 setup.sh — seed CLAUDE.md + idle dir for a claudemux dispatcher.
 
 Usage:
-  $(basename "$0") [--dev-dir <path>] [--force]
+  $(basename "$0") [--force]
 
 Options:
-  --dev-dir <path>  Seed CLAUDE.md in <path>. Defaults to the current working
-                    directory.
-  --force           Overwrite <dir>/CLAUDE.md even if it already exists.
+  --force           Overwrite ./CLAUDE.md even if it already exists.
 
 Paths:
   template          $TEMPLATE
@@ -58,7 +54,7 @@ EOF
     esac
 done
 
-DISPATCHER_DIR="${dev_dir_arg:-$PWD}"
+DISPATCHER_DIR="$PWD"
 [[ -d "$DISPATCHER_DIR" ]] || { echo "setup.sh: dispatcher dir does not exist: $DISPATCHER_DIR" >&2; exit 1; }
 DISPATCHER_DIR="$(cd "$DISPATCHER_DIR" && pwd)"
 TARGET_CLAUDE_MD="$DISPATCHER_DIR/CLAUDE.md"

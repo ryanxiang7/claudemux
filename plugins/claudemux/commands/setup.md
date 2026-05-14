@@ -1,70 +1,100 @@
 ---
-description: First-time setup for the claudemux plugin. Trigger when the user has just installed claudemux and needs to bootstrap a dispatcher, when the user says "刚装好 claudemux / 初始化一下 / 第一次跑 / 帮我配 claudemux / setup dispatcher / first-time setup", or when the user wants to verify a claudemux install on a new machine. Checks system dependencies (tmux, jq, claude CLI) and walks the user through installing what's missing; seeds CLAUDE.md from the bundled template into the current directory; ensures /tmp/claude-idle/ exists; optionally enables Claude Code Remote Control with the user's consent. Defaults to the current working directory; pass --dev-dir <path> to target somewhere else. Idempotent — safe to re-run.
-argument-hint: "[--dev-dir <path>] [--force]"
+description: First-time claudemux setup: check dependencies, seed CLAUDE.md in the current directory, and guide Remote Control setup.
+argument-hint: "[--force]"
 ---
 
-Do these steps in order. Stop and report at the end — don't start tmux, claude, or any teammate yourself.
+You are guiding a human through first-time setup, not just executing a checklist.
+Run safe checks and the bundled setup script yourself; keep package-manager
+installs, `tmux` session startup, new `claude` launches, and teammate creation in
+the user's hands because those actions may need passwords, new terminals, or a
+fresh process that reads startup settings.
+
+Use `AskUserQuestion` when it is available for a real decision or an action you
+need the user to complete. If that tool is unavailable, ask the same question in
+normal chat and wait for the answer. Keep questions concrete, include the exact
+command the user should run, and recheck after the user says the action is done.
+
+At the end, give a short setup report and the exact dispatcher start command.
+The setup flow ends there; the user starts the dispatcher session next.
 
 ## Preflight: confirm the dispatcher directory
 
-`/claudemux:setup` seeds `CLAUDE.md` into the current working directory, and `tm` later derives the dispatcher dir from `$PWD` at runtime. So `$PWD` *is* the dispatcher dir — if the user is currently in the wrong place, setup will write to the wrong place.
+`/claudemux:setup` seeds `CLAUDE.md` into the current working directory. The
+runtime later derives the dispatcher directory from the working directory of the
+dispatcher session, so setup should run from the directory the user intends to
+use as the dispatcher. A good dispatcher directory is usually the parent of
+several sibling git repos, separate from any one repo and separate from `$HOME`.
 
-Check whether `$PWD` looks like a sane dispatcher dir:
+Check the current working directory:
 
 ```bash
-pwd
-ls -d */ 2>/dev/null | head -10        # any sibling subdirectories?
-[[ -d "$PWD/.git" ]] && echo "warn: $PWD is itself a git working tree"
-[[ "$PWD" == "$HOME" ]] && echo "warn: $PWD is the home directory"
+dispatcher_dir="$(pwd -P)"
+echo "dispatcher: $dispatcher_dir"
+find "$dispatcher_dir" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | head -10
+[[ -d "$dispatcher_dir/.git" ]] && echo "warn: dispatcher directory is itself a git working tree"
+[[ "$dispatcher_dir" == "$HOME" ]] && echo "warn: dispatcher directory is the home directory"
 ```
 
-If any `warn:` line printed, or `ls -d */` shows zero sibling directories, use the AskUserQuestion tool to soft-prompt the user **before** proceeding:
+If any `warn:` line printed, or the `find` output shows zero sibling
+subdirectories, pause before setup and ask:
 
-> "Your current cwd is `<pwd>`. claudemux will seed `CLAUDE.md` here and treat this as the dispatcher dir. That looks unusual (the dispatcher dir is normally the parent of several sibling git repos, not a git repo itself or the home directory). How do you want to proceed?"
+> "claudemux will seed `CLAUDE.md` into `<dispatcher-dir>` and future dispatcher
+> sessions will treat that directory as the repo parent. A typical dispatcher dir
+> contains sibling repos and is separate from `$HOME` or any one repo. How do you
+> want to proceed?"
 >
 > Options:
-> - **"Let me re-run from the right directory"** — stop the setup flow here. Tell the user to exit the current claude session, `cd` to the intended dispatcher dir, and run `/claudemux:setup` again. Do not proceed to Step 0.
-> - **"Continue here — this really is my dispatcher dir"** — note their confirmation and proceed to Step 0.
+> - **"I'll re-run from the right directory"** — end the setup flow and give the
+>   instruction: exit this Claude session, `cd` to the intended dispatcher
+>   directory, run `claude`, then run `/claudemux:setup` again.
+> - **"Continue with this dispatcher dir"** — record the confirmation and proceed.
 
-If nothing looks wrong (no `warn:` and sibling directories present), silently continue to Step 0 without bothering the user.
+If the current directory looks normal, continue without prompting.
 
 ## Step 0: verify system dependencies
 
-claudemux needs `tmux`, `jq`, and the `claude` CLI on the user's machine. Check each one and walk the user through installing whatever is missing — these are blocking prerequisites; do not skip ahead.
-
-First detect the platform so the install commands you suggest are right:
-
-```bash
-uname -s   # Darwin = macOS, Linux = Linux/WSL
-```
-
-Then for each required binary:
+claudemux needs `tmux`, `jq`, and the `claude` CLI. Check all of them first,
+then give the user one clear install checklist for anything missing. Finish this
+step before running the setup script because later checks and the dispatcher
+workflow rely on these binaries.
 
 ```bash
-command -v tmux >/dev/null && echo "tmux: OK" || echo "tmux: MISSING"
-command -v jq   >/dev/null && echo "jq: OK"   || echo "jq: MISSING"
-command -v claude >/dev/null && echo "claude: OK" || echo "claude: MISSING"
+echo "platform: $(uname -s)"
+if command -v apt-get >/dev/null 2>&1; then
+  echo "package-manager: apt-get"
+elif command -v dnf >/dev/null 2>&1; then
+  echo "package-manager: dnf"
+elif command -v brew >/dev/null 2>&1; then
+  echo "package-manager: brew"
+else
+  echo "package-manager: unknown"
+fi
+
+for bin in tmux jq claude; do
+  command -v "$bin" >/dev/null 2>&1 && echo "$bin: OK" || echo "$bin: MISSING"
+done
 ```
 
-For every binary that prints `MISSING`, use the **AskUserQuestion** tool to walk the user through installing it. You are not running the install command for the user — `brew` / `apt-get` may need sudo and a password the harness cannot supply. Print the right command for their platform and wait for the user to run it themselves.
+Suggest install commands by platform:
 
-Example wording for missing `tmux` on macOS:
+| Missing binary | macOS with Homebrew | Debian/Ubuntu/WSL | Fedora/RHEL | Other |
+|---|---|---|---|---|
+| `tmux` | `brew install tmux` | `sudo apt-get install -y tmux` | `sudo dnf install -y tmux` | ask the user to install `tmux` with their system package manager |
+| `jq` | `brew install jq` | `sudo apt-get install -y jq` | `sudo dnf install -y jq` | ask the user to install `jq` with their system package manager |
+| `claude` | follow https://claude.com/claude-code | same | same | same |
 
-> "claudemux needs `tmux` but it's not installed on this machine. Install it now? I'll print the command; please run it in your shell and tell me when it's done."
->
+When one or more binaries are missing, ask once with a short list:
+
+> "claudemux is missing these prerequisites: `<missing-list>`. Please run the
+> matching install command(s) in your regular shell, then tell me when done so I
+> can recheck."
+
 > Options (single-select):
-> - **"I'll run `brew install tmux`"** — wait for the user to confirm, then recheck `command -v tmux`.
-> - **"I'll handle it later"** — abort setup with a clear note that the dispatcher cannot run without it.
+> - **"I've installed them"** — re-run the dependency check.
+> - **"I'll handle this later"** — end setup with the missing prerequisites and
+>   the install commands.
 
-The install commands to suggest, by platform:
-
-| Binary | macOS (Darwin) | Linux (Debian/Ubuntu) | Linux (RHEL/Fedora) |
-|---|---|---|---|
-| `tmux` | `brew install tmux` | `sudo apt-get install -y tmux` | `sudo dnf install -y tmux` |
-| `jq` | `brew install jq` | `sudo apt-get install -y jq` | `sudo dnf install -y jq` |
-| `claude` | follow https://claude.com/claude-code | same | same |
-
-After the user reports the install is done, recheck with `command -v`. Loop until every required binary is present or the user explicitly aborts. Do not silently proceed with a missing dependency — the next steps will break.
+Loop until every required binary prints `OK`, or until the user chooses to stop.
 
 ## Step 1: run the bundled setup script
 
@@ -74,16 +104,19 @@ Once all deps are present:
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" $ARGUMENTS
 ```
 
-That copies `CLAUDE.md.template` into the dispatcher dir (skipped if a matching CLAUDE.md already exists; pass `--force` to overwrite a differing one), ensures `/tmp/claude-idle/` exists, and removes any leftover `~/.config/claudemux/config` from older versions.
+That copies `CLAUDE.md.template` into the dispatcher dir, ensures
+`/tmp/claude-idle/` exists, and removes any leftover
+`~/.config/claudemux/config` from older versions.
 
-Read the script's stdout and react:
+Read stdout/stderr as evidence. Extract the dispatcher directory and status for
+the final report. Treat any teammate verification lines printed by the script as
+background; the setup report should hand off only the dispatcher start command.
 
 | Output line | What it means | What to do |
 |---|---|---|
-| `wrote <path>/CLAUDE.md from template` | fresh install | continue |
-| `CLAUDE.md already matches template — skipping` | already set up | continue |
-| `CLAUDE.md exists and differs from template — leaving in place` | user has a customized CLAUDE.md | ask via AskUserQuestion whether to overwrite (re-run with `--force`) or keep their version |
-| `setup.sh: dispatcher dir does not exist: <path>` | user passed a `--dev-dir` to a non-existent directory | ask the user to confirm or correct the path |
+| `[setup] wrote <path>/CLAUDE.md from template` | fresh install | continue |
+| `[setup] CLAUDE.md already matches template — skipping` | already set up | continue |
+| `[setup] CLAUDE.md exists and differs from template — leaving in place` | user has a customized `CLAUDE.md` | ask whether to keep it or overwrite with `--force`; if they choose overwrite, re-run the setup script with the same arguments plus `--force` |
 
 ## Step 2: offer to enable Remote Control
 
@@ -95,49 +128,54 @@ Check the current state:
 jq -r '.remoteControlAtStartup // false' ~/.claude/settings.json 2>/dev/null || echo "false"
 ```
 
-If it already prints `true`, skip to Step 3 and note "Remote Control already enabled."
+If it prints `true`, record "Remote Control already enabled" for the final
+report.
 
-Otherwise, ask the user with the AskUserQuestion tool:
+If it prints anything else, ask:
 
-> "claudemux works best with Claude Code Remote Control enabled at startup, so every dispatcher and teammate session gets its own remote URL. Enable it now? (I'll back up settings.json before editing.)"
+> "claudemux works best with Claude Code Remote Control enabled at startup, so
+> every dispatcher and teammate session gets its own remote URL. Enable it for
+> future Claude Code sessions?"
 
 Options:
-- "Yes, enable it" — set `remoteControlAtStartup: true`
-- "No, leave settings.json alone" — skip; user can run `/config` or `claude --rc` later
+- **"Show me the `/config` path"** — tell the user to run `/config` in a Claude
+  Code session and toggle "Remote Control at startup". Mark the final report as
+  `manual step pending`.
+- **"Leave it off for now"** — skip and mark the final report as
+  `skipped by user`.
 
-If the user says **yes**: prefer to have **the user flip it themselves**, not Claude. Claude Code's auto-mode classifier flags any edit to `~/.claude/settings.json` as Self-Modification and pops up a permission prompt, which is more friction than just telling the user the one-line answer. Hand them either of these and let them pick:
-
-**Option A (recommended):** Run `/config` from inside any Claude Code session and toggle "Remote Control at startup" there. One click, no permission prompt.
-
-**Option B:** Add this key to `~/.claude/settings.json` (merge with whatever's already there):
-
-```json
-{
-  "remoteControlAtStartup": true
-}
-```
-
-Only if the user explicitly says "you do it for me" — and you've warned them that the Self-Modification permission prompt will appear — attempt the automated edit:
+If the user explicitly asks you to edit the file for them, explain that editing
+`~/.claude/settings.json` may trigger a Self-Modification permission prompt, then
+attempt one guarded edit with a backup:
 
 ```bash
-cp ~/.claude/settings.json ~/.claude/settings.json.bak-$(date +%Y%m%d-%H%M%S) \
-  && jq '.remoteControlAtStartup = true' ~/.claude/settings.json > /tmp/cmx-rc.tmp \
-  && mv /tmp/cmx-rc.tmp ~/.claude/settings.json
+settings="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$settings")"
+if [[ -f "$settings" ]]; then
+  cp "$settings" "$settings.bak-$(date +%Y%m%d-%H%M%S)"
+else
+  printf '{}\n' > "$settings"
+fi
+jq '.remoteControlAtStartup = true' "$settings" > /tmp/cmx-rc.tmp \
+  && mv /tmp/cmx-rc.tmp "$settings"
 ```
 
-If the auto-edit fails (permission denied, classifier blocks, jq error, missing `~/.claude/settings.json`), do **not** retry silently — fall back to Option A or B above and tell the user exactly what failed.
-
-If the user says **no**: note "Remote Control not changed."
+After an automated edit, re-run the `jq -r` check. If the edit fails, report the
+exact failure and give the `/config` path as the recovery step.
 
 ## Step 3: report
 
-Print a short summary (5–7 lines):
+Print a short, human-facing summary:
 
-- Dispatcher directory that was seeded (from `setup.sh` stdout).
+- Dispatcher directory that was seeded.
 - Whether `CLAUDE.md` was written / skipped / already matched.
-- Remote Control state: already-on / now-on / skipped-by-user / failed-needs-manual-edit.
-- A reminder that Remote Control only takes effect on the **next** `claude` launch (the setting is read once at startup), not in the current session.
-- The exact command for the user to start their dispatcher (use the absolute path from `setup.sh` stdout, not `$PWD`):
+- Dependency state: all required binaries present.
+- Remote Control state: already on / enabled / manual step pending /
+  skipped by user / failed with manual recovery.
+- Reminder: Remote Control is read at Claude Code startup, so changes apply to
+  the next `claude` launch.
+- The exact command for the user to start their dispatcher. Use the absolute
+  dispatcher path from the preflight or setup script output:
 
   ```
   tmux new-session -s dispatcher -c "<dispatcher-dir>"
@@ -145,10 +183,12 @@ Print a short summary (5–7 lines):
   claude
   ```
 
-End there. Do not launch tmux, claude, or any teammate from this setup flow — the user runs that command themselves and the new `claude` session takes over.
+End after this report. The next `claude` process is the dispatcher session.
 
 ## Re-running
 
 `/claudemux:setup` is fully idempotent: `setup.sh` skips writing `CLAUDE.md` when the existing copy already matches the template, `mkdir -p /tmp/claude-idle` is harmless on an existing dir, and the legacy-config cleanup is a no-op when nothing is left to remove. If the user later says "再跑一次 setup" / "再帮我配一下" / "verify the install", just re-run the command — no special handling needed.
 
-The one branch that does need user input is `setup.sh` reporting `CLAUDE.md exists and differs from template — leaving in place`: ask via AskUserQuestion whether to overwrite (re-run with `--force`) or keep the customized CLAUDE.md.
+The branch that needs user input is `setup.sh` reporting `CLAUDE.md exists and
+differs from template — leaving in place`: ask whether to overwrite with
+`--force` or keep the customized `CLAUDE.md`.
