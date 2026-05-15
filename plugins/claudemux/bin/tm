@@ -101,20 +101,27 @@ memory_dir() {
     printf '%s/.claude/projects/%s/memory' "$HOME" "$encoded"
 }
 
-# Normalize a task slug for use as part of a claude `--name` value. Lowercase,
-# collapse non-alphanumerics into single '-' (kebab-only — no '_'), strip
-# leading/trailing '-', cap at 30 characters. Empty result means the input had
-# no usable alphanumerics — caller should reject.
+# Normalize a task slug for use as part of a claude `--name` value. ASCII
+# lowercase plus CJK Unified Ideographs (U+4E00–U+9FFF, e.g. 国际化 / 日本語)
+# are kept verbatim; every other character (punctuation, whitespace, hiragana,
+# katakana, hangul, emoji, ...) collapses into a single '-' separator.
+# Leading/trailing '-' are stripped and the result is capped at 30 characters
+# (counted as Unicode code points, not bytes). Empty result means the input
+# had no usable allowlist characters — caller should reject.
 sanitize_task_slug() {
-    local s
-    s=$(printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-    if (( ${#s} > 30 )); then
-        s="${s:0:30}"
-        s="${s%-}"  # don't end on '-' if the cut landed on one
-    fi
-    printf '%s' "$s"
+    printf '%s' "$1" | perl -CSDA -e '
+        local $/;
+        my $s = <STDIN>;
+        $s = "" unless defined $s;
+        $s =~ tr/A-Z/a-z/;
+        $s =~ s/[^a-z0-9\x{4e00}-\x{9fff}]+/-/g;
+        $s =~ s/^-+//; $s =~ s/-+$//;
+        if (length($s) > 30) {
+            $s = substr($s, 0, 30);
+            $s =~ s/-+$//;
+        }
+        print $s;
+    '
 }
 
 # 4 random [a-z0-9] chars — the suffix for an auto-named teammate session.
@@ -256,7 +263,7 @@ cmd_spawn() {
     local display_name=""
     if [[ -n "$task" ]]; then
         local slug; slug=$(sanitize_task_slug "$task")
-        [[ -n "$slug" ]] || die "tm spawn: --task '$task' has no alphanumerics after sanitization"
+        [[ -n "$slug" ]] || die "tm spawn: --task '$task' has no usable characters after sanitization (allowlist: ASCII letters/digits + CJK Unified Ideographs)"
         display_name="${repo}-${slug}"
     elif [[ -z "$resume_sid" ]]; then
         display_name="${repo}-$(rand_suffix)"
@@ -956,7 +963,9 @@ USAGE
       so 'tm wait-idle' works immediately without a prior 'tm send'.
       --task <slug> sets the claude conversation display name (the label in
       the prompt box, /resume picker, and terminal title) to <repo>-<slug>.
-      Slug is normalized (lowercase, kebab-only, capped at 30 chars). Without
+      Slug accepts [a-z0-9] plus CJK Unified Ideographs (中日韩汉字 e.g.
+      国际化, 日本語); ASCII letters are lowercased; every other character
+      collapses to a single '-' separator; capped at 30 characters. Without
       --task, a fresh spawn auto-names <repo>-<rand4>; a --resume without
       --task keeps the resumed session's existing name.
       Blocks on /tmp/teammate-<repo>.ready (touched by the SessionStart

@@ -46,10 +46,13 @@ tm spawn <repo> [--task <slug>] [--resume <sid>]
                                  --resume <sid> picks up an existing session by jsonl-UUID.
                                  --task <slug> sets the claude conversation display name
                                  (prompt box / /resume picker / terminal title) to
-                                 <repo>-<slug>; without --task a fresh spawn auto-names
-                                 <repo>-<rand4>, and a --resume without --task keeps the
-                                 resumed session's existing name. The chosen name is also
-                                 echoed in the spawn stdout (`name=<repo>-<slug>`).
+                                 <repo>-<slug>. Slug accepts [a-z0-9] + CJK Unified
+                                 Ideographs (中日韩汉字, e.g. `--task 国际化`); other
+                                 characters collapse to '-'; capped at 30 chars.
+                                 Without --task a fresh spawn auto-names <repo>-<rand4>,
+                                 and a --resume without --task keeps the resumed session's
+                                 existing name. The chosen name is also echoed in the
+                                 spawn stdout (`name=<repo>-<slug>`).
 tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
 tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
                                  multi-line submit quirk); clears the idle/last baseline
