@@ -41,8 +41,15 @@ tm states                        one-line-per-teammate fleet snapshot: REPO, SID
                                  LAST (size+age of .last), PREVIEW (first 50 chars of .last).
                                  The "what's everyone doing" view — prefer this over running
                                  tm ls + tm status across each session.
-tm spawn <repo> [--resume <sid>] launch a teammate inside the sibling repo (cwd = $PWD/<repo>);
-                                 --resume <sid> picks up an existing session by jsonl-UUID
+tm spawn <repo> [--task <slug>] [--resume <sid>]
+                                 launch a teammate inside the sibling repo (cwd = $PWD/<repo>).
+                                 --resume <sid> picks up an existing session by jsonl-UUID.
+                                 --task <slug> sets the claude conversation display name
+                                 (prompt box / /resume picker / terminal title) to
+                                 <repo>-<slug>; without --task a fresh spawn auto-names
+                                 <repo>-<rand4>, and a --resume without --task keeps the
+                                 resumed session's existing name. The chosen name is also
+                                 echoed in the spawn stdout (`name=<repo>-<slug>`).
 tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
 tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
                                  multi-line submit quirk); clears the idle/last baseline
@@ -53,12 +60,14 @@ tm ask [--quiet] [--timeout=N] <repo> <prompt...>
                                  and other non-turn-end paths). Reply on stdout (pipe-
                                  friendly); diagnostics on stderr. Exit non-zero on
                                  timeout, with whatever partial .last exists.
-tm resume <repo> [<sid>] [--prompt "..."]
+tm resume <repo> [<sid>] [--prompt "..."] [--task <slug>]
                                  resume a prior conversation. PREFER passing the sid
                                  from the task ledger (active-dispatcher-tasks.md). Without
                                  sid, auto-picks the newest jsonl by mtime (warns on stderr,
                                  since that's rarely the one you actually wanted).
                                  Optional --prompt sends a follow-up after resume.
+                                 Optional --task relabels the resumed conversation to
+                                 <repo>-<slug> (otherwise the existing name carries over).
 tm wait-idle [--fresh] <repo> [timeout=600]
                                  block until any of Stop / StopFailure / PostCompact /
                                  SessionEnd fires (the idle-marker file appears).

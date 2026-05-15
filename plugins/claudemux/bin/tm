@@ -101,6 +101,28 @@ memory_dir() {
     printf '%s/.claude/projects/%s/memory' "$HOME" "$encoded"
 }
 
+# Normalize a task slug for use as part of a claude `--name` value. Lowercase,
+# collapse non-alphanumerics into single '-' (kebab-only — no '_'), strip
+# leading/trailing '-', cap at 30 characters. Empty result means the input had
+# no usable alphanumerics — caller should reject.
+sanitize_task_slug() {
+    local s
+    s=$(printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    if (( ${#s} > 30 )); then
+        s="${s:0:30}"
+        s="${s%-}"  # don't end on '-' if the cut landed on one
+    fi
+    printf '%s' "$s"
+}
+
+# 4 random [a-z0-9] chars — the suffix for an auto-named teammate session.
+# 36^4 = ~1.7M; the per-repo prefix already disambiguates, so 4 is plenty.
+rand_suffix() {
+    LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c 4 || true
+}
+
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
 # empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
 # use the _or_die variant for a uniform error story.
@@ -190,13 +212,15 @@ cmd_ls() {
 
 cmd_spawn() {
     local repo="${1:-}"
-    [[ -n "$repo" ]] || die "usage: tm spawn <repo> [--resume <sid>]"
+    [[ -n "$repo" ]] || die "usage: tm spawn <repo> [--task <slug>] [--resume <sid>]"
     shift
 
-    local resume_sid=""
+    local resume_sid="" task=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --resume) resume_sid="${2:-}"; shift 2 ;;
+            --resume)   resume_sid="${2:-}"; shift 2 ;;
+            --task)     task="${2:-}"; shift 2 ;;
+            --task=*)   task="${1#--task=}"; shift ;;
             *) die "unknown flag: $1" ;;
         esac
     done
@@ -220,6 +244,25 @@ cmd_spawn() {
     # dispatcher's own process.
     local dispatcher_phys; dispatcher_phys=$(pwd -P)
     local md_excludes; md_excludes="{\"claudeMdExcludes\":[\"$dispatcher_phys/CLAUDE.md\",\"$dispatcher_phys/CLAUDE.local.md\"]}"
+
+    # Conversation display name passed to `claude --name`. Stable, repo-prefixed
+    # so the prompt box / /resume picker / terminal title identify the teammate
+    # at a glance instead of using claude's auto-generated label.
+    #
+    #   --task <slug>          -> <repo>-<sanitized-slug>
+    #   fresh, no --task       -> <repo>-<rand4>
+    #   --resume + no --task   -> empty: keep the existing session's name as-is
+    #   --resume + --task      -> <repo>-<sanitized-slug> (explicit relabel)
+    local display_name=""
+    if [[ -n "$task" ]]; then
+        local slug; slug=$(sanitize_task_slug "$task")
+        [[ -n "$slug" ]] || die "tm spawn: --task '$task' has no alphanumerics after sanitization"
+        display_name="${repo}-${slug}"
+    elif [[ -z "$resume_sid" ]]; then
+        display_name="${repo}-$(rand_suffix)"
+    fi
+    local name_arg=""
+    [[ -n "$display_name" ]] && name_arg=" -n '$display_name'"
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
@@ -254,18 +297,20 @@ cmd_spawn() {
     local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" \
         -e "CLAUDEMUX_TEAMMATE_REPO=$repo" -P -F '#{session_id}')
     local sid sf; sf=$(sid_file "$repo")
+    local name_note=""
+    [[ -n "$display_name" ]] && name_note=", name=$display_name"
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
-        tmux send-keys -t "$pane" "claude --resume $sid --settings '$md_excludes'" Enter
-        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid)"
+        tmux send-keys -t "$pane" "claude --resume $sid --settings '$md_excludes'$name_arg" Enter
+        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid$name_note)"
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
         # No more jsonl scanning, no race window: --session-id makes the jsonl
         # filename equal to this UUID, and the global Stop hook touches
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
-        tmux send-keys -t "$pane" "claude --session-id $sid --settings '$md_excludes'" Enter
-        echo "spawned: $name (cwd=$cwd_phys, sid=$sid)"
+        tmux send-keys -t "$pane" "claude --session-id $sid --settings '$md_excludes'$name_arg" Enter
+        echo "spawned: $name (cwd=$cwd_phys, sid=$sid$name_note)"
     fi
     echo "$sid" > "$sf"
     clear_idle "$sid"
@@ -507,11 +552,13 @@ cmd_resume() {
     # without a sid we fall back to "newest jsonl by mtime" as a one-off
     # convenience — that's NOT the typical workflow because the latest
     # jsonl is not necessarily the one you mean to continue.
-    local repo="" sid="" prompt="" has_prompt=0
+    local repo="" sid="" prompt="" has_prompt=0 task=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --prompt) prompt="${2:-}"; has_prompt=1; shift 2 ;;
             --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
+            --task) task="${2:-}"; shift 2 ;;
+            --task=*) task="${1#--task=}"; shift ;;
             --) shift; break ;;
             -*) die "unknown flag: $1" ;;
             *)
@@ -523,7 +570,7 @@ cmd_resume() {
                 ;;
         esac
     done
-    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"]  (sid from ledger preferred; auto-pick on omit)"
+    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"] [--task <slug>]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation)"
 
     local path="$PWD/$repo"
     [[ -d "$path" ]] || die_repo_not_found resume "$repo" "$path"
@@ -560,7 +607,11 @@ cmd_resume() {
     [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
         || die "sid is not a valid uuid: $sid"
 
-    cmd_spawn "$repo" --resume "$sid"
+    if [[ -n "$task" ]]; then
+        cmd_spawn "$repo" --resume "$sid" --task "$task"
+    else
+        cmd_spawn "$repo" --resume "$sid"
+    fi
 
     if (( has_prompt )); then
         # Give the resumed claude a moment to render its banner / restore
@@ -895,7 +946,7 @@ USAGE
   tm ls
       list all teammate-<repo> sessions
 
-  tm spawn <repo> [--resume <sid>]
+  tm spawn <repo> [--task <slug>] [--resume <sid>]
       launch a claude teammate in $PWD/<repo>. tm must be run from the
       dispatcher directory (the parent of your sibling repos); fails with
       "repo not found" if invoked elsewhere. <repo> must be a direct
@@ -903,6 +954,11 @@ USAGE
       --resume <sid> picks up an existing session by jsonl-UUID; otherwise
       a fresh UUID is pre-generated and handed to `claude --session-id`,
       so 'tm wait-idle' works immediately without a prior 'tm send'.
+      --task <slug> sets the claude conversation display name (the label in
+      the prompt box, /resume picker, and terminal title) to <repo>-<slug>.
+      Slug is normalized (lowercase, kebab-only, capped at 30 chars). Without
+      --task, a fresh spawn auto-names <repo>-<rand4>; a --resume without
+      --task keeps the resumed session's existing name.
       Blocks on /tmp/teammate-<repo>.ready (touched by the SessionStart
       hook once the REPL is up) for up to 18s before returning, so no
       ad-hoc sleep is needed before the first 'tm send'.
@@ -926,7 +982,7 @@ USAGE
       Default timeout 600s. On timeout, prints partial .last to stdout
       (if Stop hook landed in the race window) and exits non-zero.
 
-  tm resume <repo> [<sid>] [--prompt "..."]
+  tm resume <repo> [<sid>] [--prompt "..."] [--task <slug>]
       Resume a prior conversation. PREFER passing the sid explicitly — the
       dispatcher's task ledger (active-dispatcher-tasks.md) records the sid
       of each teammate it spawned; pull from there. With sid given, this is
@@ -936,7 +992,8 @@ USAGE
       convenience (warns on stderr so you notice the ledger was skipped).
       Fails if a teammate session for <repo> already exists.
       Optional --prompt sends a follow-up message after the resumed banner
-      renders.
+      renders. Optional --task <slug> relabels the resumed conversation to
+      <repo>-<slug> (otherwise the existing name carries over).
 
   tm wait-idle [--fresh] <repo> [timeout=600]
       block until the teammate's Stop hook fires (file appears at
