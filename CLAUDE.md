@@ -36,3 +36,17 @@ Before editing any Markdown in this repository, identify who reads that surface:
 - Treat `/claudemux:setup` as a guided human onboarding flow. Claude may run safe checks and the bundled setup script; the human handles package-manager installs, starting `tmux`, launching a fresh `claude`, and creating teammates because those actions may need passwords, new terminals, or startup-time settings.
 - `/claudemux:setup` operates on the current working directory. If the cwd looks wrong, guide the user to exit, `cd` to the intended dispatcher directory, launch `claude`, and run the command again.
 - Keep slash-command final reports short and actionable: what was checked, what changed, what remains manual, and the exact next command for the human.
+
+## Versioning
+
+The plugin version is in `plugins/claudemux/.claude-plugin/plugin.json`. Bump it with `bin/bump-version <patch|minor|major>` whenever you ship a change to a feature-class path:
+
+- `patch` — bug fix, no behavior change visible to users
+- `minor` — new feature, backward-compatible
+- `major` — breaking change to a documented contract (CLI flag removal, file path change, on-disk format change)
+
+A pre-commit hook at `.githooks/pre-commit` enforces this: staging a feature-class file (`bin/`, `hooks/`, `scripts/`, `templates/`, `skills/*/SKILL.md`) without a version bump in the same commit is rejected, with the exact `bin/bump-version` invocation to run printed to stderr. Pure-docs commits (README, CLAUDE.md, references, *.md outside `SKILL.md`), CI/test changes, and edits limited to `plugin.json` description/keywords are exempt — the hook doesn't trigger on them.
+
+To enable the hook on a fresh clone, run once: `git config core.hooksPath .githooks`.
+
+The hook is a workflow nudge, not a security wall — `git commit --no-verify` bypasses it. Use that escape only when you've judged the change genuinely doesn't warrant a bump.

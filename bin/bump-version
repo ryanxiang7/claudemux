@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# bump-version <patch|minor|major> — bump the "version" field in the plugin
+# manifest. Run from anywhere inside the claudemux git repo.
+#
+# Echoes "<old> -> <new>" on success.
+#
+# Pairs with .githooks/pre-commit, which rejects commits that touch
+# feature-class paths (bin/, hooks/, scripts/, templates/, skills/*/SKILL.md)
+# without a corresponding version bump in the same commit.
+
+set -euo pipefail
+
+die() { echo "bump-version: $*" >&2; exit 1; }
+
+level="${1:-}"
+case "$level" in
+    patch|minor|major) ;;
+    "") die "usage: bin/bump-version <patch|minor|major>" ;;
+    *)  die "invalid level '$level' — must be patch, minor, or major" ;;
+esac
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git repo"
+manifest="$root/plugins/claudemux/.claude-plugin/plugin.json"
+[[ -f "$manifest" ]] || die "$manifest not found"
+
+old=$(jq -r '.version' "$manifest")
+[[ "$old" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] \
+    || die "current version '$old' is not semver MAJOR.MINOR.PATCH"
+M="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[2]}"; p="${BASH_REMATCH[3]}"
+
+case "$level" in
+    patch) p=$((p + 1)) ;;
+    minor) m=$((m + 1)); p=0 ;;
+    major) M=$((M + 1)); m=0; p=0 ;;
+esac
+new="${M}.${m}.${p}"
+
+tmp=$(mktemp)
+jq --arg v "$new" '.version = $v' "$manifest" > "$tmp"
+mv "$tmp" "$manifest"
+
+echo "$old -> $new"

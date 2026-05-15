@@ -163,6 +163,18 @@ fmt_age() {
     fi
 }
 
+# Format a file's byte size as a short human string (e.g. "84K", "2.4M").
+fmt_size() {
+    local b
+    b=$(stat -f %z "$1" 2>/dev/null || echo 0)
+    awk -v b="$b" 'BEGIN {
+        if      (b < 1024)        printf "%dB",   b
+        else if (b < 1048576)     printf "%dK",   b/1024
+        else if (b < 1073741824)  printf "%.1fM", b/1048576
+        else                      printf "%.1fG", b/1073741824
+    }'
+}
+
 # Detect whether the teammate is currently working. Pure hook-driven:
 # the claudemux on-busy.sh hook touches /tmp/claude-idle/<sid>.busy on
 # UserPromptSubmit / UserPromptExpansion / PreToolUse / PreCompact, and
@@ -945,6 +957,212 @@ ctx_one() {
         "$repo" "$used" "$next" "$pct" "$wlabel" "$window_note"
 }
 
+# Inspect this repo's past Claude sessions (live or dead). Two modes:
+#   tm history <repo>            list mode — newest-first table of jsonls
+#   tm history <repo> <sid>      detail mode — one session's summary
+# The detail mode accepts an 8+ char prefix and resolves to a unique full sid.
+# Boundary with `tm last`: that command only covers the *current live*
+# teammate's last turn (read from /tmp/claude-idle/<sid>.last). `tm history`
+# operates on any jsonl on disk, including sessions whose teammate was killed.
+cmd_history() {
+    local repo="${1:-}"
+    [[ -n "$repo" ]] || die "usage: tm history <repo> [<sid-or-prefix>]"
+    local sid_arg="${2:-}"
+
+    local path="$PWD/$repo"
+    [[ -d "$path" ]] || die_repo_not_found history "$repo" "$path"
+    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
+    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr './' '-')
+    local project_dir="$HOME/.claude/projects/$encoded"
+
+    if [[ -z "$sid_arg" ]]; then
+        history_list "$repo" "$project_dir"
+    else
+        history_detail "$repo" "$project_dir" "$sid_arg"
+    fi
+}
+
+# Pull the first user prompt's text from a jsonl. Skip tool_result responses
+# (whose .message.content is an array of tool_result blocks, no text). Cap the
+# scan at the file head — a human first prompt is virtually always near the
+# top, so a full-file slurp is wasted work in list mode.
+history_first_prompt() {
+    local f="$1"
+    head -200 "$f" 2>/dev/null \
+        | jq -r 'select(
+                    .type == "user"
+                    and .message.role == "user"
+                    and (.message.content
+                         | (type == "string")
+                           or (type == "array" and any(.[]; .type == "text"))
+                        )
+                  )
+                  | .message.content
+                  | if type == "string" then .
+                    else (map(select(.type == "text") | .text) | join(" "))
+                    end' 2>/dev/null \
+        | head -1
+}
+
+history_list() {
+    local repo="$1" project_dir="$2"
+    [[ -d "$project_dir" ]] || { echo "(no past sessions for $repo)"; return 0; }
+
+    local files
+    files=$(ls -t "$project_dir"/*.jsonl 2>/dev/null || true)
+    [[ -n "$files" ]] || { echo "(no past sessions for $repo)"; return 0; }
+
+    local live_sid=""
+    local sf; sf=$(sid_file "$repo")
+    [[ -s "$sf" ]] && live_sid=$(cat "$sf")
+
+    local now; now=$(date +%s)
+
+    {
+        printf ' \tSID\tAGE\tSIZE\tTOPIC\n'
+        while IFS= read -r f; do
+            local fname sid_full sid_short mtime age size topic mark
+            fname=$(basename "$f" .jsonl)
+            sid_full="$fname"
+            sid_short="${sid_full:0:8}"
+            mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+            age=$(fmt_age $((now - mtime)))
+            size=$(fmt_size "$f")
+            topic=$(history_first_prompt "$f" \
+                | tr -d '\000-\037' \
+                | perl -CSD -ne 'chomp; print substr($_, 0, 60); last' 2>/dev/null \
+                || true)
+            [[ -z "$topic" ]] && topic="(no user prompt)"
+            mark=" "
+            [[ -n "$live_sid" && "$sid_full" == "$live_sid" ]] && mark="*"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$mark" "$sid_short" "$age" "$size" "$topic"
+        done <<< "$files"
+    } | column -t -s $'\t'
+}
+
+history_detail() {
+    local repo="$1" project_dir="$2" prefix="$3"
+
+    [[ "$prefix" =~ ^[0-9a-f-]{1,36}$ ]] \
+        || die "tm history: invalid sid prefix '$prefix' — must match ^[0-9a-f-]{1,36}\$"
+    [[ -d "$project_dir" ]] \
+        || die "tm history: no project dir at $project_dir for $repo (no sessions yet)"
+
+    # Resolve prefix -> unique jsonl. find avoids the "literal glob" gotcha
+    # that bare ls would hit when the pattern doesn't expand.
+    local matches
+    matches=$(find "$project_dir" -maxdepth 1 -name "${prefix}*.jsonl" -type f 2>/dev/null | sort)
+    [[ -n "$matches" ]] || die "tm history: no session matching '$prefix' in $repo"
+    local count; count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
+    if (( count > 1 )); then
+        local cands; cands=$(printf '%s\n' "$matches" | xargs -n1 basename | sed 's/\.jsonl$//' | tr '\n' ' ')
+        die "tm history: prefix '$prefix' matches $count sessions — be more specific: $cands"
+    fi
+
+    local f="$matches"
+    local sid_full; sid_full=$(basename "$f" .jsonl)
+    local size; size=$(fmt_size "$f")
+    local lines; lines=$(wc -l < "$f" | tr -d ' ')
+    local mtime; mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+    local now; now=$(date +%s)
+    local age; age=$(fmt_age $((now - mtime)))
+    local last_seen; last_seen=$(date -r "$mtime" '+%Y-%m-%d %H:%M:%S')
+
+    # One jq -s pass over the whole file, returning a tab-delimited row of:
+    #   <first-prompt-base64> <last-assistant-base64> <created-ts> <used> <out> <peak>
+    # base64 around the multi-line text fields keeps the pipeline newline-safe;
+    # bash decodes them after splitting.
+    local data
+    data=$(jq -r -s '
+        [ .[] | select(
+                  .type == "user" and .message.role == "user"
+                  and (.message.content
+                       | (type == "string")
+                         or (type == "array" and any(.[]; .type == "text"))
+                      )
+                ) | .message.content
+                  | if type == "string" then .
+                    else (map(select(.type == "text") | .text) | join(" "))
+                    end
+        ] as $u_prompts
+        | [ .[] | select(
+                    .type == "assistant"
+                    and (.message.content
+                         | type == "array" and any(.[]; .type == "text")
+                        )
+                  ) | .message.content
+                    | map(select(.type == "text") | .text) | join("\n")
+          ] as $a_texts
+        | [ .[] | select(.type == "assistant" and .message.usage != null)
+                | .message.usage
+          ] as $u
+        | [ .[] | select(.timestamp != null) | .timestamp ] as $ts
+        | (($u_prompts[0] // "") | @base64) + "\t"
+          + (($a_texts[-1] // "") | @base64) + "\t"
+          + ($ts[0] // "") + "\t"
+          + (if ($u | length) > 0
+             then ($u[-1].input_tokens + $u[-1].cache_creation_input_tokens + $u[-1].cache_read_input_tokens | tostring)
+             else "" end) + "\t"
+          + (if ($u | length) > 0 then ($u[-1].output_tokens | tostring) else "" end) + "\t"
+          + (if ($u | length) > 0
+             then ([$u[] | .input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens] | max | tostring)
+             else "" end)
+    ' "$f" 2>/dev/null || echo $'\t\t\t\t\t')
+
+    local fp_b64 la_b64 created_ts used out peak
+    IFS=$'\t' read -r fp_b64 la_b64 created_ts used out peak <<< "$data"
+
+    local first_prompt last_assistant
+    first_prompt=$(printf '%s' "$fp_b64" | base64 --decode 2>/dev/null || true)
+    last_assistant=$(printf '%s' "$la_b64" | base64 --decode 2>/dev/null || true)
+
+    local created_str=""
+    if [[ -n "$created_ts" ]]; then
+        # ISO 8601 like 2026-05-12T14:21:33.000Z -> 2026-05-12 14:21:33
+        created_str=$(printf '%s' "$created_ts" | sed -E 's/T/ /; s/\.[0-9]+Z?$//; s/Z$//')
+    fi
+
+    local ctx_str="(no usage data)"
+    if [[ -n "$used" && -n "$peak" ]]; then
+        local window window_note pct wlabel
+        if (( peak > 210000 )); then window=1000000; window_note="detected 1M"
+        else                          window=200000;  window_note="assumed 200k"; fi
+        pct=$(( used * 100 / window ))
+        if (( window >= 1000000 )); then wlabel="1M"; else wlabel="200k"; fi
+        ctx_str="$used tokens · $pct% of $wlabel ($window_note)"
+    fi
+
+    # Truncate last assistant by character count (not byte) to handle CJK.
+    local la_display="${last_assistant:-(no assistant text)}"
+    if [[ -n "$last_assistant" ]]; then
+        local la_len
+        la_len=$(printf '%s' "$last_assistant" | perl -CSD -e 'local $/; my $s=<>; print length $s' 2>/dev/null || echo 0)
+        if (( la_len > 1500 )); then
+            la_display=$(printf '%s' "$last_assistant" | perl -CSD -e 'local $/; my $s=<>; print substr($s, 0, 1500)' 2>/dev/null)
+            la_display+=$'\n... ('"$((la_len - 1500))"' chars truncated; full text in jsonl)'
+        fi
+    fi
+
+    local fp_display="${first_prompt:-(no user prompt)}"
+
+    cat <<EOF
+sid:        $sid_full
+file:       $f
+            ($size · $lines lines)
+created:    ${created_str:-(unknown)}
+last_seen:  $last_seen  ($age ago)
+ctx:        $ctx_str
+
+first prompt:
+$(printf '%s' "$fp_display" | sed 's/^/  /')
+
+last assistant:
+$(printf '%s' "$la_display" | sed 's/^/  /')
+
+resume: tm resume $repo $sid_full
+EOF
+}
+
 cmd_help() {
     cat <<'EOF'
 tm — tmux teammate manager for the dispatcher skill
@@ -1070,6 +1288,17 @@ USAGE
       Window size is not in the transcript: a peak above ~210k proves a 1M
       window, otherwise 200k is assumed (and labelled so); --window forces it.
 
+  tm history <repo> [<sid-or-prefix>]
+      inspect this repo's past Claude sessions (live or dead).
+      No <sid> -> list mode: newest-first table of jsonls (SID, AGE, SIZE,
+      TOPIC = first user prompt). A leading '*' marks the row that matches
+      the current live teammate's session (/tmp/teammate-<repo>.sid).
+      With <sid> or 8+ char prefix -> detail mode: full sid, file path,
+      created/last-seen timestamps, ctx usage, first user prompt (full),
+      last assistant text (up to 1500 chars), and a ready-to-paste
+      'tm resume' command. Boundary: 'tm last' is current-live-teammate
+      only; 'tm history' covers any jsonl on disk including killed sessions.
+
 ENVIRONMENT
   (none — tm derives the dispatcher directory from $PWD at invocation
   time, with no global config file or env override. To "switch" dispatcher
@@ -1096,6 +1325,7 @@ main() {
         poll)       cmd_poll "$@" ;;
         archive)    cmd_archive "$@" ;;
         ctx)        cmd_ctx "$@" ;;
+        history)    cmd_history "$@" ;;
         help|-h|--help) cmd_help ;;
         *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;
     esac

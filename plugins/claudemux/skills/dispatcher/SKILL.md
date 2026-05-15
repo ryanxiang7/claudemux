@@ -99,6 +99,13 @@ tm archive <id> [--status '...'] move a finished task from the active ledger to 
 tm ctx <repo>... | --all [--window 200k|1m]
                                  report a teammate's real context-window usage from
                                  its session transcript (see "Fleet snapshot" below)
+tm history <repo> [<sid-or-prefix>]
+                                 inspect this repo's past Claude sessions (live or
+                                 dead). No <sid> -> list (newest-first; '*' marks
+                                 the current live teammate). With <sid> or 8+ char
+                                 prefix -> detail (ctx, first prompt, last assistant
+                                 up to 1500 chars, ready-to-paste 'tm resume').
+                                 See "Inspecting past sessions" below.
 ```
 
 `<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
@@ -174,6 +181,18 @@ When several teammates are running and you want a one-shot "who's doing what", `
 To know how full a teammate's context window is, use `tm ctx <repo>` (or `tm ctx --all`). It reads the teammate's session transcript and reports the real prompt size — do not rely on the TUI status-bar percentage, which is approximate and absent in many environments.
 
 `tm ctx` reports the most recent assistant turn's prompt size (`input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`), a next-turn estimate (plus that turn's `output_tokens`), and the percentage of the context window. The window size is not recorded in the transcript: a peak usage above ~210k proves a 1M window, otherwise `tm ctx` assumes 200k and labels it `assumed 200k`. Pass `--window 200k|1m` when you know the window and the heuristic can't yet tell.
+
+### Inspecting past sessions: `tm history`
+
+When you need to know what Claude sessions a repo has accumulated — including ones whose teammate has been killed, ones never recorded in the task ledger, or just to pick the right `sid` for `tm resume` — use `tm history`.
+
+`tm history <repo>` prints a newest-first table of every `*.jsonl` under that repo's project directory: `SID` (8 chars), `AGE` (relative mtime), `SIZE`, and `TOPIC` (first user prompt, truncated to 60 chars). A leading `*` marks the row whose sid matches the current live teammate (`/tmp/teammate-<repo>.sid`). Use this list to pick a session before resuming.
+
+`tm history <repo> <sid-or-prefix>` (an 8+ character prefix is fine; ambiguous prefixes are rejected with the candidate list) prints a single session's detail: full sid, jsonl path / size / line count, created and last-seen timestamps, ctx usage (same calculation as `tm ctx`), the first user prompt in full, the last assistant text up to 1500 characters (with a truncation note pointing to the jsonl), and a ready-to-paste `tm resume <repo> <full-sid>` line.
+
+Boundary with neighbouring commands:
+- `tm last <repo>` is current-live-teammate only — it reads the in-memory hook file `/tmp/claude-idle/<sid>.last`. `tm history` covers any jsonl on disk, including killed sessions.
+- `tm resume <repo>` mutates state (starts a process, claims the tmux session). `tm history` is read-only; it only suggests the resume command in its detail output.
 
 ### Spawn readiness and `/clear` sid rotation
 

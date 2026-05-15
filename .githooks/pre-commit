@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# pre-commit — reject commits that touch feature-class paths without a
+# matching version bump in plugins/claudemux/.claude-plugin/plugin.json.
+#
+# Enable per clone:  git config core.hooksPath .githooks
+# Bypass once:       git commit --no-verify
+#
+# This is a workflow nudge, not a security wall — bypass exists on purpose.
+# Use it when you've judged the change genuinely doesn't need a bump.
+
+set -euo pipefail
+
+manifest="plugins/claudemux/.claude-plugin/plugin.json"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[[ -z "$staged" ]] && exit 0
+
+# Allowlist: paths whose change implies user-visible behavior shift.
+feature_paths=()
+while IFS= read -r f; do
+    case "$f" in
+        plugins/claudemux/bin/*)              feature_paths+=("$f") ;;
+        plugins/claudemux/hooks/*)            feature_paths+=("$f") ;;
+        plugins/claudemux/scripts/*)          feature_paths+=("$f") ;;
+        plugins/claudemux/templates/*)        feature_paths+=("$f") ;;
+        plugins/claudemux/skills/*/SKILL.md)  feature_paths+=("$f") ;;
+    esac
+done <<< "$staged"
+
+[[ ${#feature_paths[@]} -eq 0 ]] && exit 0
+
+# Did the staged manifest actually change the "version" field?
+version_bumped=0
+if grep -qx "$manifest" <<< "$staged"; then
+    old=$(git show "HEAD:$manifest" 2>/dev/null | jq -r '.version' 2>/dev/null || echo "")
+    new=$(jq -r '.version' "$manifest" 2>/dev/null || echo "")
+    [[ -n "$old" && -n "$new" && "$old" != "$new" ]] && version_bumped=1
+fi
+
+if (( version_bumped )); then
+    exit 0
+fi
+
+cat >&2 <<EOF
+pre-commit: feature-class files staged but plugin.json version not bumped.
+
+Touched paths:
+$(printf '  %s\n' "${feature_paths[@]}")
+
+Run:    bin/bump-version <patch|minor|major>
+Then:   git add $manifest && git commit ...
+
+Bypass with --no-verify if this change genuinely doesn't warrant a bump.
+EOF
+exit 1
