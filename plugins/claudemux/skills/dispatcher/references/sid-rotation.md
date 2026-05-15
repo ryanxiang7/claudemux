@@ -13,7 +13,7 @@ Read this only when debugging `.sid` drift, a stuck `tm spawn`, or surprising `t
 
 ## `/clear` and sid rotation
 
-`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait-idle` would consult orphan files. The `on-session-start.sh` hook handles this with two gates on every `SessionStart` event:
+`/clear` retires the current `session_id` and starts a fresh one. Without help, `/tmp/teammate-<repo>.sid` would still point at the dead sid and every subsequent `tm states / last / wait / send` would consult orphan files. The `on-session-start.sh` hook handles this with two gates on every `SessionStart` event:
 
 1. **Env identity.** `tm spawn` launches its tmux session with `tmux new-session -e CLAUDEMUX_TEAMMATE_REPO=<repo>`. claude inherits that env, and so does the hook. If the env var is unset, this is some other claude session (the dispatcher itself, an ad-hoc `cd <repo> && claude`, or a teammate started via raw `tmux new-session` without the `-e`) — the hook no-ops. The env survives `/clear` and `/resume` because they don't restart the claude process.
 

@@ -25,8 +25,8 @@ flowchart TB
 
     user <-->|聊天| dispatcher
     user -.->|可选:Remote Control<br/>直接驱动| tA
-    dispatcher -->|tm spawn / send / ask| tA
-    dispatcher -->|tm spawn / send / ask| tB
+    dispatcher -->|tm spawn / send / wait| tA
+    dispatcher -->|tm spawn / send / wait| tB
     tA -.cwd.-> repoA
     tB -.cwd.-> repoB
 ```
@@ -79,10 +79,10 @@ REPL 里:
 或者直接调 `tm`:
 
 ```bash
-tm spawn repo-a                                # 起 teammate
-tm ask   repo-a 'run yarn test in unit-test'   # 发送 + 等回话 + 打印
-tm states                                      # 一览整支 fleet
-tm kill  repo-a                                # 收掉
+tm spawn repo-a --prompt 'run yarn test in unit-test'   # 原子化:起 + 派 + 等 + 打印首轮回话
+tm send  repo-a '接着跑 lint'                            # 同步 send,回话直接落 stdout
+tm states                                               # 一览整支 fleet
+tm kill  repo-a                                         # 收掉
 ```
 
 ## `tm` 命令
@@ -94,21 +94,22 @@ Claude Code 会话里 `tm` 自动在 `PATH` 上。会话外用法见
 |---|---|
 | `tm ls` | 列出在跑的 teammate session。 |
 | `tm states` | 一行一个的整体快照:repo、sid、忙不忙、上次回复多大多久前、首 50 字。 |
-| `tm spawn <repo> [--task <slug>] [--resume <sid>]` | 在新 tmux session 里为 `<repo>` 起 teammate。`--task <slug>` 给会话起个可读名字(`<repo>-<slug>`;ASCII 字母数字 + 中文汉字都可以);不传就是 `<repo>-<rand4>`。 |
-| `tm resume <repo> [<sid>] [--prompt "…"] [--task <slug>]` | 恢复旧会话。优先从台账拿 `sid`;不传则按 mtime 选最新 jsonl。`--task` 给恢复的会话改名。 |
-| `tm send <repo> <prompt…>` | 发送一条 prompt + Enter。 |
-| `tm ask [--quiet] [--timeout=N] <repo> <prompt…>` | round-trip 原语:发送 + 等待 + 把回复打到 stdout。`/compact` 这种不触发 Stop 的命令配 `--quiet`。 |
-| `tm wait-idle [--fresh] <repo> [timeout]` | 阻塞到 teammate Stop hook 触发(= 一次 turn 结束)。`--fresh` 忽略之前已经存在的 idle 信号。 |
-| `tm wait-quiet <repo> [timeout]` | 阻塞到 teammate pane 上转圈消失几秒。Stop 不会触发的命令用这个。 |
-| `tm last <repo>` | 打印 teammate 上一轮回复的完整正文。要全文时用它——`tm status` 受 tmux scrollback 截断影响。 |
-| `tm status <repo> [lines]` | capture-pane 看 teammate 实时屏幕。 |
-| `tm poll <repo> <regex> [timeout]` | 阻塞到 pane 内容匹配正则。wait-idle / wait-quiet 都不适用时兜底。 |
+| `tm spawn <repo> [--task <slug>] [--prompt "…"] [--no-wait]` | 起 teammate。带 `--prompt` 即原子 bootstrap:spawn + send + 等 Stop + 把首轮回话打到 stdout。`--task <slug>` 给会话起个可读名字(`<repo>-<slug>`;ASCII 字母数字 + 中文汉字都可以);不传就是 `<repo>-<rand4>`。`--no-wait` 配 `--prompt` 做 fire-and-forget。 |
+| `tm resume <repo> [<sid>] [--task <slug>] [--prompt "…"] [--no-wait]` | 恢复旧会话。优先从台账拿 `sid`;不传则按 mtime 选最新 jsonl。`--prompt` 在 3s settle 后派 prompt(行为同 `spawn --prompt`)。 |
+| `tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt…>` | **默认就是原子 round-trip**:发 prompt + 等 Stop + 把回话打到 stdout。dispatcher 主回路。flag 必须放在 `<repo>` 之前(`<repo>` 之后的内容都当 prompt 文本)。`--no-wait` 老 fire-and-forget。`--pane-quiet` 给 TUI-only(`/help` / `/effort` / 权限弹窗)兜底,这些路径不触发 hook。 |
+| `tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]` | 阻塞到 teammate 下一次 Stop,打回话到 stdout。外部驱动(Remote Control / 移动端 / cron)推动的 turn 用这个收。`--fresh` 等下一次 Stop 而不是被已有 marker 立即满足(`--pane-quiet` 模式下 `--fresh` 不生效)。`--timeout N` 等价位置参数 `[timeout]`。 |
+| `tm compact <repo>` | 原子 `/compact` + ctx 刷新。发 `/compact` → 等 PostCompact → 发单字符 noop 刷 jsonl `usage` → 等 Stop → 打印 `before=N after=M (-X%)`。 |
+| `tm last <repo>` | 打印 teammate 上一轮回复的完整正文。fresh spawn 之后还没派活时,die 报 "no reply yet"。 |
 | `tm kill <repo>` | 干掉 teammate 的 tmux session,清状态文件。 |
 | `tm archive <id> [--status '<tag>']` | 把 `active-dispatcher-tasks.md` 里一个收尾的 task 搬到 archive(收尾文字从 stdin 进)。 |
 | `tm ctx <repo>… \| --all [--window 200k\|1m]` | 每个 teammate 的真实上下文用量,从 jsonl 的 `usage` 字段读,比 TUI 那个百分比准。 |
 | `tm history <repo> [<sid-or-prefix>]` | 列 `<repo>` 的历史会话(最新在前);传 sid 前缀则展开一条详情。 |
+| `tm reload <repo>… \| --all` | 给 teammate 派 `/reload-plugins`,插件更新后用。 |
 
-等待原语和磁盘状态契约见
+诊断用(上面 verb 都不合适时再用):`tm status <repo>` 抓实时 pane,
+`tm poll <repo> <regex>` 等中间状态。
+
+行为契约和磁盘状态见
 [`plugins/claudemux/skills/dispatcher/SKILL.md`](plugins/claudemux/skills/dispatcher/SKILL.md)。
 
 ## `/claudemux:optimize` —— 周期自检

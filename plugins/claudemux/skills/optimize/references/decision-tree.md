@@ -21,8 +21,8 @@ Keep the CLAUDE.md addition short (1–3 sentences) and lead with the rule, then
 Eligible when the finding is **only relevant when the dispatcher is actively spawning/managing teammates** or running a specific orchestration flow, but does not warrant editing CLAUDE.md (too narrow) or project memory (not a fact, more like a procedural addition). Examples:
 
 - "When sentinel-waiting for a teammate, do Y not Z"
-- "Add a foot-gun bullet about /compact + wait-idle"
-- "Prefer `tm ask` over `tm send + wait-idle + last` triplet for one-shot Q&A"
+- "Add a foot-gun bullet about a specific TUI dialog where `--pane-quiet` is needed"
+- "Prefer `tm spawn --prompt` over `tm spawn` then a separate `tm send` for atomic bootstrap"
 
 Apply directly only when the change is a small addition (≤ 5 lines, appended to the file). Anything larger requires user confirmation. **Never** rewrite the notes file from scratch.
 

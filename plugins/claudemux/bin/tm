@@ -22,7 +22,9 @@
 #                     PreCompact → touch /tmp/claude-idle/<sid>.busy
 #   on-stop.sh        Stop / StopFailure / PostCompact / SessionEnd →
 #                     rm <sid>.busy, write <sid>.last (Stop only), touch
-#                     <sid> (the wait-idle marker)
+#                     <sid> (the idle marker that 'tm wait' and the wait
+#                     phase of 'tm send' / 'tm compact' / 'tm spawn
+#                     --prompt' all block on)
 #   on-session-start  SessionStart → require $CLAUDEMUX_TEAMMATE_REPO (set
 #                     by `tm spawn` via `tmux new-session -e`); without
 #                     it, no-op. Then byte-match the firing claude's cwd
@@ -38,9 +40,9 @@
 # We avoid race-prone jsonl scanning by pre-generating a UUID at spawn time
 # and handing it to `claude --session-id` directly — the jsonl filename then
 # equals that UUID. The sid is stashed in /tmp/teammate-<repo>.sid so
-# `tm wait-idle` / `tm last` / `tm states` know which files to read. `tm send`
-# rm's the idle marker + .last + .busy first so a subsequent wait-idle / last
-# / states reflects the NEW turn, not a stale one.
+# `tm wait` / `tm last` / `tm states` know which files to read. `tm send`
+# rm's the idle marker + .last + .busy first so a subsequent wait phase
+# reflects the NEW turn, not a stale one.
 
 set -euo pipefail
 
@@ -131,7 +133,7 @@ rand_suffix() {
 }
 
 # Read the recorded sid for <repo>. Exits non-zero on miss (no sid file or
-# empty), so cmd_send can tolerate "no sid yet" while wait-idle / last / kill
+# empty), so cmd_send can tolerate "no sid yet" while wait / last / kill
 # use the _or_die variant for a uniform error story.
 resolve_sid() {
     local sf; sf=$(sid_file "$1")
@@ -146,8 +148,8 @@ resolve_sid_or_die() {
 }
 
 # Drop all hook artifacts for <sid> together — idle marker, last-turn
-# text, and the busy marker — so a subsequent wait-idle / last / states
-# sees the NEW turn, not a stale one. Used at spawn, send, and kill; the
+# text, and the busy marker — so a subsequent wait / last / states sees
+# the NEW turn, not a stale one. Used at spawn, send, and kill; the
 # three paths must move in lockstep.
 clear_idle() {
     [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last" "$IDLE_DIR/$1.busy"
@@ -217,6 +219,105 @@ iter_repos() {
         | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print substr($1, length(p)+1)}'
 }
 
+# --- shared helpers used by send / wait / compact / spawn --prompt ---
+#
+# These factor out the three building blocks the atomic verbs share:
+#   1) push prompt + Enter into the teammate's pane (dual-send protocol),
+#   2) block on the Stop-hook idle marker,
+#   3) print the captured .last text — or a sentinel line when no text
+#      was emitted (tool-only turn, /compact, /clear).
+# The user-facing verbs (cmd_send, cmd_wait, cmd_compact) compose these
+# instead of each carrying its own copy of the polling + cat ritual.
+
+# Send a prompt into <repo>'s pane. NO wait, NO output beyond stderr
+# "sent" note. Handles the dual-Enter protocol (single-line prompts get
+# one Enter, multi-line need a second after a short flush gap). Clears
+# the idle/.last/.busy baseline first so a subsequent wait reflects THIS
+# turn, not a prior one, and touches send-at for pane-quiet's "min time
+# since action" guard.
+_send_keys() {
+    local repo="$1" prompt="$2"
+    local name; name=$(require_session "$repo")
+    local pane; pane=$(resolve_pane_target "$repo")
+    [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
+
+    local sid=""
+    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
+    : > "$(send_at_file "$repo")"
+
+    tmux send-keys -t "$pane" -l "$prompt"
+    tmux send-keys -t "$pane" Enter
+    if [[ "$prompt" == *$'\n'* ]]; then
+        sleep "${TM_SEND_GAP:-0.2}"
+        tmux send-keys -t "$pane" Enter
+    fi
+
+    echo "sent to $name" >&2
+    [[ -n "$sid" ]] && echo "sid=$sid" >&2
+    return 0
+}
+
+# Block until /tmp/claude-idle/<sid> exists (the Stop-hook idle marker),
+# or until <timeout> seconds elapse. No output on success — that's the
+# caller's job. Returns 0 on hit, 1 on timeout.
+_wait_idle_signal() {
+    local repo="$1" timeout="${2:-600}" fresh="${3:-0}"
+    require_session "$repo" >/dev/null
+    local sid; sid=$(resolve_sid_or_die "$repo")
+    (( fresh )) && clear_idle "$sid"
+
+    local end; end=$(( $(date +%s) + timeout ))
+    while [[ $(date +%s) -lt $end ]]; do
+        [[ -e "$IDLE_DIR/$sid" ]] && return 0
+        sleep 3
+    done
+    return 1
+}
+
+# Block until the teammate's pane has shown no working spinner for ~4s
+# AND at least 3s have passed since the last send. Used by --pane-quiet
+# paths where no hook will fire — TUI-only commands like /help, /effort,
+# /agents, and permission prompts. Returns 0 on hit, 1 on timeout.
+_wait_pane_quiet() {
+    local repo="$1" timeout="${2:-600}"
+    require_session "$repo" >/dev/null
+
+    local send_at=0 sa
+    sa=$(send_at_file "$repo")
+    [[ -f "$sa" ]] && send_at=$(stat -f %m "$sa" 2>/dev/null || echo 0)
+
+    local end; end=$(( $(date +%s) + timeout ))
+    local quiet_streak=0
+    while [[ $(date +%s) -lt $end ]]; do
+        if pane_busy "$repo"; then
+            quiet_streak=0
+        else
+            quiet_streak=$((quiet_streak + 1))
+        fi
+        local now; now=$(date +%s)
+        if (( quiet_streak >= 2 )) && (( now - send_at >= 3 )); then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# Print the assistant's last-turn text for <repo> to stdout. If .last is
+# missing or empty — tool-only turn, /compact, /clear, or fresh spawn
+# with the empty-sentinel — emit a single explanatory line so dispatcher
+# stdout is never silently empty when the verb succeeded.
+_print_last_or_empty() {
+    local repo="$1" sid
+    sid=$(resolve_sid "$repo") || { echo "(no sid for $repo)"; return 0; }
+    local lf="$IDLE_DIR/$sid.last"
+    if [[ -s "$lf" ]]; then
+        cat "$lf"
+    else
+        echo "(no text reply this turn — tool-only, /compact, /clear, or fresh spawn)"
+    fi
+}
+
 cmd_ls() {
     # tmux ls returns non-zero when no server is running; mask it so pipefail
     # doesn't kill us. Empty output is the expected "no sessions" case.
@@ -231,18 +332,30 @@ cmd_ls() {
 
 cmd_spawn() {
     local repo="${1:-}"
-    [[ -n "$repo" ]] || die "usage: tm spawn <repo> [--task <slug>] [--resume <sid>]"
+    [[ -n "$repo" ]] || die "usage: tm spawn <repo> [--task <slug>] [--prompt \"...\"] [--no-wait]"
     shift
 
-    local resume_sid="" task=""
+    # --resume <sid> is intentionally undocumented: it is the implementation
+    # detail by which cmd_resume reuses spawn's launch logic. User-facing
+    # resume goes through 'tm resume', which validates the jsonl exists,
+    # checks UUID format, and supports auto-pick. Direct callers should not
+    # rely on this flag.
+    local resume_sid="" task="" prompt="" has_prompt=0 no_wait=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --resume)   resume_sid="${2:-}"; shift 2 ;;
             --task)     task="${2:-}"; shift 2 ;;
             --task=*)   task="${1#--task=}"; shift ;;
+            --prompt)   prompt="${2:-}"; has_prompt=1; shift 2 ;;
+            --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
+            --no-wait)  no_wait=1; shift ;;
             *) die "unknown flag: $1" ;;
         esac
     done
+
+    if (( no_wait )) && ! (( has_prompt )); then
+        die "tm spawn: --no-wait is only valid with --prompt (a fresh spawn without a prompt already returns as soon as the REPL is ready)"
+    fi
 
     local path="$PWD/$repo"
     [[ -d "$path" ]] || die_repo_not_found spawn "$repo" "$path"
@@ -285,6 +398,13 @@ cmd_spawn() {
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
+        # With --prompt, returning success silently would drop the user's
+        # prompt — they think the atomic bootstrap succeeded but nothing
+        # was sent. Die clearly so the caller routes to 'tm send' (which
+        # is the right verb for "session already up, send a prompt").
+        if (( has_prompt )); then
+            die "$name already exists — atomic bootstrap rejected because the teammate is already running. Use 'tm send $repo \"…\"' to drive an existing teammate, or 'tm kill $repo' first to start over."
+        fi
         echo "$name already exists (use 'tm status $repo' to view, or 'tm kill $repo' first)"
         return 0
     fi
@@ -321,7 +441,7 @@ cmd_spawn() {
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
         tmux send-keys -t "$pane" "claude --resume $sid --settings '$md_excludes'$name_arg" Enter
-        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid$name_note)"
+        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid$name_note)" >&2
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
         # No more jsonl scanning, no race window: --session-id makes the jsonl
@@ -329,16 +449,36 @@ cmd_spawn() {
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
         tmux send-keys -t "$pane" "claude --session-id $sid --settings '$md_excludes'$name_arg" Enter
-        echo "spawned: $name (cwd=$cwd_phys, sid=$sid$name_note)"
+        echo "spawned: $name (cwd=$cwd_phys, sid=$sid$name_note)" >&2
     fi
     echo "$sid" > "$sf"
     clear_idle "$sid"
 
+    # Fresh-spawn .last sentinel. clear_idle removed any stale file; write
+    # an empty one so a subsequent 'tm last' returns "no reply yet" (the
+    # -s check fails on zero bytes) instead of reading whatever happened
+    # to live at $IDLE_DIR/$sid.last from an earlier, unrelated session.
+    # Resume mode skips this: the resumed session's last-turn text is
+    # legitimate context the dispatcher may want to re-read.
+    if [[ -z "$resume_sid" ]]; then
+        # mkdir before the truncate: on a fresh system (post-reboot /tmp
+        # wipe, or a user who never ran /claudemux:setup) the dir may not
+        # exist, and `set -e` would abort spawn on that. clear_idle uses
+        # rm -f which is tolerant; the truncate is not.
+        mkdir -p "$IDLE_DIR"
+        : > "$IDLE_DIR/$sid.last"
+    fi
+
     # Poll for spawn readiness. The hook fires once the SessionStart
     # event reaches it; in practice that's within 2–4 s on a warm Mac,
     # so the 18 s cap (60 × 0.3 s) is generous. On timeout we surface a
-    # warning but return successfully — callers can still try `tm send`
-    # and will get a clear failure if claude really didn't come up.
+    # warning but return successfully — callers can still try `tm send`.
+    # Caveat: if claude failed to boot inside the tmux session, the
+    # session exists but is just a dead shell; require_session passes
+    # for that, keys get typed into nothing, and the subsequent wait
+    # phase blocks until --timeout (default 600s) expires waiting for a
+    # Stop hook that will never fire. The warning below is the
+    # dispatcher's signal that this risk is now live.
     local i ready_after_ms=""
     for i in $(seq 1 60); do
         if [[ -f "$rf" ]]; then
@@ -348,9 +488,24 @@ cmd_spawn() {
         sleep 0.3
     done
     if [[ -n "$ready_after_ms" ]]; then
-        echo "ready: ${name} (SessionStart fired after ~${ready_after_ms} ms)"
+        echo "ready: ${name} (SessionStart fired after ~${ready_after_ms} ms)" >&2
     else
-        echo "WARN: $name did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing; subsequent 'tm send' will fail loudly if the REPL is not up." >&2
+        echo "WARN: $name did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing, but if the REPL is actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / 'tm compact' will block until its --timeout expires (default 600s). 'tm status $repo' shows the live pane if you need to verify." >&2
+    fi
+
+    # --prompt: atomic bootstrap. Wait 3s for the REPL to fully settle
+    # (matches cmd_resume's pre-send sleep — the ready hook fires when
+    # SessionStart reaches the plugin, but the prompt box isn't always
+    # accepting input the same millisecond), then hand off to cmd_send.
+    # cmd_send is sync-by-default, so without --no-wait this returns the
+    # first turn's .last on stdout. With --no-wait it's fire-and-forget.
+    if (( has_prompt )); then
+        sleep 3
+        if (( no_wait )); then
+            cmd_send --no-wait "$repo" "$prompt"
+        else
+            cmd_send "$repo" "$prompt"
+        fi
     fi
 }
 
@@ -364,53 +519,95 @@ cmd_status() {
 }
 
 cmd_send() {
-    local repo="${1:-}"; shift || true
-    [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm send <repo> <prompt...>"
-    local prompt="$*"
-    local name; name=$(require_session "$repo")
-    local pane; pane=$(resolve_pane_target "$repo")
-    [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
-
-    # Clear the baseline idle + last-turn files so a subsequent wait-idle /
-    # last reflects THIS prompt's outcome, not a previously satisfied turn.
-    # No sid yet (raw tmux spawn) is tolerated — wait-idle would fail anyway.
-    local sid=""
-    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
-
-    # Touch the send-at marker so wait-quiet has a "min time since action
-    # started" to guard against the pane being momentarily quiet right after
-    # send (before claude has rendered its spinner).
-    : > "$(send_at_file "$repo")"
-
-    # CRITICAL: prompt text and Enter must be two separate calls. Combining
-    # them in one tmux send-keys inlines Enter as a newline inside the input
-    # box and the prompt does not submit. -l (literal) avoids tmux interpreting
-    # characters in the prompt as key names.
-    tmux send-keys -t "$pane" -l "$prompt"
-    tmux send-keys -t "$pane" Enter
-
-    # Multi-line prompts need a SECOND Enter: once the input box contains
-    # any newline, the first Enter is consumed as "insert newline at cursor"
-    # and the second Enter (on the now-empty trailing line) actually submits.
-    # Single-line prompts must NOT get a second Enter — that would submit
-    # an empty follow-up turn. The gap defaults to 0.2s (empirically enough
-    # for tmux to flush the literal text on a typical box); override via
-    # TM_SEND_GAP if a loaded box or different terminal needs more.
-    if [[ "$prompt" == *$'\n'* ]]; then
-        sleep "${TM_SEND_GAP:-0.2}"
-        tmux send-keys -t "$pane" Enter
-    fi
-
-    echo "sent to $name (Enter issued separately)"
-    [[ -n "$sid" ]] && echo "sid=$sid"
-}
-
-cmd_wait_idle() {
-    local repo="" timeout=600 fresh=0
+    # Atomic round-trip by default: send prompt + wait for Stop hook +
+    # print .last text to stdout. The dispatcher's primary verb — folds
+    # what used to be send + wait-idle + last into one call.
+    #
+    # Flags (must precede <repo>):
+    #   --no-wait        fire-and-forget; return as soon as keys are sent.
+    #                    Use for /clear before a kill, or any case where
+    #                    the reply doesn't matter.
+    #   --pane-quiet     fall back to pane-quiet detection instead of the
+    #                    Stop-hook signal. Use for TUI-only commands that
+    #                    fire no hook: /help, /effort, /agents, permission
+    #                    prompts. Stop hook now covers /compact and /clear
+    #                    via PostCompact/SessionEnd, so those do NOT need
+    #                    --pane-quiet (though they also produce no .last
+    #                    text, so stdout will be the "(no text reply)"
+    #                    sentinel either way).
+    #   --timeout N      override the 600s default wait cap.
+    #
+    # Status messages ("sent to ...", "sid=...") go to stderr so stdout
+    # is exclusively the reply text — pipe-friendly for `tm send X "..."
+    # | jq` and similar.
+    local no_wait=0 pane_quiet=0 timeout=600 repo=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --fresh) fresh=1; shift ;;
-            -*) die "tm wait-idle: unknown flag: $1" ;;
+            --no-wait)    no_wait=1; shift ;;
+            --pane-quiet) pane_quiet=1; shift ;;
+            --timeout)    timeout="${2:-}"; shift 2 ;;
+            --timeout=*)  timeout="${1#--timeout=}"; shift ;;
+            --) shift; repo="${1:-}"; shift || true; break ;;
+            -*) die "tm send: unknown flag: $1" ;;
+            *) repo="$1"; shift; break ;;
+        esac
+    done
+    [[ -n "$repo" && $# -gt 0 ]] \
+        || die "usage: tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>   (flags must precede <repo>; everything after <repo> is prompt text)"
+
+    local prompt="$*"
+    _send_keys "$repo" "$prompt"
+
+    if (( no_wait )); then
+        return 0
+    fi
+
+    local waiter_rc=0
+    if (( pane_quiet )); then
+        _wait_pane_quiet "$repo" "$timeout" || waiter_rc=$?
+    else
+        _wait_idle_signal "$repo" "$timeout" || waiter_rc=$?
+    fi
+
+    if (( waiter_rc != 0 )); then
+        local _wait_kind="Stop hook"
+        (( pane_quiet )) && _wait_kind="pane-quiet"
+        echo "tm send: timed out after ${timeout}s waiting for $_wait_kind on $repo" >&2
+        # Best-effort partial: if the signal landed between our last poll
+        # and here, dump whatever .last has so stdout isn't silently empty.
+        _print_last_or_empty "$repo"
+        return 1
+    fi
+
+    _print_last_or_empty "$repo"
+    return 0
+}
+
+cmd_wait() {
+    # Block on the Stop-hook idle marker (default) or pane-quiet
+    # fallback, then print the teammate's last-turn reply to stdout. Use
+    # when an external actor (Remote Control web UI, mobile app, cron) is
+    # driving the teammate and the dispatcher needs to collect the reply
+    # without sending its own prompt.
+    #
+    # Flags:
+    #   --fresh          clear the idle/.last/.busy baseline up front so
+    #                    the NEXT Stop is what wakes us up, not a past
+    #                    one. Required when monitoring an autonomously
+    #                    progressing teammate (no fresh `tm send` to
+    #                    reset the baseline for you).
+    #   --pane-quiet     fall back to pane-quiet detection. Same use case
+    #                    as on cmd_send: TUI-only commands that fire no
+    #                    hook (/help, /effort, /agents, permission prompt).
+    #   --timeout N      override the 600s default wait cap.
+    local repo="" timeout=600 fresh=0 pane_quiet=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fresh)      fresh=1; shift ;;
+            --pane-quiet) pane_quiet=1; shift ;;
+            --timeout)    timeout="${2:-}"; shift 2 ;;
+            --timeout=*)  timeout="${1#--timeout=}"; shift ;;
+            -*) die "tm wait: unknown flag: $1" ;;
             *)
                 if [[ -z "$repo" ]]; then repo="$1"
                 else timeout="$1"
@@ -419,35 +616,27 @@ cmd_wait_idle() {
                 ;;
         esac
     done
-    [[ -n "$repo" ]] || die "usage: tm wait-idle [--fresh] <repo> [timeout=600]"
-    require_session "$repo" >/dev/null
-    local sid; sid=$(resolve_sid_or_die "$repo")
+    [[ -n "$repo" ]] || die "usage: tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]"
 
-    # --fresh: drop the marker / .last / .busy baseline FIRST, so the next
-    # Stop hook fire is what wakes us up rather than a past turn's marker.
-    # Use this when you want to wait for the NEXT turn boundary on a
-    # teammate that's making autonomous progress (no fresh `tm send` to
-    # reset the baseline). Default mode (no --fresh) matches the old
-    # behavior — return immediately if any prior turn already ended.
-    if (( fresh )); then
-        clear_idle "$sid"
+    local waiter_rc=0
+    if (( pane_quiet )); then
+        # Pane-quiet has no sid-keyed marker to clear, so --fresh is a
+        # no-op for it. The "min 3s since send" gate inside _wait_pane_quiet
+        # already provides the freshness guarantee for the typical
+        # tm send + tm wait --pane-quiet flow.
+        _wait_pane_quiet "$repo" "$timeout" || waiter_rc=$?
+    else
+        _wait_idle_signal "$repo" "$timeout" "$fresh" || waiter_rc=$?
     fi
 
-    local end; end=$(( $(date +%s) + timeout ))
-    while [[ $(date +%s) -lt $end ]]; do
-        if [[ -e "$IDLE_DIR/$sid" ]]; then
-            echo "idle: $sid"
-            if [[ -s "$IDLE_DIR/$sid.last" ]]; then
-                echo "last: $IDLE_DIR/$sid.last ($(wc -c < "$IDLE_DIR/$sid.last" | tr -d ' ') bytes)"
-            else
-                echo "last: (no text reply this turn — assistant may have only used tools)"
-            fi
-            return 0
-        fi
-        sleep 3
-    done
-    echo "tm: timeout after ${timeout}s waiting for idle signal on $repo (sid=$sid)" >&2
-    return 1
+    if (( waiter_rc != 0 )); then
+        echo "tm wait: timed out after ${timeout}s on $repo" >&2
+        _print_last_or_empty "$repo"
+        return 1
+    fi
+
+    _print_last_or_empty "$repo"
+    return 0
 }
 
 cmd_last() {
@@ -455,7 +644,16 @@ cmd_last() {
     [[ -n "$repo" ]] || die "usage: tm last <repo>"
     local sid; sid=$(resolve_sid_or_die "$repo")
     local lf="$IDLE_DIR/$sid.last"
-    [[ -e "$lf" ]] || die "no last-turn file for $repo (sid=$sid) at $lf — has the teammate finished a turn yet? Try 'tm wait-idle $repo' first."
+    # Two empty states are both treated as "no reply yet":
+    #   - file missing: never written, or rm'd by clear_idle between send and Stop
+    #   - file zero bytes: fresh-spawn sentinel, or a Stop hook that
+    #     extracted no text (tool-only turn, /compact, /clear)
+    # The -s test covers both (false on missing AND on zero bytes). Without
+    # this guard a freshly spawned teammate would have `tm last` silently
+    # succeed with empty stdout, which is the bug that motivated the
+    # empty-sentinel write at spawn time.
+    [[ -s "$lf" ]] \
+        || die "no reply yet for $repo (sid=$sid) — file is missing or empty at $lf. Try 'tm wait $repo' to block for the next Stop, or 'tm send $repo <prompt>' to drive a turn."
     cat "$lf"
 }
 
@@ -505,62 +703,17 @@ cmd_reload() {
     local repo rc=0
     for repo in "${repos[@]}"; do
         echo "→ $repo: /reload-plugins"
-        # cmd_send is chatty on stdout; suppress so only the per-repo
-        # banner above shows. Track first failure to surface a non-zero
-        # exit, but keep iterating so a missing teammate doesn't block
-        # the rest of the fan-out.
-        if ! cmd_send "$repo" "/reload-plugins" >/dev/null 2>&1; then
+        # Use --no-wait so the fan-out stays fire-and-forget: cmd_send
+        # is now sync by default, and waiting for every teammate's Stop
+        # signal across a large fleet would serialize the reload into
+        # minutes. Track first failure for the exit code, but keep
+        # iterating so a missing teammate doesn't block the rest.
+        if ! cmd_send --no-wait "$repo" "/reload-plugins" >/dev/null 2>&1; then
             echo "  (failed — is this teammate running? try 'tm ls')" >&2
             rc=1
         fi
     done
     return $rc
-}
-
-cmd_ask() {
-    # One-shot send + wait + cat .last. Default uses wait-idle (Stop hook);
-    # pass --quiet to use the pane-driven wait-quiet (for /compact and other
-    # paths that don't fire a Stop event).
-    local quiet=0 timeout=600 repo=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --quiet) quiet=1; shift ;;
-            --timeout=*) timeout="${1#--timeout=}"; shift ;;
-            --timeout) timeout="${2:-}"; shift 2 ;;
-            --) shift; break ;;
-            -*) die "unknown flag: $1" ;;
-            *) repo="$1"; shift; break ;;
-        esac
-    done
-    [[ -n "$repo" && $# -gt 0 ]] || die "usage: tm ask [--quiet] [--timeout=N] <repo> <prompt...>"
-
-    # cmd_send is chatty on stdout; route to stderr so only the reply lands
-    # on our stdout (pipe-friendly: tm ask repo prompt | tee something).
-    cmd_send "$repo" "$@" >&2
-
-    local waiter_rc=0
-    if (( quiet )); then
-        cmd_wait_quiet "$repo" "$timeout" >&2 || waiter_rc=$?
-    else
-        cmd_wait_idle "$repo" "$timeout" >&2 || waiter_rc=$?
-    fi
-
-    local sid lf=""
-    if sid=$(resolve_sid "$repo"); then
-        lf="$IDLE_DIR/$sid.last"
-    fi
-
-    if (( waiter_rc != 0 )); then
-        echo "tm ask: timed out after ${timeout}s on $repo" >&2
-        # Best-effort partial: if Stop hook landed between our last poll and
-        # here, dump .last as the "what we got". Empty stdout otherwise.
-        [[ -n "$lf" && -s "$lf" ]] && cat "$lf"
-        return 1
-    fi
-
-    # Success. --quiet may legitimately have no .last (e.g. /compact).
-    [[ -n "$lf" && -s "$lf" ]] && cat "$lf"
-    return 0
 }
 
 cmd_resume() {
@@ -571,13 +724,19 @@ cmd_resume() {
     # without a sid we fall back to "newest jsonl by mtime" as a one-off
     # convenience — that's NOT the typical workflow because the latest
     # jsonl is not necessarily the one you mean to continue.
-    local repo="" sid="" prompt="" has_prompt=0 task=""
+    #
+    # --prompt is the atomic-bootstrap-after-resume form: spawn the
+    # resumed REPL, settle for 3s, then send the prompt via the sync
+    # cmd_send (waits for Stop, prints .last). Pair with --no-wait to
+    # fire-and-forget the follow-up message.
+    local repo="" sid="" prompt="" has_prompt=0 task="" no_wait=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --prompt) prompt="${2:-}"; has_prompt=1; shift 2 ;;
             --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
             --task) task="${2:-}"; shift 2 ;;
             --task=*) task="${1#--task=}"; shift ;;
+            --no-wait) no_wait=1; shift ;;
             --) shift; break ;;
             -*) die "unknown flag: $1" ;;
             *)
@@ -589,7 +748,10 @@ cmd_resume() {
                 ;;
         esac
     done
-    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--prompt \"...\"] [--task <slug>]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation)"
+    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt \"...\"] [--no-wait]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation; --no-wait only with --prompt)"
+    if (( no_wait )) && ! (( has_prompt )); then
+        die "tm resume: --no-wait is only valid with --prompt"
+    fi
 
     local path="$PWD/$repo"
     [[ -d "$path" ]] || die_repo_not_found resume "$repo" "$path"
@@ -635,8 +797,14 @@ cmd_resume() {
     if (( has_prompt )); then
         # Give the resumed claude a moment to render its banner / restore
         # state before sending. Empirically 3s is enough on a warm Mac.
+        # cmd_send is sync-by-default, so without --no-wait this returns
+        # the first-turn .last on stdout.
         sleep 3
-        cmd_send "$repo" "$prompt"
+        if (( no_wait )); then
+            cmd_send --no-wait "$repo" "$prompt"
+        else
+            cmd_send "$repo" "$prompt"
+        fi
     fi
 }
 
@@ -686,36 +854,106 @@ cmd_states() {
     } | column -t -s $'\t'
 }
 
-cmd_wait_quiet() {
-    local repo="${1:-}"; local timeout="${2:-600}"
-    [[ -n "$repo" ]] || die "usage: tm wait-quiet <repo> [timeout=600]"
+cmd_compact() {
+    # Atomic /compact + context-window read. Folds the otherwise-multi-step
+    # dispatcher ritual (send /compact → wait → ping a noop → wait → read
+    # ctx) into one verb that prints "before=N after=M (-X%)" on stdout.
+    #
+    # Why the internal noop ping: the jsonl usage block is written per
+    # ASSISTANT turn, and PostCompact alone produces no new assistant turn.
+    # Without a follow-up Stop event, 'tm ctx' would still report the
+    # pre-compact size. The minimum-viable noop here is the single char
+    # "." — one user turn, one bounded assistant reply, one usage block
+    # refresh. The pollution is one line in the teammate's transcript;
+    # the alternative (telling the dispatcher to do this ritual by hand
+    # every time) was the pain point that motivated this verb.
+    local repo="${1:-}" timeout="${2:-120}"
+    [[ -n "$repo" ]] || die "usage: tm compact <repo> [timeout_per_phase=120]"
     require_session "$repo" >/dev/null
+    local sid; sid=$(resolve_sid_or_die "$repo")
 
-    # send-at marker (touched by cmd_send) sets the floor for "time since
-    # action started" — without it we'd return immediately when the pane was
-    # already quiet from a prior turn.
-    local send_at=0 sa
-    sa=$(send_at_file "$repo")
-    [[ -f "$sa" ]] && send_at=$(stat -f %m "$sa" 2>/dev/null || echo 0)
+    # Pre-compact ctx. Soft-fail: if we can't read it, still proceed —
+    # the dispatcher gets after=N without before=N, which is still
+    # informative.
+    local before
+    before=$(_ctx_used_only "$repo" 2>/dev/null || true)
 
-    local end; end=$(( $(date +%s) + timeout ))
-    local quiet_streak=0
-    while [[ $(date +%s) -lt $end ]]; do
-        if pane_busy "$repo"; then
-            quiet_streak=0
-        else
-            quiet_streak=$((quiet_streak + 1))
+    echo "tm compact: sending /compact to $repo (sid=$sid, before=${before:-?})" >&2
+
+    # Phase 1: send /compact and wait for PostCompact via the idle marker.
+    # on-stop.sh touches /tmp/claude-idle/<sid> on Stop / StopFailure /
+    # PostCompact / SessionEnd; the PostCompact path is what we ride here.
+    # .last is NOT rewritten by PostCompact (only Stop writes .last), so
+    # we ignore .last entirely in this verb.
+    _send_keys "$repo" "/compact" >/dev/null
+    if ! _wait_idle_signal "$repo" "$timeout"; then
+        die "tm compact: PostCompact did not fire within ${timeout}s on $repo — compaction may have failed (check 'tm status $repo')."
+    fi
+
+    # Phase 2: noop ping to produce one fresh assistant turn so the jsonl
+    # usage block updates with the post-compact baseline. Bounded timeout
+    # because if the model takes >timeout to reply to ".", something is
+    # already off; surface a partial result rather than blocking.
+    _send_keys "$repo" "." >/dev/null
+    local refresh_ok=1
+    if ! _wait_idle_signal "$repo" "$timeout"; then
+        refresh_ok=0
+    fi
+
+    local after=""
+    if (( refresh_ok )); then
+        after=$(_ctx_used_only "$repo" 2>/dev/null || true)
+    fi
+
+    # Report. Four shapes, decided by what we got back:
+    #   1) full diff:                       before=N after=M (-X%)
+    #   2) only after:                      before=? after=M (pre-compact ctx unreadable)
+    #   3) refresh wait timed out:          before=N after=? (compact ok, ctx refresh timed out after Ss)
+    #   4) refresh wait ok but read failed: before=N after=? (compact ok, post-compact ctx unreadable)
+    # Shapes 3 and 4 used to collapse into one misleading "timed out" message;
+    # the refresh_ok bit distinguishes them so a jq-failure debug doesn't look
+    # like a hung teammate.
+    if [[ -n "$before" && -n "$after" ]]; then
+        local pct=0
+        if (( before > 0 )); then
+            pct=$(( (before - after) * 100 / before ))
         fi
-        local now; now=$(date +%s)
-        # 2 consecutive quiet samples (~4s) plus 3s since send = ready.
-        if (( quiet_streak >= 2 )) && (( now - send_at >= 3 )); then
-            echo "quiet: $repo (pane has no spinner for $((quiet_streak * 2))s+)"
-            return 0
-        fi
-        sleep 2
-    done
-    echo "tm: timeout after ${timeout}s waiting for quiet pane on $repo" >&2
-    return 1
+        printf 'before=%s after=%s (-%d%%)\n' "$before" "$after" "$pct"
+    elif [[ -n "$after" ]]; then
+        printf 'before=? after=%s (pre-compact ctx unreadable)\n' "$after"
+    elif (( refresh_ok )); then
+        printf 'before=%s after=? (compact ok, post-compact ctx unreadable)\n' "${before:-?}"
+    else
+        printf 'before=%s after=? (compact ok, ctx refresh timed out after %ss)\n' "${before:-?}" "$timeout"
+    fi
+    return 0
+}
+
+# Helper for cmd_compact: read just the current used-tokens number for a
+# repo's transcript (no formatting, no window detection, no soft '?'
+# output — fails non-zero on any read error so the caller can decide what
+# to print). Mirrors ctx_one's first jq pass but returns ONLY input + cache
+# tokens of the latest assistant message.
+_ctx_used_only() {
+    local repo="$1"
+    local sid; sid=$(resolve_sid "$repo") || return 1
+
+    local cwd_f; cwd_f=$(cwd_file "$repo")
+    local tcwd
+    if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$PWD/$repo"; fi
+    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
+    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
+    [[ -f "$jsonl" ]] || return 1
+
+    local used
+    used=$(jq -r -s '
+        [ .[] | select(.type == "assistant" and (.message.usage != null)) | .message.usage ] as $u
+        | if ($u | length) == 0 then "" else
+            ($u[-1]) as $l
+            | "\($l.input_tokens + $l.cache_creation_input_tokens + $l.cache_read_input_tokens)"
+          end' "$jsonl" 2>/dev/null) || return 1
+    [[ -n "$used" ]] || return 1
+    printf '%s' "$used"
 }
 
 cmd_poll() {
@@ -729,7 +967,7 @@ cmd_poll() {
     # prompt you just sent — capture-pane will see the prompt echo and match
     # immediately. Match expected RESULT keywords instead (e.g. Scheduled,
     # Cancelled, ✓, error). For "wait until teammate is done", prefer
-    # 'tm wait-idle' which uses the Stop-hook signal and doesn't need a regex.
+    # 'tm wait' which uses the Stop-hook signal and doesn't need a regex.
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
         if tmux capture-pane -t "$pane" -p -S -300 2>/dev/null | grep -qE "$pattern"; then
@@ -738,7 +976,7 @@ cmd_poll() {
         fi
         sleep 3
     done
-    echo "tm: timeout after ${timeout}s waiting for /$pattern/ in $name" >&2
+    echo "tm: timeout after ${timeout}s waiting for /$pattern/ in $repo" >&2
     return 1
 }
 
@@ -1164,145 +1402,165 @@ EOF
 }
 
 cmd_help() {
+    # The verb descriptions below are the authoritative tm command
+    # surface. The dispatcher SKILL.md command table is kept in lockstep
+    # with this text — if they disagree, the SKILL.md / this help are
+    # the ground truth and the divergence is the bug.
     cat <<'EOF'
 tm — tmux teammate manager for the dispatcher skill
 
 USAGE
   tm ls
-      list all teammate-<repo> sessions
-
-  tm spawn <repo> [--task <slug>] [--resume <sid>]
-      launch a claude teammate in $PWD/<repo>. tm must be run from the
-      dispatcher directory (the parent of your sibling repos); fails with
-      "repo not found" if invoked elsewhere. <repo> must be a direct
-      subdirectory of $PWD (no nested paths).
-      --resume <sid> picks up an existing session by jsonl-UUID; otherwise
-      a fresh UUID is pre-generated and handed to `claude --session-id`,
-      so 'tm wait-idle' works immediately without a prior 'tm send'.
-      --task <slug> sets the claude conversation display name (the label in
-      the prompt box, /resume picker, and terminal title) to <repo>-<slug>.
-      Slug accepts [a-z0-9] plus CJK Unified Ideographs (中日韩汉字 e.g.
-      国际化, 日本語); ASCII letters are lowercased; every other character
-      collapses to a single '-' separator; capped at 30 characters. Without
-      --task, a fresh spawn auto-names <repo>-<rand4>; a --resume without
-      --task keeps the resumed session's existing name.
-      Blocks on /tmp/teammate-<repo>.ready (touched by the SessionStart
-      hook once the REPL is up) for up to 18s before returning, so no
-      ad-hoc sleep is needed before the first 'tm send'.
-
-  tm status <repo> [lines=80]
-      capture-pane the teammate's screen
-
-  tm send <repo> <prompt...>
-      send a prompt + Enter to the teammate (handles the dual-send).
-      Also clears the idle-signal baseline (rm /tmp/claude-idle/<sid>) so a
-      subsequent 'tm wait-idle' will wait for THIS prompt's completion,
-      not a previously satisfied one. Do NOT roll your own with raw tmux
-      send-keys, see notes inside the script.
-
-  tm ask [--quiet] [--timeout=N] <repo> <prompt...>
-      send + wait + cat .last in one shot. The dispatcher's "round-trip"
-      shorthand: prompt goes to the teammate, this blocks until the reply
-      is available, and the assistant text is printed to stdout (pipe-
-      friendly — diagnostics go to stderr). Default uses wait-idle; pass
-      --quiet to use wait-quiet (for /compact and other non-turn-end paths).
-      Default timeout 600s. On timeout, prints partial .last to stdout
-      (if Stop hook landed in the race window) and exits non-zero.
-
-  tm resume <repo> [<sid>] [--prompt "..."] [--task <slug>]
-      Resume a prior conversation. PREFER passing the sid explicitly — the
-      dispatcher's task ledger (active-dispatcher-tasks.md) records the sid
-      of each teammate it spawned; pull from there. With sid given, this is
-      equivalent to 'tm spawn <repo> --resume <sid>' but with an up-front
-      check that the jsonl exists in the right project dir.
-      Without sid: auto-pick the newest jsonl by mtime as a one-off
-      convenience (warns on stderr so you notice the ledger was skipped).
-      Fails if a teammate session for <repo> already exists.
-      Optional --prompt sends a follow-up message after the resumed banner
-      renders. Optional --task <slug> relabels the resumed conversation to
-      <repo>-<slug> (otherwise the existing name carries over).
-
-  tm wait-idle [--fresh] <repo> [timeout=600]
-      block until the teammate's Stop hook fires (file appears at
-      /tmp/claude-idle/<sid>). On hit, also reports the path of the
-      <sid>.last file (the assistant's last-turn text, written by the
-      same hook). Requires the plugin's Stop hook to be loaded — it
-      writes both files every time a session ends a turn.
-      --fresh first clears /tmp/claude-idle/<sid>{,.last,.busy} so the
-      next Stop fire — not a past one — is what unblocks the wait. Use
-      it when monitoring an autonomously-progressing teammate where
-      you didn't just `tm send`. (`tm send` already clears the
-      baseline, so a normal send-then-wait does NOT need --fresh.)
-
-  tm last <repo>
-      cat the assistant's last-turn text for <repo>, captured by the
-      Stop hook into /tmp/claude-idle/<sid>.last. Use this instead of
-      'tm status' when you need the full reply — tmux scrollback truncates,
-      but the .last file is the complete text the assistant emitted.
-
-  tm kill <repo>
-      kill the teammate session and clean up its sid/idle/send-at files
-
-  tm reload <repo>... | --all
-      fan out /reload-plugins to one, many, or every teammate. Sugar
-      over 'tm send <repo> /reload-plugins' so you don't have to type it
-      per pane after publishing a plugin update. --all enumerates from
-      `tmux ls`; missing/dead teammates are skipped with a stderr note
-      and exit status reflects whether every send succeeded.
+      List running teammate-<repo> sessions.
 
   tm states
-      one-line summary per teammate: REPO, SID (first 8 chars), BUSY (yes if
-      the pane shows a working spinner), LAST (size + age of <sid>.last from
-      the Stop hook), PREVIEW (first 50 chars of <sid>.last). Use this when
-      you want to know what every teammate is doing at a glance.
+      One-line fleet snapshot: REPO, SID (first 8 chars), BUSY (yes if
+      the .busy file from the on-busy hook is present), LAST (size + age
+      of <sid>.last), PREVIEW (first 50 chars of last reply). Use to see
+      what every teammate is doing at a glance.
 
-  tm wait-quiet <repo> [timeout=600]
-      block until the teammate's pane shows no working spinner for ~4
-      consecutive seconds AND at least 3s have passed since the last 'tm send'.
-      Sister to 'wait-idle' but pane-driven, so it also catches non-turn-end
-      operations like /compact and /clear (which do NOT trigger the Stop hook).
-      Known blind spot: a permission prompt blocks claude with no spinner —
-      wait-quiet will return "ready" but the teammate is actually waiting for
-      a y/n decision; 'tm status' shows the prompt.
+  tm spawn <repo> [--task <slug>] [--prompt "..."] [--no-wait]
+      Launch a claude teammate in $PWD/<repo>. Must run from the
+      dispatcher directory (the parent of your sibling repos); fails
+      with "repo not found" otherwise. <repo> must be a direct
+      subdirectory of $PWD (no nested paths).
+      Without --prompt, returns once the REPL signals SessionStart
+      (typically 2-4s on a warm Mac). With --prompt "...", sleeps 3s
+      after ready, sends the prompt, waits for Stop, and prints the
+      teammate's first-turn reply on stdout — atomic bootstrap, one
+      call. --no-wait combined with --prompt sends without waiting.
+      --task <slug> names the conversation <repo>-<slug>. Allowlist:
+      ASCII letters/digits + CJK Unified Ideographs (中日韩汉字).
+      Without --task a fresh spawn auto-names <repo>-<rand4>.
+      Fresh spawns also write an empty /tmp/claude-idle/<sid>.last
+      sentinel, so 'tm last' before any reply returns a clear "no
+      reply yet" error instead of stale content from an earlier sid.
 
-  tm poll <repo> <regex> [timeout=180]
-      block until pane content matches a regex; for "wait until done"
-      prefer 'tm wait-idle' — keep this for cases where the idle hook
-      can't catch an interesting intermediate state. Pattern should match
-      the EXPECTED RESULT, not the prompt you just sent.
+  tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>
+      Atomic round-trip by default: send prompt + wait for the Stop
+      hook + print the teammate's reply text on stdout. The dispatcher's
+      primary verb — folds what used to be send + wait-idle + last into
+      one call. Stdout is exclusively reply text; status lines go to
+      stderr (pipe-friendly). Flags must precede <repo>; everything
+      after <repo> is prompt text.
+      --no-wait fire-and-forget; return as soon as the keys are sent.
+        Use for /clear before kill, or any case where the reply doesn't
+        matter. (--pane-quiet has no effect with --no-wait, since
+        nothing waits.)
+      --pane-quiet falls back to pane-quiet detection. Use for TUI-only
+        commands that fire no hook: /help, /effort, /agents, permission
+        prompts. /compact and /clear do NOT need it — the Stop hook now
+        covers them via PostCompact / SessionEnd.
+      --timeout N overrides the 600s default wait.
+      Empty stdout never silently means success: a turn with no text
+      (tool-only, /compact, /clear) prints the sentinel line "(no text
+      reply this turn — tool-only, /compact, /clear, or fresh spawn)".
+      On timeout: stderr warning, partial .last to stdout if any,
+      exit 1.
 
-  tm archive <id> [--status '<tag>']
-      move a finished task from the active ledger to the archive. Reads the
-      compressed one/two-line outcome from stdin; copies repo/branch/intent
-      verbatim from the active entry and stamps today's date as closed.
-      Prepends to dispatcher-tasks-archive.md (newest on top), creating it
-      from its shape if absent, then deletes the entry from
-      active-dispatcher-tasks.md. Without --status the active header's
-      [status] tag is carried over; pass --status to change it (e.g. a
-      paused task that has now finished).
+  tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]
+      Block until the teammate's next Stop hook (or pane-quiet
+      fallback), then print the reply to stdout — same output contract
+      as 'tm send'. Use when an external actor (Remote Control web
+      UI, mobile app, cron) drove the turn and you just want to
+      collect the result.
+      --fresh clears the idle/.last/.busy baseline up front so the
+      NEXT Stop unblocks the wait, not a prior one. Required when
+      monitoring an autonomously progressing teammate (no fresh
+      'tm send' to reset the baseline for you). No-op under
+      --pane-quiet (pane-quiet uses send-at timing instead of a
+      sid-keyed marker; the "≥3s since last send" gate already
+      provides the freshness guarantee).
+      --pane-quiet falls back to pane-quiet detection (same use case
+      as on 'tm send').
+      --timeout N overrides the positional [timeout=600] (both forms
+      are accepted for compatibility with the rest of the verb set;
+      the positional wins if both are passed).
 
-  tm ctx <repo>... | --all  [--window 200k|1m]
-      report a teammate's real context-window usage from its session
-      transcript (the TUI percentage is unreliable and often absent).
-      Prints current prompt size, next-turn estimate, and percent of window.
-      Window size is not in the transcript: a peak above ~210k proves a 1M
-      window, otherwise 200k is assumed (and labelled so); --window forces it.
+  tm compact <repo> [timeout_per_phase=120]
+      Atomic /compact + ctx refresh. Sends /compact, waits for
+      PostCompact, sends a one-char noop to refresh the jsonl usage
+      block, waits for Stop, prints one of four stdout shapes
+      depending on what succeeded:
+        before=N after=M (-X%)                                 success
+        before=? after=M (pre-compact ctx unreadable)          (exit 0)
+        before=N after=? (compact ok, post-compact ctx unreadable)
+        before=N after=? (compact ok, ctx refresh timed out after Ss)
+      On compact (PostCompact) timeout: dies with diagnostic, exit non-zero.
+      The remaining three shapes exit 0 — the compact itself succeeded;
+      only the ctx number reporting was incomplete.
+
+  tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
+      Resume a prior conversation. PREFER passing <sid> from the
+      dispatcher's task ledger (active-dispatcher-tasks.md records the
+      sid of each teammate it spawned). Without sid, picks the newest
+      jsonl by mtime as a one-off convenience (stderr warning).
+      Validates the jsonl exists in the project dir; UUID format
+      enforced. Fails if a teammate session for <repo> already exists.
+      --prompt sends a follow-up after a 3s settle, atomic like
+      'tm spawn --prompt'. --no-wait (with --prompt) fires without
+      waiting. --task relabels the resumed conversation.
+
+  tm last <repo>
+      Print the teammate's last-turn reply from
+      /tmp/claude-idle/<sid>.last. Empty or missing file dies with
+      "no reply yet". Use this when you want to re-read a reply the
+      send/wait verbs already printed (their output is one-shot).
+
+  tm kill <repo>
+      Kill the teammate's tmux session and clean up its state files.
+
+  tm reload <repo>... | --all
+      Fan out /reload-plugins to one, many, or every teammate. Sugar
+      over 'tm send <repo> /reload-plugins'. --all enumerates from
+      `tmux ls`; missing/dead teammates are skipped with a stderr note
+      and the exit status reflects whether every send succeeded.
+
+  tm ctx <repo>... | --all [--window 200k|1m]
+      Real context-window usage per teammate, read from the jsonl
+      usage block (more accurate than the TUI percentage). Prints
+      current prompt size, next-turn estimate, and percent of window.
+      Window size is not in the transcript: a peak above ~210k proves
+      a 1M window; otherwise 200k is assumed (labelled accordingly).
+      --window forces the assumption.
 
   tm history <repo> [<sid-or-prefix>]
-      inspect this repo's past Claude sessions (live or dead).
-      No <sid> -> list mode: newest-first table of jsonls (SID, AGE, SIZE,
-      TOPIC = first user prompt). A leading '*' marks the row that matches
-      the current live teammate's session (/tmp/teammate-<repo>.sid).
-      With <sid> or 8+ char prefix -> detail mode: full sid, file path,
-      created/last-seen timestamps, ctx usage, first user prompt (full),
-      last assistant text (up to 1500 chars), and a ready-to-paste
-      'tm resume' command. Boundary: 'tm last' is current-live-teammate
-      only; 'tm history' covers any jsonl on disk including killed sessions.
+      Inspect this repo's past Claude sessions (live or dead). No
+      <sid>: list mode, newest-first table (SID, AGE, SIZE, TOPIC =
+      first user prompt). '*' marks the current live teammate's
+      session. With <sid> or 8+ char prefix: detail mode (full sid,
+      file path, created/last-seen, ctx usage, first prompt, last
+      assistant text up to 1500 chars, ready-to-paste 'tm resume'
+      command). Boundary vs 'tm last': last covers only the current
+      live teammate's reply; history covers any jsonl on disk
+      including killed sessions.
+
+  tm archive <id> [--status '<tag>']
+      Move a finished task from the active ledger to the archive.
+      Reads the compressed one/two-line outcome on stdin; copies
+      repo/branch/intent verbatim from the active entry and stamps
+      today's date. Prepends to dispatcher-tasks-archive.md (newest
+      on top), creating it from its shape if absent, then deletes
+      the entry from active-dispatcher-tasks.md. --status overrides
+      the carried-over [status] tag.
+
+DIAGNOSTIC (prefer the verbs above; these are escape hatches)
+  tm status <repo> [lines=80]
+      Capture-pane the teammate's live screen. The sync send/wait
+      verbs make this unnecessary for normal flow.
+
+  tm poll <repo> <regex> [timeout=180]
+      Block until pane content matches a regex. Fallback when wait
+      can't catch an interesting intermediate state. Match the
+      EXPECTED RESULT, not the prompt you just sent.
+
+  tm help
+      This text.
 
 ENVIRONMENT
-  (none — tm derives the dispatcher directory from $PWD at invocation
-  time, with no global config file or env override. To "switch" dispatcher
-  trees, cd to the other tree and run tm there.)
+  None. tm derives the dispatcher directory from $PWD at invocation,
+  with no global config file or env override. To "switch" dispatcher
+  trees, cd to the other tree and run tm there.
 EOF
 }
 
@@ -1314,19 +1572,35 @@ main() {
         spawn)      cmd_spawn "$@" ;;
         status)     cmd_status "$@" ;;
         send)       cmd_send "$@" ;;
-        ask)        cmd_ask "$@" ;;
         resume)     cmd_resume "$@" ;;
-        wait-idle)  cmd_wait_idle "$@" ;;
+        wait)       cmd_wait "$@" ;;
+        compact)    cmd_compact "$@" ;;
         last)       cmd_last "$@" ;;
         kill)       cmd_kill "$@" ;;
         reload)     cmd_reload "$@" ;;
         states)     cmd_states "$@" ;;
-        wait-quiet) cmd_wait_quiet "$@" ;;
         poll)       cmd_poll "$@" ;;
         archive)    cmd_archive "$@" ;;
         ctx)        cmd_ctx "$@" ;;
         history)    cmd_history "$@" ;;
         help|-h|--help) cmd_help ;;
+        # Removed verbs: explicit migration errors so dispatcher (or a
+        # human reading old docs / memory entries) gets a clear hint
+        # rather than the generic "unknown subcommand" path. Not aliases —
+        # the new verbs have different semantics, so silent rerouting
+        # would mislead.
+        ask)
+            echo "tm ask was removed in 0.3.0. Use 'tm send <repo> <prompt>' — send is now sync round-trip by default and prints the reply on stdout." >&2
+            exit 2
+            ;;
+        wait-idle)
+            echo "tm wait-idle was renamed to 'tm wait' in 0.3.0. Same semantics; the new verb also prints .last on stdout by default." >&2
+            exit 2
+            ;;
+        wait-quiet)
+            echo "tm wait-quiet was folded into the --pane-quiet flag in 0.3.0. Use 'tm wait <repo> --pane-quiet' (or 'tm send <repo> <prompt> --pane-quiet' for the send-then-wait composition)." >&2
+            exit 2
+            ;;
         *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;
     esac
 }

@@ -26,8 +26,8 @@ flowchart TB
 
     user <-->|chat| dispatcher
     user -.->|optional: direct drive<br/>via Remote Control| tA
-    dispatcher -->|tm spawn / send / ask| tA
-    dispatcher -->|tm spawn / send / ask| tB
+    dispatcher -->|tm spawn / send / wait| tA
+    dispatcher -->|tm spawn / send / wait| tB
     tA -.cwd.-> repoA
     tB -.cwd.-> repoB
 ```
@@ -82,10 +82,10 @@ Talk in plain language — the `dispatcher` skill picks up the intent:
 Or call `tm` directly:
 
 ```bash
-tm spawn repo-a                                # launch a teammate
-tm ask   repo-a 'run yarn test in unit-test'   # send + wait + print reply
-tm states                                      # fleet snapshot
-tm kill  repo-a                                # done
+tm spawn repo-a --prompt 'run yarn test in unit-test'   # atomic: spawn + send + wait + print
+tm send  repo-a 'now lint'                              # sync send: returns the reply on stdout
+tm states                                               # fleet snapshot
+tm kill  repo-a                                         # done
 ```
 
 ## The `tm` script
@@ -97,21 +97,22 @@ terminal, see [Outside Claude Code](#using-tm-outside-claude-code).
 |---|---|
 | `tm ls` | List running teammate sessions. |
 | `tm states` | Fleet snapshot: repo, sid, busy, last-reply size + age, first 50 chars. |
-| `tm spawn <repo> [--task <slug>] [--resume <sid>]` | Launch a teammate for `<repo>` in a fresh tmux session. `--task <slug>` gives the conversation a readable name (`<repo>-<slug>`; ASCII letters/digits + CJK Han allowed); default is `<repo>-<rand4>`. |
-| `tm resume <repo> [<sid>] [--prompt "…"] [--task <slug>]` | Resume a prior conversation. Pass `sid` from your task ledger; without it, picks the newest jsonl by mtime. `--task` relabels the resumed conversation. |
-| `tm send <repo> <prompt…>` | Send a prompt + Enter. |
-| `tm ask [--quiet] [--timeout=N] <repo> <prompt…>` | Round-trip: send + wait + print the reply on stdout. Use `--quiet` for slash commands like `/compact` that don't fire Stop. |
-| `tm wait-idle [--fresh] <repo> [timeout]` | Block until the teammate's Stop hook fires (= one turn finished). `--fresh` ignores any pre-existing idle signal. |
-| `tm wait-quiet <repo> [timeout]` | Block until the teammate's pane shows no spinner for a few seconds. Use when the action doesn't end in a Stop event. |
-| `tm last <repo>` | Print the full text of the teammate's last reply. Use this when you need the complete text — tmux scrollback truncates. |
-| `tm status <repo> [lines]` | Capture-pane the teammate's live screen. |
-| `tm poll <repo> <regex> [timeout]` | Block until pane content matches a regex. Fallback when wait-idle / wait-quiet don't apply. |
+| `tm spawn <repo> [--task <slug>] [--prompt "…"] [--no-wait]` | Launch a teammate for `<repo>`. With `--prompt`, atomic bootstrap: spawn + send + wait + print the first-turn reply on stdout. `--task <slug>` names the conversation (`<repo>-<slug>`; ASCII + CJK Han); default `<repo>-<rand4>`. `--no-wait` only with `--prompt` for fire-and-forget bootstrap. |
+| `tm resume <repo> [<sid>] [--task <slug>] [--prompt "…"] [--no-wait]` | Resume a prior conversation. Pass `sid` from your task ledger; without it, picks the newest jsonl by mtime. `--prompt` sends a follow-up after a 3s settle (atomic like `spawn --prompt`). |
+| `tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt…>` | **Atomic round-trip by default**: send prompt + wait for the Stop hook + print the reply on stdout. The dispatcher's primary verb. Flags must precede `<repo>` (everything after `<repo>` is prompt text). `--no-wait` fire-and-forget. `--pane-quiet` fallback for TUI-only commands (`/help`, `/effort`, permission prompts) that fire no hook. |
+| `tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]` | Block until the teammate's next Stop event and print the reply. Use when an external actor (Remote Control, mobile app, cron) drove the turn. `--fresh` waits for the NEXT Stop instead of returning on a stale marker (no-op under `--pane-quiet`). `--timeout N` is equivalent to the positional `[timeout]`. |
+| `tm compact <repo>` | Atomic `/compact` + ctx refresh. Sends `/compact`, waits for PostCompact, sends a one-char noop to refresh the jsonl usage block, prints `before=N after=M (-X%)` on stdout. |
+| `tm last <repo>` | Print the full text of the teammate's last reply. Fresh-spawn sentinel: dies with "no reply yet" when called before any turn has settled. |
 | `tm kill <repo>` | Kill the teammate's tmux session and clean up its state files. |
 | `tm archive <id> [--status '<tag>']` | Move a closed task from `active-dispatcher-tasks.md` to the archive (outcome text on stdin). |
 | `tm ctx <repo>… \| --all [--window 200k\|1m]` | Real context-window usage per teammate, read from the jsonl `usage` block. More accurate than the TUI percentage. |
 | `tm history <repo> [<sid-or-prefix>]` | List past sessions for `<repo>` (newest first), or show details for one when a sid prefix is passed. |
+| `tm reload <repo>… \| --all` | Fan out `/reload-plugins` to teammates after a plugin update. |
 
-Wait primitives and the on-disk state contract are documented in
+Diagnostic-only (use when the verbs above don't fit): `tm status <repo>` to
+capture the live pane, `tm poll <repo> <regex>` for intermediate-state polling.
+
+Behavior contracts and the on-disk state are documented in
 [`plugins/claudemux/skills/dispatcher/SKILL.md`](plugins/claudemux/skills/dispatcher/SKILL.md).
 
 ## `/claudemux:optimize` — periodic self-review

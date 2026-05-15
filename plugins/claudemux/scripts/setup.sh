@@ -10,7 +10,7 @@
 #   1. Copy CLAUDE.md.template to <dispatcher-dir>/CLAUDE.md (skipped if the
 #      existing CLAUDE.md already matches; pass --force to overwrite a
 #      differing one).
-#   2. Ensure /tmp/claude-idle/ exists (the directory `tm wait-idle` polls).
+#   2. Ensure /tmp/claude-idle/ exists (the directory `tm wait` / `tm send` polls).
 #   3. Remove ~/.config/claudemux/config if present (no longer read; the
 #      runtime derives the dispatcher dir from cwd).
 #   4. Print verification next steps.
@@ -104,10 +104,9 @@ Verify by starting a dispatcher session:
        claude
   3. Once Claude is at the prompt, spawn a teammate against a sibling repo:
        tm spawn <repo>      # <repo> is a direct subdirectory of $DISPATCHER_DIR
-  4. Send a prompt and wait for the reply:
+  4. Send a prompt; the reply lands on stdout (tm send is sync round-trip):
        tm send <repo> 'echo hello'
-       tm wait-idle <repo> 60
-     wait-idle should return "idle: <sid>" within a minute.
+     You should see the teammate's text reply within a minute.
 
 Notes:
   * \`tm\` is on PATH automatically (Claude Code prepends each installed

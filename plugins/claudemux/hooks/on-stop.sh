@@ -18,7 +18,7 @@
 #                  doesn't correspond to anything the user said
 #   - SessionEnd:  session is going away; nothing to extract
 # For those we still want the BUSY clear and the idle marker (so anything
-# that was wait-idle'ing wakes up promptly), but we skip the .last work.
+# that was 'tm wait'-ing wakes up promptly), but we skip the .last work.
 #
 # Hook stdin is the harness JSON: { session_id, transcript_path,
 # hook_event_name, ... }. We always exit 0 — the harness does not want a
@@ -218,9 +218,10 @@ fi
 
 # Touch the idle signal LAST. Any waiter that races on the touch and
 # immediately reads .last will find the .last in place. We always touch
-# regardless of event so wait-idle wakes up on StopFailure / PostCompact /
-# SessionEnd too (without those, /compact and API-error turns would hang
-# wait-idle forever).
+# regardless of event so 'tm wait' (and the wait phase of 'tm send' /
+# 'tm compact' / 'tm spawn --prompt') wakes up on StopFailure /
+# PostCompact / SessionEnd too — without those, /compact and API-error
+# turns would hang the wait forever.
 touch "$idle_dir/$sid"
 diag_log "phase=touch-idle event=${event:-?}"
 exit 0

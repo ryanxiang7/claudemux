@@ -10,6 +10,21 @@ Use this skill as the operations manual for dispatcher-style work from a parent 
 
 > **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, so `which tm` resolves inside any Bash subshell of an interactive Claude Code session. If for some reason `tm` is not on `PATH` (e.g. a shell that doesn't inherit Claude Code's env), use the absolute install path: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic `Bash` tool call — that variable is only injected when the harness runs commands defined by the plugin (commands/hooks/skill bodies), not in arbitrary subshells you spawn from elsewhere.
 
+> **Authoritative `tm` surface.** The command table and behavior contracts in this document are the ground truth for how `tm` works. If anything you remember from an earlier session disagrees with what this file says — flag names, default behaviors, removed verbs — trust this file and treat the memory as stale. If `tm` in the script disagrees with what this file says, the script is the bug; report it. Don't reason about `tm` from prior-conversation memory or model priors; the verbs and flags listed here are exhaustive.
+
+## Common patterns (read first)
+
+The three patterns below cover ~95% of dispatcher `tm` use. Reach for them before composing anything else.
+
+| Intent | One call |
+|---|---|
+| Send a prompt and get the reply | `tm send <repo> "..."` — sync round-trip; reply on stdout |
+| Start a teammate and have it work on something | `tm spawn <repo> --prompt "..."` — atomic bootstrap |
+| Wait for a turn the user / Remote Control / cron triggered | `tm wait --fresh <repo>` — passive observe, reply on stdout |
+| Compact a teammate and learn the new ctx | `tm compact <repo>` — prints `before=N after=M (-X%)` |
+
+Pair every one of these with `run_in_background: true` on the Bash tool call (see "Long-running waits" below) so the dispatcher stays free to dispatch other work while the harness pings you when the verb returns.
+
 ## Confirm dispatcher scope
 
 - The user asks to push work into another repo ("派一个到 `<repo>`", "去 `<repo>` 看看 X").
@@ -36,76 +51,141 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 `tm` (bundled with this plugin under `bin/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly. **If the dispatcher's cwd is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `$PWD/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. `cd` up to the sibling-parent first, or run `tm` from the actual dispatcher tmux session. The script bakes in two non-obvious tmux behaviors so you don't have to think about them: combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit (the Enter becomes a literal newline inside the input box), and multi-line prompts need a second `Enter` to submit once the input box already contains a newline.
 
 ```
-tm ls                            list all teammate sessions (sessions named teammate-<repo>)
-tm states                        one-line-per-teammate fleet snapshot: REPO, SID, BUSY,
-                                 LAST (size+age of .last), PREVIEW (first 50 chars of .last).
-                                 The "what's everyone doing" view — prefer this over running
-                                 tm ls + tm status across each session.
-tm spawn <repo> [--task <slug>] [--resume <sid>]
-                                 launch a teammate inside the sibling repo (cwd = $PWD/<repo>).
-                                 --resume <sid> picks up an existing session by jsonl-UUID.
-                                 --task <slug> sets the claude conversation display name
-                                 (prompt box / /resume picker / terminal title) to
-                                 <repo>-<slug>. Slug accepts [a-z0-9] + CJK Unified
-                                 Ideographs (中日韩汉字, e.g. `--task 国际化`); other
-                                 characters collapse to '-'; capped at 30 chars.
-                                 Without --task a fresh spawn auto-names <repo>-<rand4>,
-                                 and a --resume without --task keeps the resumed session's
-                                 existing name. The chosen name is also echoed in the
-                                 spawn stdout (`name=<repo>-<slug>`).
-tm status <repo> [lines=80]      capture-pane the teammate's screen (defaults to last 80 lines)
-tm send <repo> <prompt...>       send a prompt + Enter (handles the dual-send and
-                                 multi-line submit quirk); clears the idle/last baseline
-                                 and touches /tmp/teammate-<repo>.send-at for wait-quiet
-tm ask [--quiet] [--timeout=N] <repo> <prompt...>
-                                 send + wait + cat .last in one shot. Default uses
-                                 wait-idle; pass --quiet to use wait-quiet (for /compact
-                                 and other non-turn-end paths). Reply on stdout (pipe-
-                                 friendly); diagnostics on stderr. Exit non-zero on
-                                 timeout, with whatever partial .last exists.
-tm resume <repo> [<sid>] [--prompt "..."] [--task <slug>]
-                                 resume a prior conversation. PREFER passing the sid
-                                 from the task ledger (active-dispatcher-tasks.md). Without
-                                 sid, auto-picks the newest jsonl by mtime (warns on stderr,
-                                 since that's rarely the one you actually wanted).
-                                 Optional --prompt sends a follow-up after resume.
-                                 Optional --task relabels the resumed conversation to
-                                 <repo>-<slug> (otherwise the existing name carries over).
-tm wait-idle [--fresh] <repo> [timeout=600]
-                                 block until any of Stop / StopFailure / PostCompact /
-                                 SessionEnd fires (the idle-marker file appears).
-                                 Prints the path of the <sid>.last file on hit
-                                 (which is meaningful only after Stop).
-                                 --fresh first clears the idle/last/busy baseline so
-                                 the wait targets the NEXT turn boundary, not any
-                                 already-recorded one. Reach for it when you're
-                                 monitoring autonomous teammate progress without a
-                                 fresh `tm send` (which already resets the baseline).
-tm wait-quiet <repo> [timeout=600]
-                                 block until the pane shows no spinner for ~4s
-                                 (and at least 3s have passed since the last send).
-                                 Reserve for TUI-only commands that fire NO hook
-                                 (/help, /effort dialogs, permission prompts).
-tm last <repo>                   cat the assistant's last-turn full text (written by
-                                 the Stop hook). Use this instead of 'tm status' when
-                                 you need the full reply — tmux scrollback truncates.
-tm kill <repo>                   tmux kill-session the teammate and clean up its sid/idle/last/send-at files
-tm reload <repo>... | --all      fan out /reload-plugins to one, many, or every teammate
-tm poll <repo> <regex> [timeout=180]
-                                 block until pane content matches the regex
-tm archive <id> [--status '...'] move a finished task from the active ledger to the
-                                 archive; reads the compressed outcome from stdin
-                                 (see "Archiving a finished task" below)
+tm ls                            List running teammate-<repo> sessions.
+tm states                        One-line fleet snapshot: REPO, SID, BUSY,
+                                 LAST (size+age of .last), PREVIEW (first 50
+                                 chars of last reply). "Who's doing what"
+                                 view — prefer this over fanning out
+                                 tm ls + tm status per session.
+tm spawn <repo> [--task <slug>] [--prompt "..."] [--no-wait]
+                                 Launch a teammate inside the sibling repo
+                                 (cwd = $PWD/<repo>). Without --prompt,
+                                 returns once the REPL signals SessionStart
+                                 (~2-4s warm). With --prompt "...", sleeps
+                                 3s post-ready, sends the prompt, waits for
+                                 Stop, and prints the first-turn reply on
+                                 stdout — atomic bootstrap, ONE call. Pair
+                                 with --no-wait to fire-and-forget the
+                                 first prompt. --task <slug> names the
+                                 conversation <repo>-<slug>; allowlist is
+                                 [a-z0-9] + CJK Unified Ideographs (中日韩
+                                 汉字, e.g. `--task 国际化`); other chars
+                                 collapse to '-'; capped at 30 chars.
+                                 Without --task a fresh spawn auto-names
+                                 <repo>-<rand4>. Fresh spawns also write
+                                 an empty /tmp/claude-idle/<sid>.last
+                                 sentinel so 'tm last' before any reply
+                                 returns a clear "no reply yet" error
+                                 instead of stale content from an earlier
+                                 sid.
+tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>
+                                 Atomic round-trip BY DEFAULT: send prompt
+                                 + wait for Stop + print reply on stdout.
+                                 The dispatcher's primary verb — folds
+                                 what used to be send + wait-idle + last
+                                 into one call. Stdout is reply text only;
+                                 status lines go to stderr (pipe-friendly).
+                                 --no-wait fire-and-forget (use for
+                                 /clear before kill, or anywhere the
+                                 reply doesn't matter). --pane-quiet
+                                 falls back to pane-quiet detection
+                                 (TUI-only commands: /help, /effort,
+                                 /agents, permission prompts). --timeout
+                                 N overrides the 600s default. Empty
+                                 stdout never silently means success: a
+                                 turn with no text (tool-only, /compact,
+                                 /clear) prints the sentinel
+                                 "(no text reply this turn — tool-only,
+                                 /compact, /clear, or fresh spawn)".
+tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]
+                                 Block until the teammate's next Stop
+                                 hook (or pane-quiet fallback), then
+                                 print the reply on stdout — same output
+                                 contract as tm send. Use when an
+                                 external actor (Remote Control web UI,
+                                 mobile app, cron) drove the turn and
+                                 you just want to collect the result.
+                                 --fresh clears the baseline up front so
+                                 the NEXT Stop unblocks the wait. Use
+                                 when monitoring autonomous teammate
+                                 progress (no fresh tm send to reset).
+                                 No-op under --pane-quiet (the "≥3s
+                                 since last send" gate already provides
+                                 freshness for that path).
+                                 --pane-quiet falls back to pane-quiet
+                                 detection (same use case as tm send).
+                                 --timeout N is the flag form of the
+                                 positional [timeout=600].
+tm compact <repo> [timeout_per_phase=120]
+                                 Atomic /compact + ctx refresh. Sends
+                                 /compact, waits for PostCompact, sends
+                                 a one-char noop to refresh the jsonl
+                                 usage block, waits for Stop, then
+                                 prints one of four stdout shapes:
+                                   before=N after=M (-X%)             success
+                                   before=? after=M (pre-compact ctx
+                                       unreadable)                    (exit 0)
+                                   before=N after=? (compact ok, post-
+                                       compact ctx unreadable)        (exit 0)
+                                   before=N after=? (compact ok, ctx
+                                       refresh timed out after Ss)    (exit 0)
+                                 PostCompact-phase timeout is the only
+                                 fatal mode (dies, exit non-zero). The
+                                 four-shape output replaces the old
+                                 send-/compact → wait → ping noop →
+                                 wait → tm ctx ritual.
+tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
+                                 Resume a prior conversation. PREFER
+                                 passing the sid from the task ledger
+                                 (active-dispatcher-tasks.md). Without
+                                 sid, auto-picks the newest jsonl by
+                                 mtime (warns on stderr; it's rarely the
+                                 one you actually want). --prompt sends
+                                 a follow-up after a 3s settle (sync by
+                                 default, like tm spawn --prompt).
+                                 --no-wait (only with --prompt) fires
+                                 without waiting. --task relabels the
+                                 resumed conversation.
+tm last <repo>                   Print the teammate's last-turn reply
+                                 from /tmp/claude-idle/<sid>.last. Empty
+                                 or missing file dies with "no reply
+                                 yet". Use when you want to re-read a
+                                 reply that tm send / tm wait already
+                                 printed (their output is one-shot).
+tm kill <repo>                   Kill the teammate's tmux session and
+                                 clean up its sid/idle/last/send-at
+                                 files.
+tm reload <repo>... | --all      Fan out /reload-plugins to one, many,
+                                 or every teammate.
 tm ctx <repo>... | --all [--window 200k|1m]
-                                 report a teammate's real context-window usage from
-                                 its session transcript (see "Fleet snapshot" below)
+                                 Real context-window usage per teammate
+                                 from the jsonl usage block (more
+                                 accurate than the TUI percentage). See
+                                 "Context-window usage: tm ctx" below.
 tm history <repo> [<sid-or-prefix>]
-                                 inspect this repo's past Claude sessions (live or
-                                 dead). No <sid> -> list (newest-first; '*' marks
-                                 the current live teammate). With <sid> or 8+ char
-                                 prefix -> detail (ctx, first prompt, last assistant
-                                 up to 1500 chars, ready-to-paste 'tm resume').
-                                 See "Inspecting past sessions" below.
+                                 Inspect this repo's past Claude
+                                 sessions (live or dead). No <sid> ->
+                                 list mode; with <sid> or 8+ char prefix
+                                 -> detail mode. See "Inspecting past
+                                 sessions" below.
+tm archive <id> [--status '...'] Move a finished task from the active
+                                 ledger to the archive; reads the
+                                 compressed outcome from stdin. See
+                                 "Archiving a finished task" below.
+
+DIAGNOSTIC (use only when the verbs above don't fit)
+tm status <repo> [lines=80]      capture-pane the teammate's screen.
+                                 The atomic send/wait verbs make this
+                                 unnecessary for normal flow — reach
+                                 for it only when you genuinely need
+                                 the live pane (e.g. confirming a TUI
+                                 dialog is up).
+tm poll <repo> <regex> [timeout=180]
+                                 Block until pane content matches a
+                                 regex. Fallback when wait can't catch
+                                 an interesting intermediate state.
+                                 Match the EXPECTED RESULT, not the
+                                 prompt you just sent.
 ```
 
 `<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
@@ -114,53 +194,45 @@ The teammate then auto-registers its own Remote Control session — the URL appe
 
 Whenever you would manually call `tmux new-session`, `tmux send-keys`, or `tmux capture-pane` on a teammate, prefer the corresponding `tm` subcommand — it bakes in the conventions, and future fixes (e.g. richer `ls` output, structured `status`) land there once for everyone.
 
-## Knowing when a teammate is done (`tm wait-idle`) and reading the reply (`tm last`)
+## How the idle / .last machinery works (background — read once)
 
-Every Claude session goes through a Stop event at the end of each turn — the plugin's Stop hook (`hooks/on-stop.sh`, registered via `hooks/hooks.json`) listens for it and writes two files keyed by the session id:
+The two atomic verbs (`tm send`, `tm wait`) and the bootstrap (`tm spawn --prompt`) are all powered by two on-disk files per teammate:
 
-- `/tmp/claude-idle/<sid>` — zero-byte touch, the wait-idle signal.
-- `/tmp/claude-idle/<sid>.last` — plain text of the assistant's last turn (concatenated `text` content blocks since the most recent real user message; tool calls and `thinking` blocks are excluded since they aren't part of the visible reply).
+- `/tmp/claude-idle/<sid>` — zero-byte touch, the idle signal. The plugin's `on-stop.sh` hook touches this on Stop, StopFailure, PostCompact, and SessionEnd.
+- `/tmp/claude-idle/<sid>.last` — plain text of the assistant's last turn, written by `on-stop.sh` on Stop only (the other three events touch the idle marker without writing `.last`, since they don't correspond to a settled assistant turn).
 
-The hook fires for every Claude Code session (including the dispatcher itself), but that's harmless: nothing ever `wait-idle`s on the dispatcher's own sid. Edits to `hooks/on-stop.sh` or `hooks/hooks.json` take effect after `/reload-plugins` — no Claude Code restart needed ([docs](https://code.claude.com/docs/en/discover-plugins.md#apply-plugin-changes-without-restarting)). After publishing a plugin change, use `tm reload --all` to fan `/reload-plugins` out to every running teammate (or `tm reload <repo>...` for specific ones); the dispatcher itself still needs the user to type `/reload-plugins` manually.
+The hook fires for every Claude Code session (including the dispatcher itself), but that's harmless: nothing ever waits on the dispatcher's own sid. Edits to `hooks/on-stop.sh` or `hooks/hooks.json` take effect after `/reload-plugins` — no Claude Code restart needed ([docs](https://code.claude.com/docs/en/discover-plugins.md#apply-plugin-changes-without-restarting)). After publishing a plugin change, use `tm reload --all` to fan `/reload-plugins` out to every running teammate (or `tm reload <repo>...` for specific ones); the dispatcher itself still needs the user to type `/reload-plugins` manually.
 
-Why `.last` exists at all: `tm status` (= `tmux capture-pane`) reads the scrollback buffer, which truncates at the configured pane history limit (typically a few thousand lines). A long teammate reply gets clipped silently. `.last` is the full assistant text as recorded in the jsonl transcript — the dispatcher can `tm last <repo>` (or `Read` the file path directly) to get the complete reply, no scraping, no jsonl parsing.
+Why `.last` exists at all: `tm status` (= `tmux capture-pane`) reads the scrollback buffer, which truncates at the configured pane history limit (typically a few thousand lines). A long teammate reply gets clipped silently. `.last` is the full assistant text as recorded in the jsonl transcript — the atomic verbs and `tm last` read it instead of scraping the pane.
 
-`tm` plumbs this into a wait primitive:
+The bits that make multi-turn waits correct:
 
-1. On `tm spawn <repo>` (fresh), `tm` pre-generates a UUID and hands it to `claude --session-id <uuid>`. The jsonl filename equals that UUID, and the sid is written to `/tmp/teammate-<repo>.sid` *before* the spawn returns. No jsonl scanning, no race window — `tm wait-idle` is usable immediately after spawn, without needing a prior `tm send`.
-2. On `tm spawn <repo> --resume <sid>`, the sid is given by the caller and written the same way.
-3. `tm send` rm's `/tmp/claude-idle/<sid>`, `<sid>.last`, AND `<sid>.busy` before sending, so a previous turn's files don't satisfy the next `tm wait-idle` / `tm last` / `tm states`. This is the bit that makes multi-turn waits correct.
-4. `tm wait-idle <repo> [timeout=600]` blocks until `/tmp/claude-idle/<sid>` exists. It polls every ~3s, prints `idle: <sid>` + the `.last` path (with byte count) on hit, exits non-zero on timeout.
-5. `tm last <repo>` cats `<sid>.last` — the full assistant reply for the latest turn. Empty file means the assistant ended the turn without text output (e.g. it only ran tools); fall back to `tm status` in that case.
+- On a fresh `tm spawn`, `tm` pre-generates a UUID and hands it to `claude --session-id <uuid>`. The jsonl filename equals that UUID and the sid is written to `/tmp/teammate-<repo>.sid` before spawn returns. Fresh spawn also writes a zero-byte `<sid>.last` sentinel, so `tm last` before any reply returns a clear "no reply yet" instead of stale content from an earlier sid.
+- `tm send` (sync default) clears `<sid>`, `<sid>.last`, and `<sid>.busy` before sending — so the wait that follows targets THIS turn's outcome, not a leftover from a prior turn — and then blocks on the idle marker for up to `--timeout N` (default 600s) before printing `.last` on stdout.
+- `tm wait` (passive observer) does the same blocking and printing, optionally with `--fresh` to clear the baseline first.
+- `tm compact` orchestrates two such send + wait cycles (the `/compact` itself, then a one-char noop) so the jsonl `usage` block refreshes to the post-compact baseline before it reads ctx.
 
-Recommended pattern when delegating substantive work:
+## Long-running waits — run them in the background
 
-```bash
-tm send <repo> '<prompt>'
-tm wait-idle <repo> 1800   # 30-minute cap; prints the .last path on hit
-tm last <repo>             # full assistant reply; no scrollback truncation
-```
+**Every verb that may block longer than a couple of seconds MUST run in the background** (`Bash` tool with `run_in_background: true`). This covers `tm send` (sync default — blocks until Stop), `tm wait`, `tm spawn --prompt` (atomic bootstrap blocks until first-turn Stop), `tm resume --prompt` (same shape), `tm compact` (blocks until two Stop signals settle), `tm poll`, and any file-polling loop you write yourself.
 
-Use `tm last` for the full text. Reserve `tm status` for cases where you specifically want to see the live screen (e.g. progress on a long-running tool, or to confirm the teammate is at the input prompt) — its tmux scrollback buffer truncates and is not a substitute for `tm last`.
+A foreground wait blocks the dispatcher end to end: while it sits there it cannot receive or dispatch any other task. There is no upside to foreground — the harness fires a task-notification when a background command exits, so the dispatcher gets pinged the moment the verb returns with the reply text already in its stdout.
 
-**Every long-running wait MUST run in the background** (Bash with `run_in_background: true`) — this covers `tm wait-idle`, `tm wait-quiet`, `tm poll`, file-polling loops, and any other watcher. A foreground wait blocks the dispatcher end to end: while it sits there it cannot receive or dispatch any other task. There is no upside to running it in the foreground — the harness fires a task-notification when a background command exits, so the dispatcher gets pinged the moment the wait returns, with no context burned on a wakeup chain.
+The only `tm` calls that are safe foreground (sub-second) are: `tm ls`, `tm states`, `tm status`, `tm last`, `tm ctx`, `tm history`, `tm archive`, `tm reload`, `tm kill`, `tm send --no-wait`, `tm resume` without `--prompt`, fresh `tm spawn` without `--prompt`. Anything with an implicit or explicit wait phase goes background.
 
-Passive monitoring without a fresh `tm send` — e.g. the teammate is autonomously progressing through sub-agents, cron callbacks, or follow-up turns the user kicked off elsewhere — needs `tm wait-idle --fresh <repo>`. Without `--fresh`, the marker from the last turn is still on disk and `wait-idle` returns instantly. `--fresh` clears the idle / `.last` / `.busy` baseline up front so the wait targets the NEXT Stop, the same way `tm send` resets the baseline before sending.
+Passive observation without a fresh send — e.g. the teammate is autonomously progressing through sub-agents, cron callbacks, or follow-up turns the user kicked off via Remote Control — needs `tm wait --fresh <repo>`. Without `--fresh`, the marker from the last turn is still on disk and `wait` returns instantly. `--fresh` clears the idle/.last/.busy baseline up front so the wait targets the NEXT Stop, the same way `tm send` resets the baseline before sending.
 
-When the idle-hook signal doesn't fit (waiting for some intermediate screen state, not turn-end), fall back to `tm poll <repo> <regex>` — but for "wait until teammate is done with a normal turn", `wait-idle` is the right answer.
+## TUI-only commands and the `--pane-quiet` fallback
 
-## When the Stop hook isn't enough: `tm wait-quiet`
+The Stop hook fires on Stop, StopFailure, PostCompact, and SessionEnd — so `/compact` and `/clear` (and API errors) all unblock the default `tm send` / `tm wait` correctly. The atomic verbs are the right answer for those paths.
 
-`tm wait-idle` blocks on the idle marker that `on-stop.sh` touches. Since this plugin binds `on-stop.sh` to **four** events — Stop, StopFailure, PostCompact, SessionEnd — the cases that used to hang `wait-idle` (`/compact` not firing Stop, API errors not firing Stop) now wake it up correctly. Use `wait-idle` as the default everywhere.
-
-`tm wait-quiet <repo>` remains for **TUI-only commands that fire no hook at all** — `/help`, `/effort`, `/agents` opening dialogs, permission prompts. These leave the pane in a non-idle state without triggering any of the eight transition events; only pane inspection can tell you the teammate is "stuck on something the dispatcher doesn't model". `wait-quiet` polls the pane and returns when the model spinner has been absent for ~4 seconds AND at least 3 seconds have passed since the last `tm send`.
+The narrow case where you still need pane-quiet detection is **TUI-only slash commands and dialogs that fire NO hook at all**: `/help`, `/effort`, `/agents` opening dialogs, permission prompts. For those, pass `--pane-quiet` to either `tm send` (sends the command, then waits for the pane to settle) or `tm wait` (passive observe of pane-quiet without sending). It polls the pane and returns when the spinner has been absent for ~4s AND at least 3s have passed since the last send.
 
 ```bash
-tm send <repo> '/help'
-tm wait-quiet <repo> 30
+tm send --pane-quiet <repo> /help
 ```
 
-Known blind spot: a permission prompt blocks claude with no spinner. `wait-quiet` will return "ready" but the teammate is actually stuck on a y/n decision. If you suspect a prompt, follow with `tm status <repo>` to see the pane. (The `Notification` hook event with `notification_type=permission_prompt` could be bound in the future to surface this state directly; not done yet.)
+Known blind spot: a permission prompt blocks claude with no spinner. `--pane-quiet` returns "ready" but the teammate is actually stuck on a y/n decision. If you suspect a prompt, follow with `tm status <repo>` to see the pane. (The `Notification` hook event with `notification_type=permission_prompt` could be bound in the future to surface this state directly; not done yet.)
 
 ## Fleet snapshot: `tm states`
 
@@ -219,8 +291,11 @@ Implications:
 - `tmux send-keys -t <s> '<prompt>' Enter` silently doesn't submit — the Enter becomes a newline. Use `tm send` or two separate calls.
 - **Multi-line prompts** in Claude Code's TUI need a *second* `Enter`. Once the input box contains any `\n`, the first `Enter` is consumed as "insert newline at cursor" and only the next `Enter` (on the now-empty trailing line) actually submits. `tm send` detects newlines in the prompt and sends the second Enter automatically — but if you ever drop to raw `tmux send-keys`, you have to mirror that yourself.
 - Polling with a `grep` whose pattern appears in the *prompt you just sent* makes the wait return instantly. Match against expected *result* keywords (e.g. `Scheduled`, `Cancelled`, `error`), not prompt echoes.
-- Polling for "is the teammate done?" with regex — fragile across tasks. Use `tm wait-idle` instead; it reads a hook-driven signal file that exists for every teammate.
-- Forgetting that `tm send` resets the idle baseline — if you `tm send` then read `/tmp/claude-idle/<sid>` directly to check "done", you'll find no file even for old completed turns. That's by design; wait via `tm wait-idle`.
+- Polling for "is the teammate done?" with regex — fragile across tasks. Use the atomic `tm send` (which already waits) or `tm wait --fresh` (for passive observation) instead; both read a hook-driven signal file.
+- Composing the old `send + wait-idle + last` ritual when `tm send` already does all three atomically. The wait baseline and idle marker are internal to `tm send` now; stdout is the reply text. Reaching for the old ritual fights the design.
+- Reading `/tmp/claude-idle/<sid>` directly to check "done" — `tm send` rm's the marker before sending, so an old completed turn won't be visible there. That's by design; use `tm wait` (which polls the same file and is what `tm send` itself uses internally).
+- Calling `tm send <repo> /compact` and expecting useful stdout: PostCompact fires the idle marker but produces no `.last` text, so stdout is just the "(no text reply this turn)" sentinel. Use `tm compact <repo>` when you want the before/after ctx numbers — it handles the noop refresh internally.
+- Using `tm spawn <repo>` then a separate `tm send <repo> "..."` for bootstrap when `tm spawn <repo> --prompt "..."` does both in one atomic call (and returns the first-turn reply on stdout).
 - Long `sleep` chains are blocked by the harness sandbox. For "wait until X", use `until <check>; do sleep 4; done` with a time-bounded outer loop — and that loop, like every wait, MUST run with `run_in_background: true` (see "Every long-running wait MUST run in the background" above). A foreground wait blocks the dispatcher from receiving or dispatching anything else for its whole duration.
 - Spawning a teammate or `claude -p` just to host a cron job — cron will not fire there, the job creation looks successful, you will only find out by missing the trigger time. Host cron on this dispatcher.
 - `grep` / `find` across the dispatcher directory (your `$PWD`) mixes unrelated repos into the dispatcher context. Resolve the target repo, then ask the repo-local worker to search there.

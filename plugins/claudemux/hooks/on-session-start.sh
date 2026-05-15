@@ -4,7 +4,7 @@
 #
 #   1) Sid rotation. /clear (and interactive /resume) generate a fresh
 #      session_id; we update /tmp/teammate-<repo>.sid in place so the
-#      dispatcher's `tm states / last / wait-idle` keep working.
+#      dispatcher's `tm states / last / wait / send` keep working.
 #
 #   2) Spawn readiness. Touch /tmp/teammate-<repo>.ready so `tm spawn`'s
 #      poll loop knows the REPL is up.
