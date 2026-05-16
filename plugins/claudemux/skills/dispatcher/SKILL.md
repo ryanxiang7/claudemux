@@ -18,10 +18,10 @@ The three patterns below cover ~95% of dispatcher `tm` use. Reach for them befor
 
 | Intent | One call |
 |---|---|
-| Send a prompt and get the reply | `tm send <repo> "..."` — sync round-trip; reply on stdout |
+| Send a prompt and get the reply | `tm send <repo> "..."` — sync round-trip; reply on stdout, post-turn ctx on stderr |
 | Start a teammate and have it work on something | `tm spawn <repo> --prompt "..."` — atomic bootstrap |
-| Wait for a turn the user / Remote Control / cron triggered | `tm wait --fresh <repo>` — passive observe, reply on stdout |
-| Compact a teammate and learn the new ctx | `tm compact <repo>` — prints `before=N after=M (-X%)` |
+| Wait for a turn the user / Remote Control / cron triggered | `tm wait --fresh <repo>` — passive observe, reply on stdout, ctx on stderr |
+| Compact a teammate | `tm compact <repo>` — prints `compacted` on success |
 
 Pair every one of these with `run_in_background: true` on the Bash tool call (see "Long-running waits" below) so the dispatcher stays free to dispatch other work while the harness pings you when the verb returns.
 
@@ -85,6 +85,13 @@ tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>
                                  what used to be send + wait-idle + last
                                  into one call. Stdout is reply text only;
                                  status lines go to stderr (pipe-friendly).
+                                 On the default (Stop-hook) path, also
+                                 echoes the post-turn ctx to stderr as
+                                 "ctx: N tokens · ~M next turn · X% of
+                                 W (note)" — same data as `tm ctx <repo>`
+                                 inline with the reply. Skipped on
+                                 --pane-quiet (no fresh jsonl usage block)
+                                 and --no-wait (nothing waited).
                                  --no-wait fire-and-forget (use for
                                  /clear before kill, or anywhere the
                                  reply doesn't matter). --pane-quiet
@@ -101,10 +108,12 @@ tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]
                                  Block until the teammate's next Stop
                                  hook (or pane-quiet fallback), then
                                  print the reply on stdout — same output
-                                 contract as tm send. Use when an
-                                 external actor (Remote Control web UI,
-                                 mobile app, cron) drove the turn and
-                                 you just want to collect the result.
+                                 contract as tm send (including the
+                                 stderr ctx echo on the Stop-hook path).
+                                 Use when an external actor (Remote
+                                 Control web UI, mobile app, cron) drove
+                                 the turn and you just want to collect
+                                 the result.
                                  --fresh clears the baseline up front so
                                  the NEXT Stop unblocks the wait. Use
                                  when monitoring autonomous teammate
@@ -113,27 +122,33 @@ tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]
                                  since last send" gate already provides
                                  freshness for that path).
                                  --pane-quiet falls back to pane-quiet
-                                 detection (same use case as tm send).
+                                 detection (same use case as tm send);
+                                 skips the ctx echo for the same reason
+                                 as on tm send.
                                  --timeout N is the flag form of the
-                                 positional [timeout=600].
-tm compact <repo> [timeout_per_phase=120]
-                                 Atomic /compact + ctx refresh. Sends
-                                 /compact, waits for PostCompact, sends
-                                 a one-char noop to refresh the jsonl
-                                 usage block, waits for Stop, then
-                                 prints one of four stdout shapes:
-                                   before=N after=M (-X%)             success
-                                   before=? after=M (pre-compact ctx
-                                       unreadable)                    (exit 0)
-                                   before=N after=? (compact ok, post-
-                                       compact ctx unreadable)        (exit 0)
-                                   before=N after=? (compact ok, ctx
-                                       refresh timed out after Ss)    (exit 0)
-                                 PostCompact-phase timeout is the only
-                                 fatal mode (dies, exit non-zero). The
-                                 four-shape output replaces the old
-                                 send-/compact → wait → ping noop →
-                                 wait → tm ctx ritual.
+                                 positional [timeout=600]; if both are
+                                 passed, whichever is parsed last wins.
+tm compact <repo> [timeout=600] [--timeout N]
+                                 Send /compact and verify PostCompact
+                                 fired. Prints "compacted" on stdout on
+                                 success (idle marker touched). Doesn't
+                                 read ctx — run `tm ctx <repo>`
+                                 separately, or rely on the stderr ctx
+                                 echo on the next `tm send`.
+                                 Default timeout 600s because large
+                                 contexts (~300k+) routinely take 3-4
+                                 minutes to compact.
+                                 Two non-success modes, both exit 1:
+                                  - Claude Code refuses with "Not
+                                    enough messages to compact"
+                                    (transcript too short). That error
+                                    path fires no hook; the pane is
+                                    scanned alongside the idle-marker
+                                    poll to detect it and bail early
+                                    rather than hang to timeout.
+                                  - PostCompact never fires within the
+                                    timeout — compaction is hung or
+                                    the Stop hook is misconfigured.
 tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
                                  Resume a prior conversation. PREFER
                                  passing the sid from the task ledger
@@ -210,11 +225,11 @@ The bits that make multi-turn waits correct:
 - On a fresh `tm spawn`, `tm` pre-generates a UUID and hands it to `claude --session-id <uuid>`. The jsonl filename equals that UUID and the sid is written to `/tmp/teammate-<repo>.sid` before spawn returns. Fresh spawn also writes a zero-byte `<sid>.last` sentinel, so `tm last` before any reply returns a clear "no reply yet" instead of stale content from an earlier sid.
 - `tm send` (sync default) clears `<sid>`, `<sid>.last`, and `<sid>.busy` before sending — so the wait that follows targets THIS turn's outcome, not a leftover from a prior turn — and then blocks on the idle marker for up to `--timeout N` (default 600s) before printing `.last` on stdout.
 - `tm wait` (passive observer) does the same blocking and printing, optionally with `--fresh` to clear the baseline first.
-- `tm compact` orchestrates two such send + wait cycles (the `/compact` itself, then a one-char noop) so the jsonl `usage` block refreshes to the post-compact baseline before it reads ctx.
+- `tm compact` sends `/compact` and blocks on the idle marker (touched by `on-stop.sh` on PostCompact) — that single signal is the whole success contract. It also scans the pane for Claude Code's "Not enough messages to compact" rejection, which fires no hook, so the verb exits 1 immediately instead of hanging to timeout.
 
 ## Long-running waits — run them in the background
 
-**Every verb that may block longer than a couple of seconds MUST run in the background** (`Bash` tool with `run_in_background: true`). This covers `tm send` (sync default — blocks until Stop), `tm wait`, `tm spawn --prompt` (atomic bootstrap blocks until first-turn Stop), `tm resume --prompt` (same shape), `tm compact` (blocks until two Stop signals settle), `tm poll`, and any file-polling loop you write yourself.
+**Every verb that may block longer than a couple of seconds MUST run in the background** (`Bash` tool with `run_in_background: true`). This covers `tm send` (sync default — blocks until Stop), `tm wait`, `tm spawn --prompt` (atomic bootstrap blocks until first-turn Stop), `tm resume --prompt` (same shape), `tm compact` (blocks until PostCompact, default 600s cap because large contexts take minutes), `tm poll`, and any file-polling loop you write yourself.
 
 A foreground wait blocks the dispatcher end to end: while it sits there it cannot receive or dispatch any other task. There is no upside to foreground — the harness fires a task-notification when a background command exits, so the dispatcher gets pinged the moment the verb returns with the reply text already in its stdout.
 
@@ -294,7 +309,7 @@ Implications:
 - Polling for "is the teammate done?" with regex — fragile across tasks. Use the atomic `tm send` (which already waits) or `tm wait --fresh` (for passive observation) instead; both read a hook-driven signal file.
 - Composing the old `send + wait-idle + last` ritual when `tm send` already does all three atomically. The wait baseline and idle marker are internal to `tm send` now; stdout is the reply text. Reaching for the old ritual fights the design.
 - Reading `/tmp/claude-idle/<sid>` directly to check "done" — `tm send` rm's the marker before sending, so an old completed turn won't be visible there. That's by design; use `tm wait` (which polls the same file and is what `tm send` itself uses internally).
-- Calling `tm send <repo> /compact` and expecting useful stdout: PostCompact fires the idle marker but produces no `.last` text, so stdout is just the "(no text reply this turn)" sentinel. Use `tm compact <repo>` when you want the before/after ctx numbers — it handles the noop refresh internally.
+- Calling `tm send <repo> /compact` and expecting useful stdout: PostCompact fires the idle marker but produces no `.last` text, so stdout is just the "(no text reply this turn)" sentinel. Prefer `tm compact <repo>` — it also catches the "Not enough messages to compact" error path (which fires no hook and would otherwise hang `tm send` to timeout) by scanning the pane, and prints a clean `compacted` line. `tm compact` deliberately does NOT echo ctx — the post-compact size is best read separately via `tm ctx <repo>` once you want it.
 - Using `tm spawn <repo>` then a separate `tm send <repo> "..."` for bootstrap when `tm spawn <repo> --prompt "..."` does both in one atomic call (and returns the first-turn reply on stdout).
 - Long `sleep` chains are blocked by the harness sandbox. For "wait until X", use `until <check>; do sleep 4; done` with a time-bounded outer loop — and that loop, like every wait, MUST run with `run_in_background: true` (see "Every long-running wait MUST run in the background" above). A foreground wait blocks the dispatcher from receiving or dispatching anything else for its whole duration.
 - Spawning a teammate or `claude -p` just to host a cron job — cron will not fire there, the job creation looks successful, you will only find out by missing the trigger time. Host cron on this dispatcher.

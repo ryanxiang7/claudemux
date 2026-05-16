@@ -318,6 +318,26 @@ _print_last_or_empty() {
     fi
 }
 
+# Echo current ctx for <repo> on stderr after a Stop-waiting verb returns.
+# Same number as 'tm ctx <repo>', minus the repo prefix. Lets the
+# dispatcher consume the post-turn ctx inline with the reply instead of
+# making a separate 'tm ctx' call after every send/wait — that pattern
+# accounted for a noticeable share of post-Stop activity in the 0.3.0
+# usage data.
+#
+# Soft-fail by design: if the jsonl can't be read or has no assistant
+# usage entry yet, stay silent. The reply has already shipped on stdout
+# and a stderr error line would only add noise. Skip entirely on
+# --pane-quiet paths (TUI-only commands produce no assistant turn, so
+# the printed number would be stale).
+_echo_ctx_to_stderr() {
+    local repo="$1"
+    local body
+    if body=$(_ctx_format_line "$repo" 2>/dev/null); then
+        echo "ctx: $body" >&2
+    fi
+}
+
 cmd_ls() {
     # tmux ls returns non-zero when no server is running; mask it so pipefail
     # doesn't kill us. Empty output is the expected "no sessions" case.
@@ -579,6 +599,11 @@ cmd_send() {
         return 1
     fi
 
+    # Pane-quiet path produces no assistant turn (TUI-only commands like
+    # /help fire no Stop and don't update jsonl), so the ctx echo would be
+    # the stale prior-turn number — skip it. Hook path always produces a
+    # fresh usage block.
+    (( pane_quiet )) || _echo_ctx_to_stderr "$repo"
     _print_last_or_empty "$repo"
     return 0
 }
@@ -635,6 +660,8 @@ cmd_wait() {
         return 1
     fi
 
+    # See note in cmd_send: pane-quiet has no fresh usage block.
+    (( pane_quiet )) || _echo_ctx_to_stderr "$repo"
     _print_last_or_empty "$repo"
     return 0
 }
@@ -855,105 +882,76 @@ cmd_states() {
 }
 
 cmd_compact() {
-    # Atomic /compact + context-window read. Folds the otherwise-multi-step
-    # dispatcher ritual (send /compact → wait → ping a noop → wait → read
-    # ctx) into one verb that prints "before=N after=M (-X%)" on stdout.
+    # Send /compact and verify that PostCompact actually fired. Returns
+    # the single line "compacted" on stdout. Doesn't read ctx — that's a
+    # separate concern; run `tm ctx <repo>` if you want the new size.
     #
-    # Why the internal noop ping: the jsonl usage block is written per
-    # ASSISTANT turn, and PostCompact alone produces no new assistant turn.
-    # Without a follow-up Stop event, 'tm ctx' would still report the
-    # pre-compact size. The minimum-viable noop here is the single char
-    # "." — one user turn, one bounded assistant reply, one usage block
-    # refresh. The pollution is one line in the teammate's transcript;
-    # the alternative (telling the dispatcher to do this ritual by hand
-    # every time) was the pain point that motivated this verb.
-    local repo="${1:-}" timeout="${2:-120}"
-    [[ -n "$repo" ]] || die "usage: tm compact <repo> [timeout_per_phase=120]"
+    # Two non-success paths, both exit 1:
+    #   1. Claude Code refuses with "Error: Not enough messages to
+    #      compact" — that error path fires NO Stop/PostCompact hook, so
+    #      we have to scan the pane to detect it. Without this check,
+    #      the verb would hang to full timeout for a fundamentally
+    #      already-finished operation.
+    #   2. PostCompact never fires within timeout — compaction is genuinely
+    #      hung or the hook is misconfigured. Default 600s because large
+    #      contexts (~300k+) routinely take 3-4 minutes; the old 120s
+    #      gave up well before compaction finished on 1M-window teammates.
+    # Both `tm compact <repo> 300` and `tm compact <repo> --timeout 300`
+    # are accepted; if both forms are passed, the one parsed last wins
+    # (same rule as cmd_wait). Don't try to encode a precedence between
+    # the two forms — they're equivalent inputs.
+    local repo="" timeout=600
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --timeout)   timeout="${2:-}"; shift 2 ;;
+            --timeout=*) timeout="${1#--timeout=}"; shift ;;
+            -*) die "tm compact: unknown flag: $1" ;;
+            *)
+                if [[ -z "$repo" ]]; then repo="$1"
+                else timeout="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    [[ -n "$repo" ]] || die "usage: tm compact <repo> [timeout=600] [--timeout N]"
+
     require_session "$repo" >/dev/null
     local sid; sid=$(resolve_sid_or_die "$repo")
+    local pane; pane=$(resolve_pane_target "$repo")
 
-    # Pre-compact ctx. Soft-fail: if we can't read it, still proceed —
-    # the dispatcher gets after=N without before=N, which is still
-    # informative.
-    local before
-    before=$(_ctx_used_only "$repo" 2>/dev/null || true)
+    echo "tm compact: sending /compact to $repo (sid=$sid, timeout=${timeout}s)" >&2
 
-    echo "tm compact: sending /compact to $repo (sid=$sid, before=${before:-?})" >&2
-
-    # Phase 1: send /compact and wait for PostCompact via the idle marker.
-    # on-stop.sh touches /tmp/claude-idle/<sid> on Stop / StopFailure /
-    # PostCompact / SessionEnd; the PostCompact path is what we ride here.
-    # .last is NOT rewritten by PostCompact (only Stop writes .last), so
-    # we ignore .last entirely in this verb.
+    # _send_keys clears <sid>, <sid>.last, <sid>.busy before sending, so
+    # the idle-marker check below targets THIS /compact, not a leftover
+    # from the prior Stop.
     _send_keys "$repo" "/compact" >/dev/null
-    if ! _wait_idle_signal "$repo" "$timeout"; then
-        die "tm compact: PostCompact did not fire within ${timeout}s on $repo — compaction may have failed (check 'tm status $repo')."
-    fi
 
-    # Phase 2: noop ping to produce one fresh assistant turn so the jsonl
-    # usage block updates with the post-compact baseline. Bounded timeout
-    # because if the model takes >timeout to reply to ".", something is
-    # already off; surface a partial result rather than blocking.
-    _send_keys "$repo" "." >/dev/null
-    local refresh_ok=1
-    if ! _wait_idle_signal "$repo" "$timeout"; then
-        refresh_ok=0
-    fi
-
-    local after=""
-    if (( refresh_ok )); then
-        after=$(_ctx_used_only "$repo" 2>/dev/null || true)
-    fi
-
-    # Report. Four shapes, decided by what we got back:
-    #   1) full diff:                       before=N after=M (-X%)
-    #   2) only after:                      before=? after=M (pre-compact ctx unreadable)
-    #   3) refresh wait timed out:          before=N after=? (compact ok, ctx refresh timed out after Ss)
-    #   4) refresh wait ok but read failed: before=N after=? (compact ok, post-compact ctx unreadable)
-    # Shapes 3 and 4 used to collapse into one misleading "timed out" message;
-    # the refresh_ok bit distinguishes them so a jq-failure debug doesn't look
-    # like a hung teammate.
-    if [[ -n "$before" && -n "$after" ]]; then
-        local pct=0
-        if (( before > 0 )); then
-            pct=$(( (before - after) * 100 / before ))
+    local end; end=$(( $(date +%s) + timeout ))
+    while [[ $(date +%s) -lt $end ]]; do
+        # PostCompact succeeded — on-stop.sh touched the idle marker.
+        if [[ -e "$IDLE_DIR/$sid" ]]; then
+            echo "compacted"
+            return 0
         fi
-        printf 'before=%s after=%s (-%d%%)\n' "$before" "$after" "$pct"
-    elif [[ -n "$after" ]]; then
-        printf 'before=? after=%s (pre-compact ctx unreadable)\n' "$after"
-    elif (( refresh_ok )); then
-        printf 'before=%s after=? (compact ok, post-compact ctx unreadable)\n' "${before:-?}"
-    else
-        printf 'before=%s after=? (compact ok, ctx refresh timed out after %ss)\n' "${before:-?}" "$timeout"
-    fi
-    return 0
-}
+        # Error path: Claude Code renders the rejection as a tool-result
+        # block under the /compact prompt echo — "⎿  Error: Not enough
+        # messages to compact." — fires no hook, and leaves the session
+        # idle with .busy still set. Anchor on the "⎿  Error:" decorator
+        # so a user prompt that happens to mention the phrase doesn't
+        # cause a false positive via prompt echo. Look only at the
+        # visible pane (no -S); the line is the last thing on screen at
+        # the moment of rejection.
+        if [[ -n "$pane" ]] && tmux capture-pane -t "$pane" -p 2>/dev/null \
+            | grep -q '⎿  Error: Not enough messages to compact'; then
+            echo "tm compact: $repo refused /compact — Claude Code reported 'Not enough messages to compact' (transcript too short)." >&2
+            return 1
+        fi
+        sleep 3
+    done
 
-# Helper for cmd_compact: read just the current used-tokens number for a
-# repo's transcript (no formatting, no window detection, no soft '?'
-# output — fails non-zero on any read error so the caller can decide what
-# to print). Mirrors ctx_one's first jq pass but returns ONLY input + cache
-# tokens of the latest assistant message.
-_ctx_used_only() {
-    local repo="$1"
-    local sid; sid=$(resolve_sid "$repo") || return 1
-
-    local cwd_f; cwd_f=$(cwd_file "$repo")
-    local tcwd
-    if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$PWD/$repo"; fi
-    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
-    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
-    [[ -f "$jsonl" ]] || return 1
-
-    local used
-    used=$(jq -r -s '
-        [ .[] | select(.type == "assistant" and (.message.usage != null)) | .message.usage ] as $u
-        | if ($u | length) == 0 then "" else
-            ($u[-1]) as $l
-            | "\($l.input_tokens + $l.cache_creation_input_tokens + $l.cache_read_input_tokens)"
-          end' "$jsonl" 2>/dev/null) || return 1
-    [[ -n "$used" ]] || return 1
-    printf '%s' "$used"
+    echo "tm compact: $repo did not signal PostCompact within ${timeout}s — compaction may still be running, or the Stop hook is misconfigured. Check 'tm status $repo' and /tmp/claude-idle/$sid." >&2
+    return 1
 }
 
 cmd_poll() {
@@ -1145,39 +1143,40 @@ cmd_ctx() {
     done
 }
 
-# Print one teammate's context line. Soft-fails (prints a '?' line, returns 0)
-# so 'tm ctx --all' keeps going across teammates with no readable transcript.
-ctx_one() {
-    local repo="$1" window_override="$2"
-    local sid; sid=$(resolve_sid "$repo") || { echo "$repo: ? (no sid file)"; return 0; }
+# Format one teammate's ctx line WITHOUT the "<repo>: " prefix. Returns 0
+# with the formatted line on stdout, or 1 (silently) on any read error.
+# Used by both ctx_one (which prepends the prefix and prints '?' lines on
+# soft failure) and the Stop-waiting verbs (cmd_send, cmd_wait, and their
+# spawn/resume --prompt callers, all via the shared cmd_send path) which
+# want to echo the current ctx to stderr right after a successful turn.
+#
+# window_override is optional (only ctx_one passes it); '1m' / '200k'
+# force the assumption, anything else (or empty) uses the same heuristic
+# as ctx_one — a peak usage above ~210k proves a 1M window.
+_ctx_format_line() {
+    local repo="$1" window_override="${2:-}"
+    local sid; sid=$(resolve_sid "$repo") || return 1
 
-    # The teammate's cwd (recorded at spawn) is the base for its own AutoMemory
-    # path — the teammate runs in $PWD/<repo>, not the dispatcher's $PWD.
     local cwd_f; cwd_f=$(cwd_file "$repo")
     local tcwd
     if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$PWD/$repo"; fi
     local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
     local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
-    [[ -f "$jsonl" ]] || { echo "$repo: ? (no transcript at $jsonl)"; return 0; }
+    [[ -f "$jsonl" ]] || return 1
 
-    # One pass: latest assistant usage (for current/next ctx) + peak ctx across
-    # the whole transcript (for one-directional 1M-window detection).
     local line
     line=$(jq -r -s '
         [ .[] | select(.type == "assistant" and (.message.usage != null)) | .message.usage ] as $u
         | if ($u | length) == 0 then "EMPTY"
           else ($u[-1]) as $l
             | "\($l.input_tokens + $l.cache_creation_input_tokens + $l.cache_read_input_tokens) \($l.output_tokens) \([ $u[] | .input_tokens + .cache_creation_input_tokens + .cache_read_input_tokens ] | max)"
-          end' "$jsonl" 2>/dev/null || true)
-    if [[ -z "$line" || "$line" == "EMPTY" ]]; then
-        echo "$repo: ? (no assistant usage in transcript)"; return 0
-    fi
+          end' "$jsonl" 2>/dev/null) || return 1
+    [[ -n "$line" && "$line" != "EMPTY" ]] || return 1
+
     local used out peak
     read -r used out peak <<< "$line"
-
     local next=$((used + out))
 
-    # Window: explicit flag wins; else a peak above ~210k proves 1M; else 200k.
     local window window_note
     if [[ "$window_override" == "1m" ]]; then
         window=1000000; window_note="flag"
@@ -1191,8 +1190,35 @@ ctx_one() {
 
     local pct=$(( used * 100 / window ))
     local wlabel; if (( window >= 1000000 )); then wlabel="1M"; else wlabel="200k"; fi
-    printf '%s: %s tokens · ~%s next turn · %s%% of %s (%s)\n' \
-        "$repo" "$used" "$next" "$pct" "$wlabel" "$window_note"
+    printf '%s tokens · ~%s next turn · %s%% of %s (%s)\n' \
+        "$used" "$next" "$pct" "$wlabel" "$window_note"
+}
+
+# Print one teammate's context line. Soft-fails (prints a '?' line, returns 0)
+# so 'tm ctx --all' keeps going across teammates with no readable transcript.
+# The actual computation lives in _ctx_format_line; this wrapper handles
+# the user-facing prefix + the diagnostic '?' fallback lines.
+ctx_one() {
+    local repo="$1" window_override="$2"
+    local body
+    if body=$(_ctx_format_line "$repo" "$window_override" 2>/dev/null); then
+        printf '%s: %s\n' "$repo" "$body"
+        return 0
+    fi
+
+    # _ctx_format_line failed — figure out why so the '?' line is
+    # informative. Mirror its early-exit conditions in the same order.
+    local sid; sid=$(resolve_sid "$repo") || { echo "$repo: ? (no sid file)"; return 0; }
+    local cwd_f; cwd_f=$(cwd_file "$repo")
+    local tcwd
+    if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$PWD/$repo"; fi
+    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
+    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
+    if [[ ! -f "$jsonl" ]]; then
+        echo "$repo: ? (no transcript at $jsonl)"
+    else
+        echo "$repo: ? (no assistant usage in transcript)"
+    fi
 }
 
 # Inspect this repo's past Claude sessions (live or dead). Two modes:
@@ -1435,6 +1461,8 @@ USAGE
       Fresh spawns also write an empty /tmp/claude-idle/<sid>.last
       sentinel, so 'tm last' before any reply returns a clear "no
       reply yet" error instead of stale content from an earlier sid.
+      The --prompt sync path inherits 'tm send''s stderr ctx echo
+      after the first-turn Stop.
 
   tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>
       Atomic round-trip by default: send prompt + wait for the Stop
@@ -1455,6 +1483,11 @@ USAGE
       Empty stdout never silently means success: a turn with no text
       (tool-only, /compact, /clear) prints the sentinel line "(no text
       reply this turn — tool-only, /compact, /clear, or fresh spawn)".
+      On the default (Stop-hook) path, also echoes the teammate's
+      post-turn ctx to stderr as "ctx: N tokens · ~M next turn · X% of
+      W (note)" — same data as 'tm ctx <repo>' inline with the reply.
+      Skipped on --pane-quiet (no fresh usage block in jsonl) and
+      --no-wait (nothing waited).
       On timeout: stderr warning, partial .last to stdout if any,
       exit 1.
 
@@ -1473,22 +1506,24 @@ USAGE
       provides the freshness guarantee).
       --pane-quiet falls back to pane-quiet detection (same use case
       as on 'tm send').
-      --timeout N overrides the positional [timeout=600] (both forms
-      are accepted for compatibility with the rest of the verb set;
-      the positional wins if both are passed).
+      --timeout N is the flag form of the positional [timeout=600];
+      both forms are accepted, and if both are passed, whichever is
+      parsed last wins.
+      Stop-hook path also echoes ctx to stderr (see 'tm send'); skipped
+      on --pane-quiet.
 
-  tm compact <repo> [timeout_per_phase=120]
-      Atomic /compact + ctx refresh. Sends /compact, waits for
-      PostCompact, sends a one-char noop to refresh the jsonl usage
-      block, waits for Stop, prints one of four stdout shapes
-      depending on what succeeded:
-        before=N after=M (-X%)                                 success
-        before=? after=M (pre-compact ctx unreadable)          (exit 0)
-        before=N after=? (compact ok, post-compact ctx unreadable)
-        before=N after=? (compact ok, ctx refresh timed out after Ss)
-      On compact (PostCompact) timeout: dies with diagnostic, exit non-zero.
-      The remaining three shapes exit 0 — the compact itself succeeded;
-      only the ctx number reporting was incomplete.
+  tm compact <repo> [timeout=600] [--timeout N]
+      Send /compact and verify PostCompact fired. Prints "compacted" on
+      stdout when the Stop-hook idle marker is touched. Doesn't read
+      ctx — run 'tm ctx <repo>' separately if you want the new size.
+      Default timeout is 600s because large contexts (~300k+) routinely
+      take 3-4 minutes to compact.
+      Two non-success modes, both exit 1:
+        - Claude Code refuses with "Not enough messages to compact"
+          (transcript too short). That error fires no hook, so the
+          pane is scanned alongside the idle-marker poll to detect it.
+        - PostCompact never fires within timeout. Compaction is hung
+          or the Stop hook is misconfigured.
 
   tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
       Resume a prior conversation. PREFER passing <sid> from the
@@ -1498,7 +1533,8 @@ USAGE
       Validates the jsonl exists in the project dir; UUID format
       enforced. Fails if a teammate session for <repo> already exists.
       --prompt sends a follow-up after a 3s settle, atomic like
-      'tm spawn --prompt'. --no-wait (with --prompt) fires without
+      'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
+      the sync path). --no-wait (with --prompt) fires without
       waiting. --task relabels the resumed conversation.
 
   tm last <repo>
