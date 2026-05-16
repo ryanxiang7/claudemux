@@ -230,11 +230,40 @@ iter_repos() {
 # instead of each carrying its own copy of the polling + cat ritual.
 
 # Send a prompt into <repo>'s pane. NO wait, NO output beyond stderr
-# "sent" note. Handles the dual-Enter protocol (single-line prompts get
-# one Enter, multi-line need a second after a short flush gap). Clears
-# the idle/.last/.busy baseline first so a subsequent wait reflects THIS
-# turn, not a prior one, and touches send-at for pane-quiet's "min time
-# since action" guard.
+# "sent" note. Clears the idle/.last/.busy baseline first so a subsequent
+# wait reflects THIS turn, not a prior one, and touches send-at for
+# pane-quiet's "min time since action" guard.
+#
+# Two delivery modes by size:
+#
+#   * Short single-line prompts (<= TM_SEND_INLINE_MAX, default 200 chars,
+#     no embedded newline): use `send-keys -l` then one Enter. Fast path
+#     for slash commands (/compact, /clear) and one-liners; no paste
+#     ceremony needed because the data fits in one PTY write.
+#
+#   * Larger or multi-line prompts: stage the prompt in a named tmux
+#     buffer and use `paste-buffer -p -r` so the bytes arrive wrapped
+#     in a single bracketed-paste sequence (\e[200~ ... \e[201~) with
+#     embedded LFs preserved (without -r, tmux rewrites LF -> CR).
+#     Claude Code's TUI groups everything inside the brackets into one
+#     "[Pasted text #1]" chip, and the Enter that follows lands AFTER
+#     the \e[201~ end-marker, so the TUI processes it as submit rather
+#     than as "append a newline inside the pending paste".
+#
+#     Without the brackets, the TUI guesses whether incoming chars are
+#     a paste by inter-character timing. tmux's `-l` write can fragment
+#     across multiple PTY writes for large prompts, which the TUI sees
+#     as several separate pastes ("[Pasted text #1][Pasted text #2]…")
+#     with the trailing Enter buried inside one of them, so the prompt
+#     just sits in the input box and never submits.
+#
+#     After the paste the helper sleeps long enough for the TUI to
+#     finish rendering the chip before sending Enter; the delay scales
+#     with prompt size and can be overridden with TM_SEND_GAP=<seconds>
+#     (the override is validated up front — a malformed value would
+#     otherwise crash `sleep` mid-flow under `set -e` and strand the
+#     prompt inside the input box, which is the exact failure mode
+#     this function exists to fix).
 _send_keys() {
     local repo="$1" prompt="$2"
     local name; name=$(require_session "$repo")
@@ -245,10 +274,41 @@ _send_keys() {
     sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
     : > "$(send_at_file "$repo")"
 
-    tmux send-keys -t "$pane" -l "$prompt"
-    tmux send-keys -t "$pane" Enter
-    if [[ "$prompt" == *$'\n'* ]]; then
-        sleep "${TM_SEND_GAP:-0.2}"
+    local n=${#prompt}
+    local inline_max="${TM_SEND_INLINE_MAX:-200}"
+    [[ "$inline_max" =~ ^[0-9]+$ ]] \
+        || die "TM_SEND_INLINE_MAX must be a non-negative integer (got: '$inline_max')"
+
+    if (( n <= inline_max )) && [[ "$prompt" != *$'\n'* ]]; then
+        tmux send-keys -t "$pane" -l "$prompt"
+        tmux send-keys -t "$pane" Enter
+    else
+        local default_gap
+        if   (( n <=   256 )); then default_gap="0.2"
+        elif (( n <=  1024 )); then default_gap="0.5"
+        elif (( n <=  4096 )); then default_gap="1.0"
+        elif (( n <= 16384 )); then default_gap="2.0"
+        else                        default_gap="4.0"
+        fi
+        local gap="${TM_SEND_GAP:-$default_gap}"
+        [[ "$gap" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+            || die "TM_SEND_GAP must be a non-negative number of seconds (got: '$gap')"
+
+        local buf="tm-send-$$-$RANDOM"
+        # Cleanup trap covers the paste-buffer-failed-after-load-buffer-succeeded
+        # case: -d only deletes on a successful paste, and named buffers are
+        # exempt from tmux's auto-eviction, so without this each failed send
+        # would leak an entry into `tmux list-buffers`. The delete-buffer call
+        # is a no-op once `paste-buffer -d` ran cleanly. $buf is baked in at
+        # trap-set time (double-quoted) because RETURN runs in the caller's
+        # scope where the `local` would otherwise be unbound under `set -u`.
+        # printf '%s' avoids the trailing newline that here-strings add, so the
+        # paste content is exactly the prompt text byte-for-byte.
+        trap "tmux delete-buffer -b '$buf' 2>/dev/null || true" RETURN
+        printf '%s' "$prompt" | tmux load-buffer -b "$buf" -
+        tmux paste-buffer -p -r -d -b "$buf" -t "$pane"
+
+        sleep "$gap"
         tmux send-keys -t "$pane" Enter
     fi
 
