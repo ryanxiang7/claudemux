@@ -1,6 +1,12 @@
 # Compact a teammate (scenario reference)
 
-Read this when a teammate's context window is filling up (use `tm ctx <repo>` to check — see `wait-and-readback.md`) and you want to compact its transcript before the next turn. Skip when you're just sending fresh work or waiting on a turn — those use `tm send` / `tm wait`, not `tm compact`.
+Read this when a teammate's context window is filling up and you want to compact its transcript before the next turn. Skip when you're just sending fresh work or waiting on a turn — those use `tm send` / `tm wait`, not `tm compact`.
+
+## Check fill: `tm ctx`
+
+How full is a teammate's context window? `tm ctx <repo>` (or `tm ctx --all`) reads the jsonl transcript and reports real prompt size — do not rely on the TUI status-bar percentage (approximate, often absent).
+
+Reports the most recent assistant turn's prompt size (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), a next-turn estimate (plus that turn's `output_tokens`), and the percentage of the context window. Window size isn't recorded in the transcript: a peak usage above ~210k proves a 1M window, otherwise `tm ctx` assumes 200k and labels it `assumed 200k`. Pass `--window 200k|1m` when you know the window and the heuristic can't yet tell.
 
 ## The verb
 

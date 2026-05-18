@@ -47,10 +47,10 @@ Match the user's intent to one of these scenarios, then read the corresponding r
 |---|---|---|
 | Pushing work into a repo via tmux teammate (default delegation) | `references/dispatch-task.md` | `tm spawn <repo> --prompt "..."` / `tm send <repo> "..."` |
 | Waiting for a turn an external actor (Remote Control, mobile, cron, sub-agent) drove | `references/wait-and-readback.md` | `tm wait --fresh <repo>` |
-| Reading `tm states` fleet snapshot — what every teammate is doing right now | `references/wait-and-readback.md` (BUSY/LAST/PREVIEW columns come from the same Stop-hook artifacts) | `tm states` |
+| Reading `tm states` fleet snapshot — what every teammate is doing right now | `references/inspect-and-resume.md` (`LAST` / `PREVIEW` read the same `.last` file as `tm last`) | `tm states` |
 | A teammate looks hung mid-turn — need pane ground truth (e.g. blocked on a permission prompt the hook missed) | `references/wait-and-readback.md` (`--pane-quiet` blind spot + `tm status` fallback) | `tm status <repo>` |
 | Looking up past sessions for a repo / picking a sid to resume / re-reading a printed reply | `references/inspect-and-resume.md` | `tm history <repo>` / `tm resume <repo> <sid>` / `tm last <repo>` |
-| A teammate's context window is filling up | `references/compact-a-teammate.md` | `tm compact <repo>` |
+| Checking or compacting a teammate's context window | `references/compact-a-teammate.md` | `tm ctx <repo>` / `tm compact <repo>` |
 | Appending a new active task or archiving a finished one | `references/ledger-and-archive.md` | `tm archive <id>` |
 | Spawning an Agent Teams teammate (instead of a tmux teammate) | `references/agent-teams.md` | `Agent(team_name=...)` |
 | Diagnosing `.sid` drift, a stuck `tm spawn`, or surprising `tm states` output | `references/sid-rotation.md` | (debugging) |

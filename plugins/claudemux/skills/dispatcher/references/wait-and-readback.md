@@ -2,7 +2,7 @@
 
 Read this when an external actor (Remote Control web UI, mobile app, a cron callback, the teammate's own sub-agents) is driving a teammate and you need to collect the result without sending a fresh prompt. Skip when YOU are the one sending — `tm send` and `tm spawn --prompt` already wait + print the reply atomically (see `dispatch-task.md`).
 
-This is also the file that holds the idle/.last hook mechanics + `tm states` column meanings + `tm ctx` token math — anything else that touches the Stop-hook signal indirectly will cite back here.
+This file is also the authoritative writeup of the idle/.last hook machinery — every wait verb consumes those artifacts, so anything that touches the Stop-hook signal indirectly will cite back here.
 
 ## Primary verb: `tm wait --fresh <repo>`
 
@@ -32,26 +32,6 @@ Two on-disk files per teammate power every wait verb (`tm wait`, `tm send`, `tm 
 The hook fires for every Claude Code session (including the dispatcher itself), but that's harmless — nothing ever waits on the dispatcher's own sid. After publishing a plugin change, use `tm reload --all` to fan `/reload-plugins` out to every running teammate (the dispatcher itself still needs `/reload-plugins` typed manually).
 
 `/hooks` slash-command UI only surfaces tool-related hooks (PreToolUse / PostToolUse / etc.) — Stop hooks do **not** appear in that menu but still fire. Don't conclude "hook missing" from the `/hooks` UI alone; check `~/.claude/settings.json` directly and watch for `/tmp/claude-idle/<sid>` getting touched.
-
-## Fleet snapshot: `tm states`
-
-When several teammates are running and you want a one-shot "who's doing what":
-
-| Column | Meaning |
-|---|---|
-| `REPO` | Short repo name (= tmux session minus `teammate-` prefix) |
-| `SID` | First 8 chars of the session id (kept fresh across `/clear` by the SessionStart hook — see `sid-rotation.md`) |
-| `BUSY` | `yes` if `/tmp/claude-idle/<sid>.busy` exists. The plugin's `on-busy.sh` hook touches that file on UserPromptSubmit / UserPromptExpansion / PreToolUse / PreCompact, and `on-stop.sh` removes it on Stop / StopFailure / PostCompact / SessionEnd. **Known false-negative**: purely-TUI commands (`/help`, `/effort`, `/agents` dialogs, permission prompts) fire zero hooks, so BUSY can read `no` while the pane actually shows a blocking dialog. Use `tm status <repo>` if you need ground truth. |
-| `LAST` | Byte count and age of `<sid>.last`, or `-` if no turn has ended yet |
-| `PREVIEW` | First 50 chars of `<sid>.last`, control chars stripped |
-
-`BUSY` is a stat() of one file — cheap, no pane scraping. `LAST` and `PREVIEW` come from the Stop-hook artifacts. The three together answer "is anyone working right now?" and "what did each teammate last say?" without scraping each pane individually.
-
-## Context-window usage: `tm ctx`
-
-How full is a teammate's context window? `tm ctx <repo>` (or `tm ctx --all`) reads the jsonl transcript and reports real prompt size — do not rely on the TUI status-bar percentage (approximate, often absent).
-
-Reports the most recent assistant turn's prompt size (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), a next-turn estimate (plus that turn's `output_tokens`), and the percentage of the context window. Window size isn't recorded in the transcript: a peak usage above ~210k proves a 1M window, otherwise `tm ctx` assumes 200k and labels it `assumed 200k`. Pass `--window 200k|1m` when you know the window and the heuristic can't yet tell.
 
 ## TUI-only commands and the `--pane-quiet` fallback
 

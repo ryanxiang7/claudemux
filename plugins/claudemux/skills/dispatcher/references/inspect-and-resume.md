@@ -12,6 +12,20 @@ Read this when you need to look back at a repo's past Claude sessions — pick t
 
 Run `tm last --help` / `tm history --help` / `tm resume --help` for full flag/output contracts.
 
+## Fleet snapshot: `tm states`
+
+When several teammates are running and you want a one-shot "who's said what":
+
+| Column | Meaning |
+|---|---|
+| `REPO` | Short repo name (= tmux session minus `teammate-` prefix) |
+| `SID` | First 8 chars of the session id (kept fresh across `/clear` by the SessionStart hook — see `sid-rotation.md`) |
+| `BUSY` | `yes` if `/tmp/claude-idle/<sid>.busy` exists. The plugin's `on-busy.sh` hook touches that file on UserPromptSubmit / UserPromptExpansion / PreToolUse / PreCompact, and `on-stop.sh` removes it on Stop / StopFailure / PostCompact / SessionEnd. **Known false-negative**: purely-TUI commands (`/help`, `/effort`, `/agents` dialogs, permission prompts) fire zero hooks, so BUSY can read `no` while the pane actually shows a blocking dialog. Use `tm status <repo>` if you need ground truth. |
+| `LAST` | Byte count and age of `<sid>.last`, or `-` if no turn has ended yet |
+| `PREVIEW` | First 50 chars of `<sid>.last`, control chars stripped |
+
+`LAST` and `PREVIEW` read the same `/tmp/claude-idle/<sid>.last` file `tm last` does — written by the Stop hook (full machinery in `wait-and-readback.md`). `BUSY` is a stat() of one file — cheap, no pane scraping. The three columns together answer "who's working right now" and "what did each teammate last say" without scraping each pane individually.
+
 ## `tm history` modes
 
 - **List mode**: `tm history <repo>` prints a newest-first table — `SID` (first 8 chars), `AGE` (relative mtime), `SIZE`, `TOPIC` (first user prompt, truncated to 60 chars). A leading `*` marks the row whose sid matches the current live teammate (`/tmp/teammate-<repo>.sid`). Use this to pick a session.
