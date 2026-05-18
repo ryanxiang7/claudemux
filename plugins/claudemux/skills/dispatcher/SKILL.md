@@ -48,7 +48,7 @@ Cron firing is reliable **only inside an interactive TUI REPL** (this dispatcher
 
 ## The `tm` script
 
-`tm` (bundled with this plugin under `bin/tm`) is the right way to manage tmux teammates. It treats `$PWD` as the dispatcher directory — there is no config file, no env override. Run it from the dispatcher's own claude session (whose cwd is the dispatcher dir by construction); invoking it from anywhere else fails loudly. **If the dispatcher's cwd is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `$PWD/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. `cd` up to the sibling-parent first, or run `tm` from the actual dispatcher tmux session. The script bakes in two non-obvious tmux behaviors so you don't have to think about them: combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit (the Enter becomes a literal newline inside the input box), and multi-line prompts need a second `Enter` to submit once the input box already contains a newline.
+`tm` (bundled with this plugin under `bin/tm`) is the right way to manage tmux teammates. It resolves the dispatcher directory once at invocation, in this order: **`$TM_DISPATCHER_DIR` env if set, otherwise `$PWD`**. `/claudemux:setup` writes `TM_DISPATCHER_DIR` into the dispatcher root's `.claude/settings.json` so Claude Code injects it as env at every dispatcher launch — that's what keeps `tm` correct even when the Bash tool's cwd has drifted into a sibling repo (the Bash tool persists `cd` across calls). The `$PWD` fallback exists for dispatchers set up before this feature; if `tm doctor` reports `TM_DISPATCHER_DIR: unset`, rerun `/claudemux:setup` to inoculate. **If the resolved dispatcher dir is itself a git working tree** (common when you're maintaining one of the sibling repos directly, e.g. the claudemux plugin), `tm spawn <repo>` will look for `<dispatcher-dir>/<repo>` and miss — `tm` detects this case (`.git` present in cwd) and points you at the right `cd …` invocation. The script bakes in two non-obvious tmux behaviors so you don't have to think about them: combining prompt text and `Enter` in one `tmux send-keys` call silently fails to submit (the Enter becomes a literal newline inside the input box), and multi-line prompts need a second `Enter` to submit once the input box already contains a newline.
 
 ```
 tm ls                            List running teammate-<repo> sessions.
@@ -59,7 +59,10 @@ tm states                        One-line fleet snapshot: REPO, SID, BUSY,
                                  tm ls + tm status per session.
 tm spawn <repo> [--task <slug>] [--prompt "..."] [--no-wait]
                                  Launch a teammate inside the sibling repo
-                                 (cwd = $PWD/<repo>). Without --prompt,
+                                 (cwd = <dispatcher-dir>/<repo>, where the
+                                 dispatcher dir comes from
+                                 TM_DISPATCHER_DIR env or $PWD fallback).
+                                 Without --prompt,
                                  returns once the REPL signals SessionStart
                                  (~2-4s warm). With --prompt "...", sleeps
                                  3s post-ready, sends the prompt, waits for
@@ -201,13 +204,62 @@ tm poll <repo> <regex> [timeout=180]
                                  an interesting intermediate state.
                                  Match the EXPECTED RESULT, not the
                                  prompt you just sent.
+tm doctor                        Self-check: tm path + version,
+                                 TM_DISPATCHER_DIR vs $PWD, tmux,
+                                 idle dir, active teammates. Read-only
+                                 — reach for it when "is the env
+                                 actually injected?" or "why is tm
+                                 looking in the wrong place?" comes up.
+
+HELP
+tm --help / tm -h / tm help      top-level synopsis (one line per verb).
+tm <verb> --help                 detailed contract for one verb. Prefer
+tm help <verb>                   one of these over re-reading this whole
+                                 SKILL.md when verifying a flag or output
+                                 contract you're about to rely on.
 ```
 
-`<repo>` is the short name of a sibling subdirectory (under your `$PWD`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `$PWD/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
+`<repo>` is the short name of a sibling subdirectory directly under the dispatcher directory (resolved as `${TM_DISPATCHER_DIR:-$PWD}`). For example, `tm spawn my-repo` creates a session `teammate-my-repo` with cwd `<dispatcher-dir>/my-repo` and runs `claude` inside it. The teammate loads the target repo's own `CLAUDE.md` as project instructions, but `tm spawn` passes `--settings` with `claudeMdExcludes` so the dispatcher directory's `CLAUDE.md`/`CLAUDE.local.md` stay out of the teammate's upward memory walk — those are dispatcher-only and would otherwise land in the teammate as project instructions that do not apply to it.
 
 The teammate then auto-registers its own Remote Control session — the URL appears in the startup banner (visible via `tm status <repo>`). The user can drive that teammate directly from claude.ai/code or mobile, in parallel with you.
 
 Whenever you would manually call `tmux new-session`, `tmux send-keys`, or `tmux capture-pane` on a teammate, prefer the corresponding `tm` subcommand — it bakes in the conventions, and future fixes (e.g. richer `ls` output, structured `status`) land there once for everyone.
+
+## When to use which verb (scenario → verb)
+
+Match the dispatcher intent to the right verb before composing. Most
+"why didn't that work?" foot-guns come from reaching for raw paths
+(`/tmp/claude-idle/<sid>.last`, the jsonl files) instead of the verb
+that already covers the case.
+
+| Dispatcher intent | Verb |
+|---|---|
+| Send a prompt to a teammate and get the reply | `tm send <repo> "..."` |
+| Re-read the reply `tm send`/`tm wait` just printed (their output is one-shot) | `tm last <repo>` |
+| Start a fresh teammate AND give it a first task in one shot | `tm spawn <repo> --prompt "..."` |
+| Bring up a fresh teammate but don't task it yet | `tm spawn <repo>` |
+| Wait for a turn an external actor (Remote Control, mobile, cron) drove | `tm wait --fresh <repo>` |
+| Wait for a TUI-only command that fires no Stop hook (`/help`, `/effort`, `/agents`, permission prompts) | `tm send --pane-quiet ...` or `tm wait --pane-quiet ...` |
+| Verify an autonomous teammate task's real outcome (turn 2+ may continue after first Stop) | Check side effects directly (`git log`, MR state, ledger artifacts) — stdout from `tm send`/`tm spawn --prompt` is one settled turn, not the task end |
+| See what every teammate is currently doing | `tm states` |
+| Get the raw tmux session list of teammates (when you specifically want tmux row format) | `tm ls` |
+| Stop a teammate and clean up its state files | `tm kill <repo>` |
+| Inspect a past session for a repo (live or dead — even teammates that were killed) | `tm history <repo>` then `tm history <repo> <sid-prefix>` |
+| Resume a prior conversation by sid (from the task ledger) | `tm resume <repo> <sid>` |
+| Pick up the right sid when the user said "continue that thing from yesterday" but the ledger entry is missing | `tm history <repo>` (lists every jsonl with topic + age), then `tm resume <repo> <sid>` |
+| Read teammate context-window usage (more accurate than the TUI percentage) | `tm ctx <repo>` or `tm ctx --all` |
+| Compact a teammate's transcript | `tm compact <repo>` |
+| Send `/reload-plugins` after a plugin update | `tm reload <repo>...` or `tm reload --all` |
+| Verify the contract / flags of a verb you're about to use | `tm <verb> --help` (or `tm help <verb>`) |
+| Sanity-check that TM_DISPATCHER_DIR / tmux / idle dir are all in good shape | `tm doctor` |
+| Move a finished task from active ledger to archive | `tm archive <id>` (compressed outcome on stdin) |
+| Capture the live pane (only when you genuinely need to see what's on screen — e.g. a TUI dialog) | `tm status <repo>` |
+| Block until the pane matches a regex (escape hatch when `tm wait` can't catch an intermediate state) | `tm poll <repo> <regex>` — match expected result, not the prompt you just sent |
+
+Raw files under `/tmp/claude-idle/` and the jsonl transcripts under
+`~/.claude/projects/...` are escape hatches, not the default. Reach
+for them only when the verb you actually want isn't in the table above
+— and if that happens often, that's a missing-verb signal to surface.
 
 ## How the idle / .last machinery works (background — read once)
 
@@ -303,6 +355,7 @@ Implications:
 
 ## Common foot-guns
 
+- **Bash tool persists `cd` across calls.** Claude Code's Bash tool keeps the shell working directory between invocations, so `cd <sibling-repo> && git status` taints every subsequent Bash call until you `cd` back. Without `TM_DISPATCHER_DIR` set, that drift also corrupts everything `tm` derives from `$PWD` — repo paths, the AutoMemory ledger location, ctx/history project-dir encodings. With the env set by `/claudemux:setup`, `tm` itself stays correct; but other dispatcher Bash work (`grep` across siblings, ledger reads, raw `git log`) still sees the drifted cwd. Discipline: prefer **`git -C <repo> <cmd>`** for per-repo inspection, or **`(cd <repo> && <cmd>)`** as a subshell so the parent shell's PWD never moves. Use `tm doctor` to confirm `TM_DISPATCHER_DIR` is set; if it isn't, rerun `/claudemux:setup`.
 - `tmux send-keys -t <s> '<prompt>' Enter` silently doesn't submit — the Enter becomes a newline. Use `tm send` or two separate calls.
 - **Multi-line prompts** in Claude Code's TUI need a *second* `Enter`. Once the input box contains any `\n`, the first `Enter` is consumed as "insert newline at cursor" and only the next `Enter` (on the now-empty trailing line) actually submits. `tm send` detects newlines in the prompt and sends the second Enter automatically — but if you ever drop to raw `tmux send-keys`, you have to mirror that yourself.
 - Polling with a `grep` whose pattern appears in the *prompt you just sent* makes the wait return instantly. Match against expected *result* keywords (e.g. `Scheduled`, `Cancelled`, `error`), not prompt echoes.

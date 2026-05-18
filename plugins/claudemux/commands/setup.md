@@ -105,8 +105,11 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" $ARGUMENTS
 ```
 
 That copies `CLAUDE.md.template` into the dispatcher dir, ensures
-`/tmp/claude-idle/` exists, and removes any leftover
-`~/.config/claudemux/config` from older versions.
+`/tmp/claude-idle/` exists, merges `TM_DISPATCHER_DIR=<dispatcher-dir>` into
+the dispatcher root's `.claude/settings.json` (so Claude Code injects it as
+env at every dispatcher launch — `tm` then resolves the dispatcher dir from
+env instead of `$PWD`, immune to Bash-tool cwd drift), and removes any
+leftover `~/.config/claudemux/config` from older versions.
 
 Read stdout/stderr as evidence. Extract the dispatcher directory and status for
 the final report. Treat any teammate verification lines printed by the script as
@@ -117,6 +120,11 @@ background; the setup report should hand off only the dispatcher start command.
 | `[setup] wrote <path>/CLAUDE.md from template` | fresh install | continue |
 | `[setup] CLAUDE.md already matches template — skipping` | already set up | continue |
 | `[setup] CLAUDE.md exists and differs from template — leaving in place` | user has a customized `CLAUDE.md` | ask whether to keep it or overwrite with `--force`; if they choose overwrite, re-run the setup script with the same arguments plus `--force` |
+| `[setup] wrote <path>/.claude/settings.json with TM_DISPATCHER_DIR=...` | fresh write of settings.json | continue |
+| `[setup] merged TM_DISPATCHER_DIR=... into <path>/.claude/settings.json (other keys preserved)` | merged into a settings.json the user already had | continue |
+| `[setup] <path>/.claude/settings.json already has TM_DISPATCHER_DIR=... — skipping` | re-running setup; nothing to change | continue |
+| `[setup] updated TM_DISPATCHER_DIR in <path>/.claude/settings.json (<old> -> <new>)` | user moved the dispatcher dir; old value replaced | continue |
+| `setup.sh: failed to update <path>/.claude/settings.json (is it valid JSON?...)` | existing settings.json is corrupt | hand the user the suggested `jq .` command and stop |
 
 ## Step 2: offer to enable Remote Control
 
@@ -169,6 +177,11 @@ Print a short, human-facing summary:
 
 - Dispatcher directory that was seeded.
 - Whether `CLAUDE.md` was written / skipped / already matched.
+- Whether `.claude/settings.json` was written / merged / already correct /
+  updated from a previous value. Remind that `TM_DISPATCHER_DIR` is read at
+  the next `claude` launch — the existing dispatcher session (if any) keeps
+  its old env until restart. Once restarted, the dispatcher can run
+  `tm doctor` to confirm the env is taking effect.
 - Dependency state: all required binaries present.
 - Remote Control state: already on / enabled / manual step pending /
   skipped by user / failed with manual recovery.
