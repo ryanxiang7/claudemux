@@ -1511,77 +1511,76 @@ EOF
 cmd_doctor() {
     [[ $# -eq 0 ]] || die "tm doctor: takes no arguments (got: $*)"
 
+    # Shared row helper: all sections pad the label column to a single
+    # width so labels of different lengths line up without hand-counted
+    # spaces. Renaming any label can't drift the alignment; sections
+    # with shorter labels just get a slightly wider gap, which reads
+    # consistent rather than ragged.
+    kv() { printf '  %-20s%s\n' "$1:" "$2"; }
+
     # --- tm executable ---
-    # `$0` may be the user's invocation form (relative, alias-resolved, etc).
-    # Normalize to the absolute, symlink-resolved location of THIS script so
-    # the reported path matches the file actually running. macOS lacks GNU
-    # `readlink -f`; the cd/pwd -P pair is portable.
+    # macOS lacks GNU `readlink -f`; cd + `pwd -P` is the portable way
+    # to resolve $0 to the absolute, symlink-resolved location of THIS
+    # script. plugin.json sits at <plugin-root>/.claude-plugin/plugin.json
+    # — from bin/tm that's `../.claude-plugin/plugin.json`. jq is a
+    # documented dependency; on failure we degrade to "unknown" so
+    # doctor still produces a useful report when the manifest is
+    # missing or unreadable.
     local tm_dir tm_path
-    tm_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || tm_dir="?"
-    if [[ "$tm_dir" == "?" ]]; then
+    tm_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || tm_dir=""
+    if [[ -z "$tm_dir" ]]; then
         tm_path="$0 (unable to resolve)"
     else
         tm_path="$tm_dir/$(basename "$0")"
     fi
-
-    # plugin.json lives at <plugin-root>/.claude-plugin/plugin.json. From
-    # bin/tm that's ../.claude-plugin/plugin.json. jq is a documented
-    # dependency so we use it directly; failure falls back to "unknown"
-    # so doctor still works when the manifest is missing or unreadable.
     local plugin_json="$tm_dir/../.claude-plugin/plugin.json"
     local version="unknown"
     if [[ -f "$plugin_json" ]]; then
         version=$(jq -r '.version // "unknown"' "$plugin_json" 2>/dev/null || echo unknown)
         [[ -n "$version" ]] || version="unknown"
     fi
-
     echo "tm executable:"
-    echo "  path:    $tm_path"
-    echo "  version: $version"
-    if [[ ! -f "$plugin_json" ]]; then
-        echo "  note:    plugin.json not found at $plugin_json"
-    fi
+    kv path    "$tm_path"
+    kv version "$version"
+    [[ -f "$plugin_json" ]] || kv note "plugin.json not found at $plugin_json"
     echo
 
     # --- dispatcher dir ---
     # Distinguish "env was actually set" from "fell back to $PWD" — the
     # former proves /claudemux:setup wired the .claude/settings.json
-    # correctly; the latter is the backward-compat path and a hint that
-    # rerunning setup would inoculate against cwd drift.
+    # correctly; the latter is the BC path and a hint that rerunning
+    # setup would inoculate against cwd drift.
     echo "dispatcher dir:"
-    echo "  resolved:           $DISPATCHER_DIR"
+    kv resolved "$DISPATCHER_DIR"
     if [[ -n "${TM_DISPATCHER_DIR:-}" ]]; then
-        echo "  TM_DISPATCHER_DIR:  set (= $TM_DISPATCHER_DIR)"
+        kv TM_DISPATCHER_DIR "set (= $TM_DISPATCHER_DIR)"
     else
-        echo "  TM_DISPATCHER_DIR:  unset — falling back to \$PWD (run /claudemux:setup to inoculate against cwd drift)"
+        kv TM_DISPATCHER_DIR 'unset — falling back to $PWD (run /claudemux:setup to inoculate against cwd drift)'
     fi
-    echo "  \$PWD:               $PWD"
+    kv '$PWD' "$PWD"
     if [[ "$DISPATCHER_DIR" != "$PWD" ]]; then
-        echo "  status:             DIVERGED — dispatcher dir != \$PWD (this is what TM_DISPATCHER_DIR exists to protect against)"
+        kv status 'DIVERGED — dispatcher dir != $PWD; env override is currently keeping tm correct despite the drifted PWD'
     else
-        echo "  status:             matched"
+        kv status matched
     fi
-    if [[ ! -d "$DISPATCHER_DIR" ]]; then
-        echo "  warning:            $DISPATCHER_DIR does not exist as a directory"
-    fi
+    [[ -d "$DISPATCHER_DIR" ]] || kv warning "$DISPATCHER_DIR does not exist as a directory"
     echo
 
     # --- tmux ---
     echo "tmux:"
     if ! command -v tmux >/dev/null 2>&1; then
-        echo "  installed:  no (tmux not on PATH — claudemux teammate workflow needs it)"
+        kv installed 'no (tmux not on PATH — claudemux teammate workflow needs it)'
     else
-        local tmux_v; tmux_v=$(tmux -V 2>/dev/null || echo "?")
-        echo "  installed:  yes ($tmux_v)"
+        kv installed "yes ($(tmux -V 2>/dev/null || echo '?'))"
         if tmux info >/dev/null 2>&1; then
-            echo "  server:     running"
+            kv server running
         else
-            echo "  server:     not running (no sessions exist yet — that's fine pre-spawn)"
+            kv server "not running (no sessions exist yet — that's fine pre-spawn)"
         fi
         if [[ -n "${TMUX:-}" ]]; then
-            echo "  in tmux:    yes (TMUX=$TMUX)"
+            kv 'in tmux' "yes (TMUX=$TMUX)"
         else
-            echo "  in tmux:    no — tm is being run from outside a tmux session"
+            kv 'in tmux' 'no — tm is being run from outside a tmux session'
         fi
     fi
     echo
@@ -1589,23 +1588,22 @@ cmd_doctor() {
     # --- idle dir ---
     echo "idle dir ($IDLE_DIR):"
     if [[ -d "$IDLE_DIR" ]]; then
-        local files; files=$(ls -1 "$IDLE_DIR" 2>/dev/null | wc -l | tr -d ' ')
-        echo "  exists:  yes ($files file(s))"
+        kv exists "yes ($(ls -1 "$IDLE_DIR" 2>/dev/null | wc -l | tr -d ' ') file(s))"
     else
-        echo "  exists:  no — gets created on first tm spawn / scripts/setup.sh"
+        kv exists 'no — gets created on first tm spawn / scripts/setup.sh'
     fi
     echo
 
     # --- active teammates ---
-    # Reuse the same prefix-match logic cmd_ls uses, but count + name only
-    # (full row layout is cmd_states' job).
+    # Same prefix-match logic cmd_ls uses, but projected to name-only;
+    # the three call sites (cmd_ls / cmd_states / here) all want
+    # slightly different output, so each keeps its own awk projection.
     echo "active teammates:"
     local rows; rows=$( { tmux ls 2>/dev/null || true; } | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print $1}')
     if [[ -z "$rows" ]]; then
         echo "  (none — use 'tm spawn <repo>' to launch one)"
     else
-        local count; count=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
-        echo "  count: $count"
+        kv count "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')"
         printf '%s\n' "$rows" | sed 's/^/  - /'
     fi
 
