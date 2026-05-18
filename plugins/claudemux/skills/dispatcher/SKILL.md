@@ -90,7 +90,7 @@ The auto-mode classifier blocks the dispatcher from editing its **own** `setting
 
 ## Task ledger boot-up
 
-Two files in this dispatcher's AutoMemory directory power the task ledger; full path encoding, file purposes, schema, and the `tm archive` flow live in `references/ledger-and-archive.md`. The boot rule is:
+Two files in this dispatcher's AutoMemory directory power the task ledger; file purposes, schema, and the `tm archive` flow live in `references/ledger-and-archive.md`. The boot rule is:
 
 - **Read on boot**: `active-dispatcher-tasks.md` — before any cross-task decision, and whenever the user asks "what's running" / "看看现在在跑啥".
 - **Never read on boot**: `dispatcher-tasks-archive.md` — on demand only (when the user asks about a past task or you need history to make a decision).

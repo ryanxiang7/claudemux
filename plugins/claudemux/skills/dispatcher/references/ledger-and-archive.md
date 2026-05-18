@@ -2,9 +2,9 @@
 
 Read this when you're appending a new active task to the ledger (at spawn time) or archiving a finished one (when the work hits a terminal state). Skip when you're just reading the ledger to answer "what's running" — that's a Read on `active-dispatcher-tasks.md` directly, no schema lookup needed.
 
-## Where the files live
+## The two ledger files
 
-Two files in the dispatcher's AutoMemory directory. Claude Code derives that path from the dispatcher claude process's cwd: every `/` and `.` in `$PWD` becomes `-`, prepended with `$HOME/.claude/projects/`. The `MEMORY.md` index in the same folder lists both:
+Both live in the dispatcher's AutoMemory directory (the directory whose absolute path is in your system prompt; auto-loaded entries are visible via `MEMORY.md`):
 
 | File | What it holds | When to read |
 |---|---|---|
