@@ -221,8 +221,13 @@ pane_busy() {
 new_sid() { uuidgen | tr '[:upper:]' '[:lower:]'; }
 
 require_session() {
-    local name; name=$(session_name "$1")
-    tmux has-session -t "=$name" 2>/dev/null || die "no such teammate session: $name (try 'tm ls')"
+    # Output convention (load-bearing across this script): "$repo (tmux=$name)"
+    # — bare handle is what every tm verb accepts; the tmux name is shown only
+    # as a parenthesized debug hint. If you tweak the format here, sweep every
+    # other site that emits it (spawn / kill / sent-to).
+    local repo="$1" name
+    name=$(session_name "$repo")
+    tmux has-session -t "=$name" 2>/dev/null || die "no such teammate session: $repo (tmux=$name; try 'tm ls')"
     echo "$name"
 }
 
@@ -327,7 +332,7 @@ _send_keys() {
         tmux send-keys -t "$pane" Enter
     fi
 
-    echo "sent to $name" >&2
+    echo "sent to $repo (tmux=$name)" >&2
     [[ -n "$sid" ]] && echo "sid=$sid" >&2
     return 0
 }
@@ -441,7 +446,8 @@ cmd_spawn() {
             --resume)   resume_sid="${2:-}"; shift 2 ;;
             --task)     task="${2:-}"; shift 2 ;;
             --task=*)   task="${1#--task=}"; shift ;;
-            --prompt)   prompt="${2:-}"; has_prompt=1; shift 2 ;;
+            --prompt)   [[ $# -ge 2 ]] || die "tm spawn: --prompt requires a value"
+                        prompt="$2"; has_prompt=1; shift 2 ;;
             --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
             --no-wait)  no_wait=1; shift ;;
             *) die "unknown flag: $1" ;;
@@ -499,9 +505,9 @@ cmd_spawn() {
         # was sent. Die clearly so the caller routes to 'tm send' (which
         # is the right verb for "session already up, send a prompt").
         if (( has_prompt )); then
-            die "$name already exists — atomic bootstrap rejected because the teammate is already running. Use 'tm send $repo \"…\"' to drive an existing teammate, or 'tm kill $repo' first to start over."
+            die "$repo already exists (tmux=$name) — atomic bootstrap rejected because the teammate is already running. Use 'tm send $repo --prompt \"…\"' to drive an existing teammate, or 'tm kill $repo' first to start over."
         fi
-        echo "$name already exists (use 'tm status $repo' to view, or 'tm kill $repo' first)"
+        echo "$repo already exists (tmux=$name; use 'tm status $repo' to view, or 'tm kill $repo' first)"
         return 0
     fi
 
@@ -537,7 +543,7 @@ cmd_spawn() {
     if [[ -n "$resume_sid" ]]; then
         sid="$resume_sid"
         tmux send-keys -t "$pane" "claude --resume $sid --settings '$md_excludes'$name_arg" Enter
-        echo "spawned: $name (cwd=$cwd_phys, resumed sid=$sid$name_note)" >&2
+        echo "spawned: $repo (tmux=$name, cwd=$cwd_phys, resumed sid=$sid$name_note)" >&2
     else
         # Pre-generate the UUID so the sid is known the moment spawn returns.
         # No more jsonl scanning, no race window: --session-id makes the jsonl
@@ -545,7 +551,7 @@ cmd_spawn() {
         # /tmp/claude-idle/<that-same-uuid> on every turn-end.
         sid=$(new_sid)
         tmux send-keys -t "$pane" "claude --session-id $sid --settings '$md_excludes'$name_arg" Enter
-        echo "spawned: $name (cwd=$cwd_phys, sid=$sid$name_note)" >&2
+        echo "spawned: $repo (tmux=$name, cwd=$cwd_phys, sid=$sid$name_note)" >&2
     fi
     echo "$sid" > "$sf"
     clear_idle "$sid"
@@ -584,9 +590,9 @@ cmd_spawn() {
         sleep 0.3
     done
     if [[ -n "$ready_after_ms" ]]; then
-        echo "ready: ${name} (SessionStart fired after ~${ready_after_ms} ms)" >&2
+        echo "ready: $repo (tmux=$name, SessionStart fired after ~${ready_after_ms} ms)" >&2
     else
-        echo "WARN: $name did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing, but if the REPL is actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / 'tm compact' will block until its --timeout expires (default 600s). 'tm status $repo' shows the live pane if you need to verify." >&2
+        echo "WARN: $repo (tmux=$name) did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing, but if the REPL is actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / 'tm compact' will block until its --timeout expires (default 600s). 'tm status $repo' shows the live pane if you need to verify." >&2
     fi
 
     # --prompt: atomic bootstrap. Wait 3s for the REPL to fully settle
@@ -597,11 +603,8 @@ cmd_spawn() {
     # first turn's .last on stdout. With --no-wait it's fire-and-forget.
     if (( has_prompt )); then
         sleep 3
-        if (( no_wait )); then
-            cmd_send --no-wait "$repo" "$prompt"
-        else
-            cmd_send "$repo" "$prompt"
-        fi
+        local _nw=(); (( no_wait )) && _nw=(--no-wait)
+        cmd_send "${_nw[@]}" "$repo" --prompt "$prompt"
     fi
 }
 
@@ -615,43 +618,43 @@ cmd_status() {
 }
 
 cmd_send() {
-    # Atomic round-trip by default: send prompt + wait for Stop hook +
-    # print .last text to stdout. The dispatcher's primary verb — folds
-    # what used to be send + wait-idle + last into one call.
+    # Atomic round-trip by default: send prompt + wait for Stop hook + print
+    # .last text to stdout. Status messages ("sent to ...", "sid=...") go to
+    # stderr so stdout is exclusively reply text — pipe-friendly for
+    # `tm send <repo> --prompt "..." | jq`.
     #
-    # Flags (must precede <repo>):
-    #   --no-wait        fire-and-forget; return as soon as keys are sent.
-    #                    Use for /clear before a kill, or any case where
-    #                    the reply doesn't matter.
-    #   --pane-quiet     fall back to pane-quiet detection instead of the
-    #                    Stop-hook signal. Use for TUI-only commands that
-    #                    fire no hook: /help, /effort, /agents, permission
-    #                    prompts. Stop hook now covers /compact and /clear
-    #                    via PostCompact/SessionEnd, so those do NOT need
-    #                    --pane-quiet (though they also produce no .last
-    #                    text, so stdout will be the "(no text reply)"
-    #                    sentinel either way).
-    #   --timeout N      override the 600s default wait cap.
-    #
-    # Status messages ("sent to ...", "sid=...") go to stderr so stdout
-    # is exclusively the reply text — pipe-friendly for `tm send X "..."
-    # | jq` and similar.
-    local no_wait=0 pane_quiet=0 timeout=600 repo=""
+    # See `tm send --help` for the full flag contract.
+    local no_wait=0 pane_quiet=0 timeout=600 repo="" prompt="" has_prompt=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-wait)    no_wait=1; shift ;;
             --pane-quiet) pane_quiet=1; shift ;;
-            --timeout)    timeout="${2:-}"; shift 2 ;;
+            --timeout)    [[ $# -ge 2 ]] || die "tm send: --timeout requires a value"
+                          timeout="$2"; shift 2 ;;
             --timeout=*)  timeout="${1#--timeout=}"; shift ;;
+            --prompt)     [[ $# -ge 2 ]] || die "tm send: --prompt requires a value"
+                          prompt="$2"; has_prompt=1; shift 2 ;;
+            --prompt=*)   prompt="${1#--prompt=}"; has_prompt=1; shift ;;
             --) shift; repo="${1:-}"; shift || true; break ;;
             -*) die "tm send: unknown flag: $1" ;;
-            *) repo="$1"; shift; break ;;
+            *)
+                if [[ -z "$repo" ]]; then
+                    repo="$1"; shift
+                else
+                    # Echo the full remaining argv (`$*`) so a multi-token
+                    # legacy call like `tm send repo run tests` shows the
+                    # complete intent (--prompt 'run tests'), not just the
+                    # first token. printf %q shell-escapes the value so
+                    # single quotes / metacharacters in the prompt render
+                    # as a valid, copy-pasteable command.
+                    die "tm send: prompt is now a --prompt flag, not a positional arg. Did you mean: tm send $repo --prompt $(printf %q "$*") ?"
+                fi
+                ;;
         esac
     done
-    [[ -n "$repo" && $# -gt 0 ]] \
-        || die "usage: tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>   (flags must precede <repo>; everything after <repo> is prompt text)"
+    [[ -n "$repo" ]] || die "tm send: missing <repo>. Usage: tm send <repo> --prompt \"...\" [--no-wait] [--pane-quiet] [--timeout N]"
+    (( has_prompt )) || die "tm send: missing --prompt. Usage: tm send <repo> --prompt \"...\" [--no-wait] [--pane-quiet] [--timeout N]"
 
-    local prompt="$*"
     _send_keys "$repo" "$prompt"
 
     if (( no_wait )); then
@@ -756,7 +759,7 @@ cmd_last() {
     # succeed with empty stdout, which is the bug that motivated the
     # empty-sentinel write at spawn time.
     [[ -s "$lf" ]] \
-        || die "no reply yet for $repo (sid=$sid) — file is missing or empty at $lf. Try 'tm wait $repo' to block for the next Stop, or 'tm send $repo <prompt>' to drive a turn."
+        || die "no reply yet for $repo (sid=$sid) — file is missing or empty at $lf. Try 'tm wait $repo' to block for the next Stop, or 'tm send $repo --prompt \"...\"' to drive a turn."
     cat "$lf"
 }
 
@@ -769,16 +772,16 @@ cmd_kill() {
     rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")"
     if tmux has-session -t "=$name" 2>/dev/null; then
         tmux kill-session -t "=$name"
-        echo "killed: $name"
+        echo "killed: $repo (tmux=$name)"
     else
-        echo "not running: $name"
+        echo "not running: $repo (tmux=$name)"
     fi
 }
 
 cmd_reload() {
     # Fan out /reload-plugins to one, many, or all teammates. Sugar over
-    # `tm send <repo> /reload-plugins` so the dispatcher doesn't have to
-    # type it per pane after publishing a plugin update.
+    # `tm send <repo> --prompt /reload-plugins` so the dispatcher doesn't
+    # have to type it per pane after publishing a plugin update.
     local all=0
     local repos=()
     while [[ $# -gt 0 ]]; do
@@ -811,7 +814,7 @@ cmd_reload() {
         # signal across a large fleet would serialize the reload into
         # minutes. Track first failure for the exit code, but keep
         # iterating so a missing teammate doesn't block the rest.
-        if ! cmd_send --no-wait "$repo" "/reload-plugins" >/dev/null 2>&1; then
+        if ! cmd_send --no-wait "$repo" --prompt "/reload-plugins" >/dev/null 2>&1; then
             echo "  (failed — is this teammate running? try 'tm ls')" >&2
             rc=1
         fi
@@ -835,7 +838,8 @@ cmd_resume() {
     local repo="" sid="" prompt="" has_prompt=0 task="" no_wait=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --prompt) prompt="${2:-}"; has_prompt=1; shift 2 ;;
+            --prompt) [[ $# -ge 2 ]] || die "tm resume: --prompt requires a value"
+                      prompt="$2"; has_prompt=1; shift 2 ;;
             --prompt=*) prompt="${1#--prompt=}"; has_prompt=1; shift ;;
             --task) task="${2:-}"; shift 2 ;;
             --task=*) task="${1#--task=}"; shift ;;
@@ -864,7 +868,7 @@ cmd_resume() {
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
-        die "$name already running — 'tm kill $repo' first if you really want to start over"
+        die "$repo already running (tmux=$name) — 'tm kill $repo' first if you really want to start over"
     fi
 
     local encoded; encoded=$(printf '%s' "$cwd_phys" | tr / -)
@@ -903,11 +907,8 @@ cmd_resume() {
         # cmd_send is sync-by-default, so without --no-wait this returns
         # the first-turn .last on stdout.
         sleep 3
-        if (( no_wait )); then
-            cmd_send --no-wait "$repo" "$prompt"
-        else
-            cmd_send "$repo" "$prompt"
-        fi
+        local _nw=(); (( no_wait )) && _nw=(--no-wait)
+        cmd_send "${_nw[@]}" "$repo" --prompt "$prompt"
     fi
 }
 
@@ -1623,7 +1624,7 @@ tm — tmux teammate manager for the dispatcher skill
 Run `tm <verb> --help` (or `tm help <verb>`) for per-verb detail.
 
 USAGE  (most common first)
-  tm send <repo> <prompt...>             atomic round-trip: send + wait + print reply
+  tm send <repo> --prompt "..."          atomic round-trip: send + wait + print reply
   tm spawn <repo> [--prompt "..."]       launch teammate; --prompt = atomic bootstrap
   tm wait <repo> [--fresh]               wait for next Stop; print reply
   tm compact <repo>                      /compact + verify, prints "compacted"
@@ -1714,14 +1715,17 @@ EOF
 
 help_send() {
     cat <<'EOF'
-tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt...>
+tm send <repo> --prompt "..." [--no-wait] [--pane-quiet] [--timeout N]
 
       Atomic round-trip by default: send prompt + wait for the Stop
       hook + print the teammate's reply text on stdout. The
       dispatcher's primary verb — folds what used to be send +
       wait-idle + last into one call. Stdout is exclusively reply
-      text; status lines go to stderr (pipe-friendly). Flags must
-      precede <repo>; everything after <repo> is prompt text.
+      text; status lines go to stderr (pipe-friendly).
+      --prompt "..." the prompt text. Required. Same calling form
+        as 'tm spawn --prompt' / 'tm resume --prompt'. Flag order is
+        free: 'tm send <repo> --prompt "..."' and 'tm send --prompt
+        "..." <repo>' both work.
       --no-wait fire-and-forget; return as soon as the keys are
         sent. Use for /clear before kill, or any case where the
         reply doesn't matter. (--pane-quiet has no effect with
@@ -1835,7 +1839,7 @@ help_reload() {
 tm reload <repo>... | --all
 
       Fan out /reload-plugins to one, many, or every teammate.
-      Sugar over 'tm send <repo> /reload-plugins'. --all enumerates
+      Sugar over 'tm send <repo> --prompt /reload-plugins'. --all enumerates
       from `tmux ls`; missing/dead teammates are skipped with a
       stderr note and the exit status reflects whether every send
       succeeded.
@@ -1937,13 +1941,10 @@ main() {
     local sub="${1:-help}"
     shift || true
 
-    # --help / -h among the leading flags = print this verb's help and
-    # exit. Pre-scan stops at the first non-flag arg so prompt text like
-    # `tm send <repo> "...--help..."` isn't mistaken for a help request
-    # (the false-positive cost — swallowing the user's prompt — is much
-    # higher than the false-negative cost of requiring `tm <verb> --help`
-    # instead of `tm <verb> <repo> --help`). `declare -F` checks for
-    # help_<verb>; unknown verbs fall through to top-level cmd_help.
+    # Help pre-scan: stop at the first non-flag positional, and stop at
+    # `--prompt` (its value is data, not a flag). Both stops exist to keep
+    # prompt content that happens to contain `--help` from triggering help
+    # mode and silently swallowing the prompt.
     local _arg
     for _arg in "$@"; do
         case "$_arg" in
@@ -1955,6 +1956,7 @@ main() {
                 cmd_help
                 return 0
                 ;;
+            --prompt|--prompt=*) break ;;  # value-bearing flag; stop scan
             -*) ;;     # other flag — keep scanning
             *) break ;; # first positional — prompt text may follow; stop
         esac
@@ -1997,7 +1999,7 @@ main() {
         # the new verbs have different semantics, so silent rerouting
         # would mislead.
         ask)
-            echo "tm ask was removed in 0.3.0. Use 'tm send <repo> <prompt>' — send is now sync round-trip by default and prints the reply on stdout." >&2
+            echo "tm ask was removed in 0.3.0. Use 'tm send <repo> --prompt \"...\"' — send is now sync round-trip by default and prints the reply on stdout." >&2
             exit 2
             ;;
         wait-idle)
@@ -2005,7 +2007,7 @@ main() {
             exit 2
             ;;
         wait-quiet)
-            echo "tm wait-quiet was folded into the --pane-quiet flag in 0.3.0. Use 'tm wait <repo> --pane-quiet' (or 'tm send <repo> <prompt> --pane-quiet' for the send-then-wait composition)." >&2
+            echo "tm wait-quiet was folded into the --pane-quiet flag in 0.3.0. Use 'tm wait <repo> --pane-quiet' (or 'tm send <repo> --prompt \"...\" --pane-quiet' for the send-then-wait composition)." >&2
             exit 2
             ;;
         *) echo "tm: unknown subcommand: $sub" >&2; cmd_help; exit 1 ;;

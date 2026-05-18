@@ -10,7 +10,7 @@ The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm
 |---|---|
 | Fresh teammate AND a first task in one shot | `tm spawn <repo> --prompt "..."` (atomic bootstrap, prints first-turn reply on stdout) |
 | Fresh teammate, no task yet | `tm spawn <repo>` (returns once the REPL signals SessionStart) |
-| Existing teammate, send a new task and get the reply | `tm send <repo> "..."` (sync round-trip — send + wait for Stop + print reply on stdout) |
+| Existing teammate, send a new task and get the reply | `tm send <repo> --prompt "..."` (sync round-trip — send + wait for Stop + print reply on stdout) |
 
 All three are background-execution candidates — see the wait phase contract below.
 

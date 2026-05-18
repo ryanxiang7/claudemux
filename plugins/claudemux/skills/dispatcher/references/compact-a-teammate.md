@@ -27,7 +27,7 @@ Run `tm compact --help` for full flag/output contract.
 | `"Not enough messages to compact"` | Transcript too short — Claude Code refuses up front | That error fires NO hook (won't satisfy the idle-marker poll), so the pane is scanned alongside the marker poll. On match, exits 1 immediately instead of hanging to `--timeout`. |
 | PostCompact never fires within `--timeout` | Compaction is hung, or the Stop hook is misconfigured | Falls through to the timeout cap and exits 1 with a stderr warning. |
 
-The "Not enough messages" detection is the reason `tm compact` exists as its own verb instead of being a thin wrapper over `tm send <repo> /compact` — the wrapper would hang to 600 s on the transcript-too-short case (no hook, no error pane scan).
+The "Not enough messages" detection is the reason `tm compact` exists as its own verb instead of being a thin wrapper over `tm send <repo> --prompt /compact` — the wrapper would hang to 600 s on the transcript-too-short case (no hook, no error pane scan).
 
 ## Why `tm compact` doesn't echo ctx
 
@@ -40,9 +40,9 @@ Run `tm ctx <repo>` separately after `compacted` lands on stdout. Or do nothing 
 
 ## Why `tm compact` exists as its own verb
 
-`tm compact` is purpose-built for compaction because two things make a thin `tm send <repo> /compact` wrapper insufficient:
+`tm compact` is purpose-built for compaction because two things make a thin `tm send <repo> --prompt /compact` wrapper insufficient:
 
 - **PostCompact produces no `.last` text** — fires the idle marker, so the wait does unblock, but stdout would be just the sentinel `(no text reply this turn — tool-only, /compact, /clear, or fresh spawn)`. `tm compact` prints a clean `compacted` line instead.
 - **The "Not enough messages to compact" rejection fires no hook at all** — a generic send would block to `--timeout` (default 600 s) waiting for a Stop that never comes. `tm compact` scans the pane for that error alongside the marker poll and exits 1 immediately when it matches.
 
-`tm send <repo> /compact` is exactly the wrapper that misses both — reach for `tm compact <repo>` for compaction.
+`tm send <repo> --prompt /compact` is exactly the wrapper that misses both — reach for `tm compact <repo>` for compaction.

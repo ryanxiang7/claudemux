@@ -40,7 +40,7 @@ The Stop hook covers Stop / StopFailure / PostCompact / SessionEnd — so `/comp
 The narrow case that needs pane-quiet detection is **TUI-only slash commands and dialogs that fire NO hook at all**: `/help`, `/effort`, `/agents` opening dialogs, permission prompts. For those, pass `--pane-quiet` to either `tm send` (sends the command, then waits for the pane to settle) or `tm wait` (passive observe of pane-quiet without sending):
 
 ```bash
-tm send --pane-quiet <repo> /help
+tm send <repo> --prompt /help --pane-quiet
 ```
 
 It polls the pane and returns when the spinner has been absent for ~4 s AND at least 3 s have passed since the last send. `--fresh` is a no-op under `--pane-quiet` (the "≥3 s since last send" gate already provides the freshness guarantee). The ctx-echo to stderr is skipped on `--pane-quiet` too (no fresh usage block in jsonl).

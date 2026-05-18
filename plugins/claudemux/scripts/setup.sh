@@ -167,7 +167,7 @@ Verify by starting a dispatcher session:
   3. Once Claude is at the prompt, spawn a teammate against a sibling repo:
        tm spawn <repo>      # <repo> is a direct subdirectory of $DISPATCHER_DIR
   4. Send a prompt; the reply lands on stdout (tm send is sync round-trip):
-       tm send <repo> 'echo hello'
+       tm send <repo> --prompt 'echo hello'
      You should see the teammate's text reply within a minute.
 
 Notes:

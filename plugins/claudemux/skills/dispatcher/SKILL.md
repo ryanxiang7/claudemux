@@ -1,6 +1,6 @@
 ---
 name: dispatcher
-description: Manage dispatcher-style coordination across sibling git repos from a parent workspace. Use when the user asks to spawn, dispatch, message, resume, inspect teammate state, or kill a teammate; coordinate work across multiple sibling repos; check what teammates are doing; host or manage local scheduled work; or maintain the dispatcher task ledger. Also use when the user names dispatcher concepts such as "派一个 / 派活 / 派 teammate / 派 X 去 / 看看 X 在干啥 / 问问 X / dispatcher / 多仓 / 跨仓 / orchestrator".
+description: Manage dispatcher-style coordination across sibling git repos from a parent workspace. Use when the user asks to spawn, dispatch, message, resume, inspect, or kill a teammate; coordinate work across multiple sibling repos; check what teammates are doing; host or manage local scheduled work; or maintain the dispatcher task ledger. Also use when the user names dispatcher concepts such as "派一个 / 起一个 teammate / 下发任务 / 看看 X 在干啥 / 多仓 / dispatcher".
 user-invocable: false
 ---
 
@@ -45,7 +45,7 @@ Match the user's intent to one of these scenarios, then read the corresponding r
 
 | When you're doing this | Read | Primary verb(s) |
 |---|---|---|
-| Pushing work into a repo via tmux teammate (default delegation) | `references/dispatch-task.md` | `tm spawn <repo> --prompt "..."` / `tm send <repo> "..."` |
+| Pushing work into a repo via tmux teammate (default delegation) | `references/dispatch-task.md` | `tm spawn <repo> --prompt "..."` / `tm send <repo> --prompt "..."` |
 | Waiting for a turn an external actor (Remote Control, mobile, cron, sub-agent) drove | `references/wait-and-readback.md` | `tm wait --fresh <repo>` |
 | Reading `tm states` fleet snapshot — what every teammate is doing right now | `references/inspect-and-resume.md` (`LAST` / `PREVIEW` read the same `.last` file as `tm last`) | `tm states` |
 | A teammate looks hung mid-turn — need pane ground truth (e.g. blocked on a permission prompt the hook missed) | `references/wait-and-readback.md` (`--pane-quiet` blind spot + `tm status` fallback) | `tm status <repo>` |

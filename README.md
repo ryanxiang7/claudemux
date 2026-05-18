@@ -83,7 +83,7 @@ Or call `tm` directly:
 
 ```bash
 tm spawn repo-a --prompt 'run yarn test in unit-test'   # atomic: spawn + send + wait + print
-tm send  repo-a 'now lint'                              # sync send: returns the reply on stdout
+tm send  repo-a --prompt 'now lint'                     # sync send: returns the reply on stdout
 tm states                                               # fleet snapshot
 tm kill  repo-a                                         # done
 ```
@@ -99,7 +99,7 @@ terminal, see [Outside Claude Code](#using-tm-outside-claude-code).
 | `tm states` | Fleet snapshot: repo, sid, busy, last-reply size + age, first 50 chars. |
 | `tm spawn <repo> [--task <slug>] [--prompt "…"] [--no-wait]` | Launch a teammate for `<repo>`. With `--prompt`, atomic bootstrap: spawn + send + wait + print the first-turn reply on stdout. `--task <slug>` names the conversation (`<repo>-<slug>`; ASCII + CJK Han); default `<repo>-<rand4>`. `--no-wait` only with `--prompt` for fire-and-forget bootstrap. |
 | `tm resume <repo> [<sid>] [--task <slug>] [--prompt "…"] [--no-wait]` | Resume a prior conversation. Pass `sid` from your task ledger; without it, picks the newest jsonl by mtime. `--prompt` sends a follow-up after a 3s settle (atomic like `spawn --prompt`). |
-| `tm send [--no-wait] [--pane-quiet] [--timeout N] <repo> <prompt…>` | **Atomic round-trip by default**: send prompt + wait for the Stop hook + print the reply on stdout. The Stop-hook path also echoes the teammate's post-turn ctx to stderr (`ctx: N tokens · …`), eliminating the common "send, then `tm ctx`" follow-up; skipped on `--pane-quiet` / `--no-wait`. Flags must precede `<repo>` (everything after `<repo>` is prompt text). `--no-wait` fire-and-forget. `--pane-quiet` fallback for TUI-only commands (`/help`, `/effort`, permission prompts) that fire no hook. |
+| `tm send <repo> --prompt "…" [--no-wait] [--pane-quiet] [--timeout N]` | **Atomic round-trip by default**: send prompt + wait for the Stop hook + print the reply on stdout. The Stop-hook path also echoes the teammate's post-turn ctx to stderr (`ctx: N tokens · …`), eliminating the common "send, then `tm ctx`" follow-up; skipped on `--pane-quiet` / `--no-wait`. `--prompt` matches the calling form of `tm spawn --prompt` / `tm resume --prompt` (one API across all three verbs); flag order is free. `--no-wait` fire-and-forget. `--pane-quiet` fallback for TUI-only commands (`/help`, `/effort`, permission prompts) that fire no hook. |
 | `tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]` | Block until the teammate's next Stop event and print the reply (ctx echo on stderr, same as `tm send`). Use when an external actor (Remote Control, mobile app, cron) drove the turn. `--fresh` waits for the NEXT Stop instead of returning on a stale marker (no-op under `--pane-quiet`). `--timeout N` is equivalent to the positional `[timeout]`. |
 | `tm compact <repo> [timeout=600] [--timeout N]` | Send `/compact` and verify PostCompact fired. Prints `compacted` on success. Doesn't read ctx — use a separate `tm ctx <repo>` or the inline echo on the next `tm send`. Scans the pane for Claude Code's "Not enough messages to compact" error (fires no hook) and exits 1 immediately instead of hanging to timeout. Default 600s — large contexts (~300k+) routinely take 3-4 minutes. |
 | `tm last <repo>` | Print the full text of the teammate's last reply. Fresh-spawn sentinel: dies with "no reply yet" when called before any turn has settled. |

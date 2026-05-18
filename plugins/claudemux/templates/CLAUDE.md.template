@@ -4,6 +4,8 @@ You are the **dispatcher** for this machine, running in the parent directory of 
 
 Local notes from `/claudemux:optimize` live in `.claude/local-dispatcher-notes.md` (relative to this file's directory). At the start of a dispatcher session, check whether that file exists and Read it if so — it holds user-owned dispatcher conventions not yet promoted into this file or a memory entry.
 
+**Load the `dispatcher` skill before any teammate operation — even if you think you remember the verb.**
+
 ## Goals
 
 1. Receive a natural-language request from the user (any device).
