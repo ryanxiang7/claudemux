@@ -1,0 +1,42 @@
+# Compact a teammate (scenario reference)
+
+Read this when a teammate's context window is filling up (use `tm ctx <repo>` to check — see `wait-and-readback.md`) and you want to compact its transcript before the next turn. Skip when you're just sending fresh work or waiting on a turn — those use `tm send` / `tm wait`, not `tm compact`.
+
+## The verb
+
+```
+tm compact <repo> [--timeout N]
+```
+
+Sends `/compact` to the teammate, waits for the **PostCompact** hook to fire (touches the idle marker), and prints `compacted` on stdout when the marker arrives. Default timeout is 600 s — large contexts (~300 k+) routinely take 3–4 minutes to compact, so the cap is generous on purpose.
+
+**Run in background.** Compaction blocks for minutes; pair every `tm compact` with `run_in_background: true` on the Bash tool. (Same rule as every other long-running wait — see SKILL.md "Long-running waits".)
+
+Run `tm compact --help` for full flag/output contract.
+
+## Two non-success modes (both exit 1)
+
+| Mode | What happened | How `tm compact` detects it |
+|---|---|---|
+| `"Not enough messages to compact"` | Transcript too short — Claude Code refuses up front | That error fires NO hook (won't satisfy the idle-marker poll), so the pane is scanned alongside the marker poll. On match, exits 1 immediately instead of hanging to `--timeout`. |
+| PostCompact never fires within `--timeout` | Compaction is hung, or the Stop hook is misconfigured | Falls through to the timeout cap and exits 1 with a stderr warning. |
+
+The "Not enough messages" detection is the reason `tm compact` exists as its own verb instead of being a thin wrapper over `tm send <repo> /compact` — the wrapper would hang to 600 s on the transcript-too-short case (no hook, no error pane scan).
+
+## Why `tm compact` doesn't echo ctx
+
+After compaction, you almost always want to see the new ctx size — but `tm compact` deliberately does **not** print it. Two reasons:
+
+1. The post-compact jsonl usage block isn't reliably present at the moment PostCompact fires; reading too early gets the pre-compact size.
+2. Coupling makes the contract muddy — `tm compact`'s success is the single signal "marker touched", clean and binary.
+
+Run `tm ctx <repo>` separately after `compacted` lands on stdout. Or do nothing — the next `tm send` will echo the post-turn ctx to stderr as part of its normal contract.
+
+## Why `tm compact` exists as its own verb
+
+`tm compact` is purpose-built for compaction because two things make a thin `tm send <repo> /compact` wrapper insufficient:
+
+- **PostCompact produces no `.last` text** — fires the idle marker, so the wait does unblock, but stdout would be just the sentinel `(no text reply this turn — tool-only, /compact, /clear, or fresh spawn)`. `tm compact` prints a clean `compacted` line instead.
+- **The "Not enough messages to compact" rejection fires no hook at all** — a generic send would block to `--timeout` (default 600 s) waiting for a Stop that never comes. `tm compact` scans the pane for that error alongside the marker poll and exits 1 immediately when it matches.
+
+`tm send <repo> /compact` is exactly the wrapper that misses both — reach for `tm compact <repo>` for compaction.
