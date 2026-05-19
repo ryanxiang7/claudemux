@@ -15,6 +15,7 @@ USAGE  (most common first)
   tm states                              one-line fleet snapshot
   tm ctx <repo>... | --all               real ctx-window usage from jsonl
   tm history <repo> [<sid-prefix>]       inspect past sessions for this repo
+  tm mem <repo>                          cat sibling repo's auto-memory index
   tm archive <id>                        move finished task active→archive (stdin)
 
 DIAGNOSTIC (escape hatches — prefer the verbs above)

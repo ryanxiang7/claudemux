@@ -60,6 +60,7 @@ assert_help_matches() {
 @test "tm help reload"   { assert_help_matches reload; }
 @test "tm help ctx"      { assert_help_matches ctx; }
 @test "tm help history"  { assert_help_matches history; }
+@test "tm help mem"      { assert_help_matches mem; }
 @test "tm help archive"  { assert_help_matches archive; }
 @test "tm help status"   { assert_help_matches status; }
 @test "tm help poll"     { assert_help_matches poll; }
