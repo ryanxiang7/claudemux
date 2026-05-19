@@ -1,0 +1,4 @@
+tm kill <repo>
+
+      Kill the teammate's tmux session and clean up its state files
+      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}).
