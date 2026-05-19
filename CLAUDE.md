@@ -50,3 +50,14 @@ A pre-commit hook at `.githooks/pre-commit` enforces this: staging a feature-cla
 To enable the hook on a fresh clone, run once: `git config core.hooksPath .githooks`.
 
 The hook is a workflow nudge, not a security wall — `git commit --no-verify` bypasses it. Use that escape only when you've judged the change genuinely doesn't warrant a bump.
+
+## Commit Author
+
+All commits in this repository must be authored by `YourWildDad <053700@gmail.com>`. Set the identity once per clone:
+
+```
+git config user.name "YourWildDad"
+git config user.email "053700@gmail.com"
+```
+
+The same `.githooks/pre-commit` enforces this — a commit authored under any other email is rejected with the exact `git config` commands to run. Enabling the hook is the same one-time step as the versioning nudge: `git config core.hooksPath .githooks`. `.githooks/` itself is not a feature-class path, so changes to the hook don't trigger the version-bump rule.
