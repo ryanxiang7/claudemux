@@ -46,6 +46,7 @@ Match the user's intent to one of these scenarios, then read the corresponding r
 | When you're doing this | Read | Primary verb(s) |
 |---|---|---|
 | Pushing work into a repo via tmux teammate (default delegation) | `references/dispatch-task.md` | `tm spawn <repo> --prompt "..."` / `tm send <repo> --prompt "..."` |
+| Composing a spawn / send prompt that references sibling-repo state (feature-gate name, branch, in-progress project, owner) | `references/sibling-memory.md` | `tm mem <repo>` |
 | Waiting for a turn an external actor (Remote Control, mobile, cron, sub-agent) drove | `references/wait-and-readback.md` | `tm wait --fresh <repo>` |
 | Reading `tm states` fleet snapshot — what every teammate is doing right now | `references/inspect-and-resume.md` (`LAST` / `PREVIEW` read the same `.last` file as `tm last`) | `tm states` |
 | A teammate looks hung mid-turn — need pane ground truth (e.g. blocked on a permission prompt the hook missed) | `references/wait-and-readback.md` (`--pane-quiet` blind spot + `tm status` fallback) | `tm status <repo>` |

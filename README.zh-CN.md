@@ -104,6 +104,7 @@ Claude Code 会话里 `tm` 自动在 `PATH` 上。会话外用法见
 | `tm archive <id> [--status '<tag>']` | 把 `active-dispatcher-tasks.md` 里一个收尾的 task 搬到 archive(收尾文字从 stdin 进)。 |
 | `tm ctx <repo>… \| --all [--window 200k\|1m]` | 每个 teammate 的真实上下文用量,从 jsonl 的 `usage` 字段读,比 TUI 那个百分比准。 |
 | `tm history <repo> [<sid-or-prefix>]` | 列 `<repo>` 的历史会话(最新在前);传 sid 前缀则展开一条详情。 |
+| `tm mem <repo>` | cat sibling 仓的 auto-memory `MEMORY.md`(FG 名 / 分支 / 进行中项目)。在塑造 `tm spawn` / `tm send --prompt` **引用 sibling 状态前**先调一下 —— dispatcher 自己的 AutoMemory 不包含 sibling 仓。文件不存在 → stderr 一行提示 + exit 0 + 空 stdout。 |
 | `tm reload <repo>… \| --all` | 给 teammate 派 `/reload-plugins`,插件更新后用。 |
 
 诊断用(上面 verb 都不合适时再用):`tm status <repo>` 抓实时 pane,

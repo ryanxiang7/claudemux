@@ -107,6 +107,7 @@ terminal, see [Outside Claude Code](#using-tm-outside-claude-code).
 | `tm archive <id> [--status '<tag>']` | Move a closed task from `active-dispatcher-tasks.md` to the archive (outcome text on stdin). |
 | `tm ctx <repo>… \| --all [--window 200k\|1m]` | Real context-window usage per teammate, read from the jsonl `usage` block. More accurate than the TUI percentage. |
 | `tm history <repo> [<sid-or-prefix>]` | List past sessions for `<repo>` (newest first), or show details for one when a sid prefix is passed. |
+| `tm mem <repo>` | Cat the sibling repo's auto-memory `MEMORY.md` (feature-gate names, branch names, in-progress projects). Read this before composing a `tm spawn` / `tm send --prompt` that quotes sibling state — the dispatcher's own AutoMemory does not include sibling repos. Missing memory → stderr notice + exit 0 + empty stdout. |
 | `tm reload <repo>… \| --all` | Fan out `/reload-plugins` to teammates after a plugin update. |
 
 Diagnostic-only (use when the verbs above don't fit): `tm status <repo>` to

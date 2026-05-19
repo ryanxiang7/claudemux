@@ -767,6 +767,28 @@ cmd_last() {
     cat "$lf"
 }
 
+# Missing-memory path is exit 0 + stderr one-liner, NOT an error: the
+# dispatcher calls this opportunistically before composing a spawn/send
+# prompt, and a repo that has never run claude (or has had its project
+# dir pruned) is a normal "no sibling memory available" case. Caller
+# treats empty stdout as "proceed without sibling context." The path
+# encoding (every `/` and `.` → `-`) matches Claude Code's cwd→project-dir
+# convention; see memory_dir() for the dispatcher-side counterpart.
+cmd_mem() {
+    local repo="${1:-}"
+    [[ -n "$repo" ]] || die "usage: tm mem <repo>"
+    local path="$DISPATCHER_DIR/$repo"
+    [[ -d "$path" ]] || die_repo_not_found mem "$repo" "$path"
+    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
+    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr './' '-')
+    local mfile="$HOME/.claude/projects/$encoded/memory/MEMORY.md"
+    if [[ ! -f "$mfile" ]]; then
+        echo "tm mem: no auto-memory recorded for $repo (looked at $mfile)" >&2
+        return 0
+    fi
+    cat "$mfile"
+}
+
 cmd_kill() {
     local repo="${1:-}"
     [[ -n "$repo" ]] || die "usage: tm kill <repo>"
@@ -1640,6 +1662,7 @@ USAGE  (most common first)
   tm states                              one-line fleet snapshot
   tm ctx <repo>... | --all               real ctx-window usage from jsonl
   tm history <repo> [<sid-prefix>]       inspect past sessions for this repo
+  tm mem <repo>                          cat sibling repo's auto-memory index
   tm archive <id>                        move finished task active→archive (stdin)
 
 DIAGNOSTIC (escape hatches — prefer the verbs above)
@@ -1829,6 +1852,29 @@ tm last <repo>
 EOF
 }
 
+help_mem() {
+    cat <<'EOF'
+tm mem <repo>
+
+      Cat the sibling repo's auto-memory MEMORY.md to stdout. Use
+      this before composing a `tm spawn` / `tm send --prompt` that
+      references sibling state (feature-gate names, branch names,
+      in-progress projects) — sibling memories live in separate
+      per-cwd index files that the dispatcher's own AutoMemory does
+      not include. Resolves the encoded project dir as
+      $HOME/.claude/projects/<encoded>/memory/MEMORY.md where
+      <encoded> = the repo's physical cwd with every `/` and `.`
+      replaced by `-`. If no MEMORY.md exists for the repo (never
+      ran claude, or its project dir was pruned), prints a one-line
+      notice to stderr and returns 0 with empty stdout — that is
+      the normal "no sibling memory" case, not an error.
+
+      MEMORY.md entries can be stale. Verify any fact you are about
+      to inject into a teammate's prompt against current code or
+      git state before sending.
+EOF
+}
+
 help_kill() {
     cat <<'EOF'
 tm kill <repo>
@@ -1975,6 +2021,7 @@ main() {
         wait)       cmd_wait "$@" ;;
         compact)    cmd_compact "$@" ;;
         last)       cmd_last "$@" ;;
+        mem)        cmd_mem "$@" ;;
         kill)       cmd_kill "$@" ;;
         reload)     cmd_reload "$@" ;;
         states)     cmd_states "$@" ;;
