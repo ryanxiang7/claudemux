@@ -108,14 +108,36 @@ send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 ready_file() { echo "/tmp/teammate-$1.ready"; }
 cwd_file() { echo "/tmp/teammate-$1.cwd"; }
 
-# Resolve the dispatcher's own AutoMemory directory. Claude Code derives
-# it from the cwd of the claude process: every '/' and '.' in the path
-# becomes '-'. The dispatcher's own claude cwd is the dispatcher dir, so
-# encode $DISPATCHER_DIR (TM_DISPATCHER_DIR env or $PWD fallback) — that
-# matches Claude Code's encoding for the dispatcher session.
+# Encode a filesystem path into Claude Code's project-dir address and
+# return the absolute "$HOME/.claude/projects/<encoded>" path.
+#
+# Claude Code derives the project-dir name from the claude process's
+# cwd by replacing every '/' and '.' with '-'. This helper is the ONE
+# source of truth for that encoding — every site that needs to locate
+# a Claude project dir on disk must go through it, otherwise the same
+# repo can end up addressed by two different strings (already happened
+# once: a `tr / -` call site silently dropped '.' from paths containing
+# a dot, e.g. ~/Development/foo.bar/repo).
+encode_project_dir() {
+    local encoded; encoded=$(printf '%s' "$1" | tr './' '-')
+    printf '%s/.claude/projects/%s' "$HOME" "$encoded"
+}
+
+# Resolve a teammate <repo> to its Claude Code project dir, using the
+# physical path (cd + pwd -P) so symlinked dispatcher trees still
+# match what claude wrote on disk. Returns 1 if the repo subdirectory
+# does not exist under the dispatcher dir.
+project_dir_for_repo() {
+    local path="$DISPATCHER_DIR/$1"
+    [[ -d "$path" ]] || return 1
+    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
+    encode_project_dir "$cwd_phys"
+}
+
+# Resolve the dispatcher's own AutoMemory directory — the project dir
+# for the dispatcher's claude cwd ($DISPATCHER_DIR), with /memory appended.
 memory_dir() {
-    local encoded; encoded=$(printf '%s' "$DISPATCHER_DIR" | tr './' '-')
-    printf '%s/.claude/projects/%s/memory' "$HOME" "$encoded"
+    printf '%s/memory' "$(encode_project_dir "$DISPATCHER_DIR")"
 }
 
 # Normalize a task slug for use as part of a claude `--name` value. ASCII
@@ -775,16 +797,14 @@ cmd_last() {
 # prompt, and a repo that has never run claude (or has had its project
 # dir pruned) is a normal "no sibling memory available" case. Caller
 # treats empty stdout as "proceed without sibling context." The path
-# encoding (every `/` and `.` → `-`) matches Claude Code's cwd→project-dir
-# convention; see memory_dir() for the dispatcher-side counterpart.
+# encoding routes through project_dir_for_repo so this site shares the
+# single source of truth with cmd_resume / cmd_history / _ctx_format_line.
 cmd_mem() {
     local repo="${1:-}"
     [[ -n "$repo" ]] || die "usage: tm mem <repo>"
     local path="$DISPATCHER_DIR/$repo"
     [[ -d "$path" ]] || die_repo_not_found mem "$repo" "$path"
-    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
-    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr './' '-')
-    local mfile="$HOME/.claude/projects/$encoded/memory/MEMORY.md"
+    local mfile; mfile="$(project_dir_for_repo "$repo")/memory/MEMORY.md"
     if [[ ! -f "$mfile" ]]; then
         echo "tm mem: no auto-memory recorded for $repo (looked at $mfile)" >&2
         return 0
@@ -893,17 +913,13 @@ cmd_resume() {
 
     local path="$DISPATCHER_DIR/$repo"
     [[ -d "$path" ]] || die_repo_not_found resume "$repo" "$path"
-    # Use the physical path for Claude Code's project-dir encoding — that's
-    # what it uses to derive the encoded directory name from cwd.
-    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
 
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
         die "$repo already running (tmux=$name) — 'tm kill $repo' first if you really want to start over"
     fi
 
-    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr / -)
-    local project_dir="$HOME/.claude/projects/$encoded"
+    local project_dir; project_dir=$(project_dir_for_repo "$repo")
 
     if [[ -z "$sid" ]]; then
         # Auto-pick fallback. Warn so the caller notices the ledger lookup
@@ -1269,8 +1285,7 @@ _ctx_format_line() {
     local cwd_f; cwd_f=$(cwd_file "$repo")
     local tcwd
     if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$DISPATCHER_DIR/$repo"; fi
-    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
-    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
+    local jsonl; jsonl="$(encode_project_dir "$tcwd")/$sid.jsonl"
     [[ -f "$jsonl" ]] || return 1
 
     local line
@@ -1321,8 +1336,7 @@ ctx_one() {
     local cwd_f; cwd_f=$(cwd_file "$repo")
     local tcwd
     if [[ -s "$cwd_f" ]]; then tcwd=$(cat "$cwd_f"); else tcwd="$DISPATCHER_DIR/$repo"; fi
-    local encoded; encoded=$(printf '%s' "$tcwd" | tr './' '-')
-    local jsonl="$HOME/.claude/projects/$encoded/$sid.jsonl"
+    local jsonl; jsonl="$(encode_project_dir "$tcwd")/$sid.jsonl"
     if [[ ! -f "$jsonl" ]]; then
         echo "$repo: ? (no transcript at $jsonl)"
     else
@@ -1344,9 +1358,7 @@ cmd_history() {
 
     local path="$DISPATCHER_DIR/$repo"
     [[ -d "$path" ]] || die_repo_not_found history "$repo" "$path"
-    local cwd_phys; cwd_phys=$(cd "$path" && pwd -P)
-    local encoded; encoded=$(printf '%s' "$cwd_phys" | tr './' '-')
-    local project_dir="$HOME/.claude/projects/$encoded"
+    local project_dir; project_dir=$(project_dir_for_repo "$repo")
 
     if [[ -z "$sid_arg" ]]; then
         history_list "$repo" "$project_dir"
