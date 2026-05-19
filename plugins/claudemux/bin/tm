@@ -202,10 +202,50 @@ fmt_age() {
     fi
 }
 
+# Cross-platform stat helpers. macOS ships BSD stat (`stat -f`), Linux
+# ships GNU stat (`stat -c`); the two flag sets are mutually exclusive,
+# so a script that hardcodes one silently degrades on the other. tm
+# previously hardcoded BSD form and paired every call with `|| echo 0`,
+# which masked the failure: on Linux, every size/mtime quietly became
+# 0, defeating the freshness gate in _wait_pane_quiet (now - 0 = huge,
+# "3s since send" never holds back) and showing 0B/0s for every row in
+# `tm states` / `tm history`.
+#
+# Detect the flavor once and dispatch. Echo '0' on a real stat failure
+# so call-site arithmetic still works; the human-readable form falls
+# back to '?'.
+if stat -f %z /dev/null >/dev/null 2>&1; then
+    _STAT_FLAVOR=bsd
+else
+    _STAT_FLAVOR=gnu
+fi
+
+stat_size() {
+    case "$_STAT_FLAVOR" in
+        bsd) stat -f %z "$1" 2>/dev/null || echo 0 ;;
+        *)   stat -c %s "$1" 2>/dev/null || echo 0 ;;
+    esac
+}
+
+stat_mtime() {
+    case "$_STAT_FLAVOR" in
+        bsd) stat -f %m "$1" 2>/dev/null || echo 0 ;;
+        *)   stat -c %Y "$1" 2>/dev/null || echo 0 ;;
+    esac
+}
+
+stat_mtime_human() {
+    case "$_STAT_FLAVOR" in
+        bsd) stat -f %Sm "$1" 2>/dev/null || echo '?' ;;
+        *)   local ts; ts=$(stat -c %Y "$1" 2>/dev/null) || { echo '?'; return; }
+             date -d "@$ts" 2>/dev/null || echo '?' ;;
+    esac
+}
+
 # Format a file's byte size as a short human string (e.g. "84K", "2.4M").
 fmt_size() {
     local b
-    b=$(stat -f %z "$1" 2>/dev/null || echo 0)
+    b=$(stat_size "$1")
     awk -v b="$b" 'BEGIN {
         if      (b < 1024)        printf "%dB",   b
         else if (b < 1048576)     printf "%dK",   b/1024
@@ -389,7 +429,7 @@ _wait_pane_quiet() {
 
     local send_at=0 sa
     sa=$(send_at_file "$repo")
-    [[ -f "$sa" ]] && send_at=$(stat -f %m "$sa" 2>/dev/null || echo 0)
+    [[ -f "$sa" ]] && send_at=$(stat_mtime "$sa")
 
     local end; end=$(( $(date +%s) + timeout ))
     local quiet_streak=0
@@ -930,7 +970,7 @@ cmd_resume() {
         latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
         [[ -n "$latest" ]] || die "no .jsonl transcripts under $project_dir — try 'tm spawn $repo' to start fresh."
         sid=$(basename "$latest" .jsonl)
-        echo "tm resume: no sid given — auto-picked $sid (jsonl mtime $(stat -f %Sm "$latest")). Prefer passing the sid from your task ledger." >&2
+        echo "tm resume: no sid given — auto-picked $sid (jsonl mtime $(stat_mtime_human "$latest")). Prefer passing the sid from your task ledger." >&2
     else
         # Explicit sid: prove it exists as a jsonl under this repo's project
         # dir. Claude's --resume on an unknown sid produces a confusing
@@ -986,7 +1026,7 @@ cmd_states() {
                 if [[ -s "$lf" ]]; then
                     local sz lmt age
                     sz=$(wc -c < "$lf" | tr -d ' ')
-                    lmt=$(stat -f %m "$lf" 2>/dev/null || echo 0)
+                    lmt=$(stat_mtime "$lf")
                     age=$((now - lmt))
                     last="${sz}B/$(fmt_age "$age")"
                     # Sanitize the preview: strip control chars and tabs so
@@ -1410,7 +1450,7 @@ history_list() {
             fname=$(basename "$f" .jsonl)
             sid_full="$fname"
             sid_short="${sid_full:0:8}"
-            mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+            mtime=$(stat_mtime "$f")
             age=$(fmt_age $((now - mtime)))
             size=$(fmt_size "$f")
             topic=$(history_first_prompt "$f" \
@@ -1448,7 +1488,7 @@ history_detail() {
     local sid_full; sid_full=$(basename "$f" .jsonl)
     local size; size=$(fmt_size "$f")
     local lines; lines=$(wc -l < "$f" | tr -d ' ')
-    local mtime; mtime=$(stat -f %m "$f" 2>/dev/null || echo 0)
+    local mtime; mtime=$(stat_mtime "$f")
     local now; now=$(date +%s)
     local age; age=$(fmt_age $((now - mtime)))
     local last_seen; last_seen=$(date -r "$mtime" '+%Y-%m-%d %H:%M:%S')

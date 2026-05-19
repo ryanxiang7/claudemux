@@ -26,6 +26,22 @@
 
 set -u
 
+# Cross-platform stat helper. macOS ships BSD stat (`stat -f`), Linux
+# ships GNU stat (`stat -c`); the two flag sets are mutually exclusive.
+# Detect once and dispatch so the rest of the hook is platform-agnostic.
+# Returns '0' on failure so the diag-log string composition stays safe.
+if stat -f %z /dev/null >/dev/null 2>&1; then
+    _STAT_FLAVOR=bsd
+else
+    _STAT_FLAVOR=gnu
+fi
+stat_size() {
+    case "$_STAT_FLAVOR" in
+        bsd) stat -f %z "$1" 2>/dev/null || echo 0 ;;
+        *)   stat -c %s "$1" 2>/dev/null || echo 0 ;;
+    esac
+}
+
 # Diagnostic log — appended on every Stop fire, one line per phase. Lives
 # under the idle dir so the existing TTL sweep cleans it up after 7 days.
 # Always-on (cheap); when investigating a misbehaving turn, `cat` this file
@@ -177,7 +193,7 @@ if [[ "$event" == "Stop" && -n "${transcript:-}" && -f "$transcript" ]]; then
          (if .type == "assistant" then ((.message.content // []) | map(.type) | join(",")) else "-" end)
         ] | join("|")
     ' 2>/dev/null | tr '\n' ';')
-    diag_log "phase=tail-summary jsonl_size=$(stat -f %z "$transcript" 2>/dev/null || echo ?) tail5=[${tail_summary%;}]"
+    diag_log "phase=tail-summary jsonl_size=$(stat_size "$transcript") tail5=[${tail_summary%;}]"
 
     # The Stop hook can fire before the turn's final assistant API response
     # has been flushed to the jsonl on disk — so a naive extract can produce
@@ -201,7 +217,7 @@ if [[ "$event" == "Stop" && -n "${transcript:-}" && -f "$transcript" ]]; then
             # half-ish to a third of the on-disk size for CJK text. Read
             # the actual file size with stat for the "what shipped" number,
             # and keep the char count as a secondary signal.
-            file_bytes=$(stat -f %z "$last_file" 2>/dev/null || echo ?)
+            file_bytes=$(stat_size "$last_file")
             diag_log "phase=write file_bytes=$file_bytes text_chars=${#text}"
         else
             diag_log "phase=rm-empty (terminal stop_reason but extract empty — tool-only or thinking-only final entry?)"
