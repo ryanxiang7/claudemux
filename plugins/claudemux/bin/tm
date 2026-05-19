@@ -291,7 +291,9 @@ _send_keys() {
     [[ -n "$pane" ]] || die "could not resolve pane target for $repo"
 
     local sid=""
-    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
+    if sid=$(resolve_sid "$repo"); then
+        clear_idle "$sid" || true
+    fi
     : > "$(send_at_file "$repo")"
 
     local n=${#prompt}
@@ -795,7 +797,9 @@ cmd_kill() {
     [[ -n "$repo" ]] || die "usage: tm kill <repo>"
     local name; name=$(session_name "$repo")
     local sid=""
-    sid=$(resolve_sid "$repo") && clear_idle "$sid" || true
+    if sid=$(resolve_sid "$repo"); then
+        clear_idle "$sid" || true
+    fi
     rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")"
     if tmux has-session -t "=$name" 2>/dev/null; then
         tmux kill-session -t "=$name"
