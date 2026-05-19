@@ -31,6 +31,16 @@ Before editing any Markdown in this repository, identify who reads that surface:
 - Separate trigger text from behavior. If a surface is not actually used for automatic invocation, write it as user-visible documentation instead of trigger prose.
 - Keep fixed command names, flags, paths, output strings, JSON keys, and code fences exact unless the task is to change that contract.
 
+## Cross-Process & Cross-Platform Invariants
+
+These rules cover the shared surfaces between `bin/tm`, the hooks, and the host OS. They exist because each one has already drifted at least once in this codebase and the drift was load-bearing.
+
+- **Path-builder discipline.** Every path under `/tmp/teammate-*` or `/tmp/claude-idle/*`, and every `$HOME/.claude/projects/<encoded>/...` path, must be constructed by a named builder function (`sid_file`, `idle_marker_for`, `last_file_for`, `encode_project_dir`, ...). No raw string concatenation at use sites. Reason: the cross-process file protocol is *the* coupling layer between `bin/tm` and the hooks; spreading its shape across many string literals makes the next schema change a multi-site sweep across files that cannot be refactored atomically. Hooks cannot source `bin/tm`, so they mirror the builders inline — the discipline is "named function", not "shared definition".
+
+- **Cross-platform shell discipline.** Every command whose flags differ between BSD (macOS) and GNU (Linux) — `stat -f` vs `stat -c`, `sed -i ''` vs `sed -i`, `find -printf` (GNU-only), `date -d` (GNU-only), `tail -r` vs `tac`, `readlink -f` (GNU-only) — must go through an OS-detected helper (`stat_size`, `stat_mtime`, `rev_lines`, ...), or the script must declare itself macOS-only at the top. Reason: the CI matrix runs on both OSes, and pairing a BSD-only command with `|| echo 0` silently degrades on Linux without failing — harder to catch than a hard error.
+
+- **One source of truth for the project-dir encoding.** Any code that needs to map a teammate cwd → Claude Code's project-dir name routes through the `encode_project_dir` helper (and its `project_dir_for_repo` wrapper for the common case). Reason: the encoding (`/` and `.` → `-`) is an Anthropic-controlled contract; spreading the mapping across the codebase guarantees one site drifts when the contract is reproduced by hand (already happened — a `tr / -` site silently dropped dots).
+
 ## Slash Command Methodology
 
 - Treat `/claudemux:setup` as a guided human onboarding flow. Claude may run safe checks and the bundled setup script; the human handles package-manager installs, starting `tmux`, launching a fresh `claude`, and creating teammates because those actions may need passwords, new terminals, or startup-time settings.

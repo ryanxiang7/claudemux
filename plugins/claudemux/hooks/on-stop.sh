@@ -224,10 +224,11 @@ if [[ "$event" == "Stop" && -n "${transcript:-}" && -f "$transcript" ]]; then
             rm -f "$last_file"
         fi
     else
-        # CHANGED: previously rm -f'd .last here. Timeout means "we don't
-        # know" not "confirmed empty"; destroying any prior .last that may
-        # still be valid amplifies the break (advisor flagged this). Leave
-        # whatever exists alone.
+        # On timeout, leave .last untouched. A 3s poll miss does not
+        # prove the file is stale — it just means the jsonl has not
+        # reached a terminal stop_reason within our budget; the prior
+        # turn's settled content in .last may still be the correct
+        # thing for `tm wait` / `tm last` to surface.
         diag_log "phase=timeout (jsonl never reached terminal stop_reason within 3s — leaving .last as-is)"
     fi
 fi
