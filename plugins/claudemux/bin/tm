@@ -603,8 +603,12 @@ cmd_spawn() {
     # first turn's .last on stdout. With --no-wait it's fire-and-forget.
     if (( has_prompt )); then
         sleep 3
+        # Bash 3.2 + set -u: "${arr[@]}" on an empty array trips
+        # "unbound variable". The ${arr[@]+...} form makes the splat a
+        # no-op when the array has no elements, which is what we want
+        # whenever --no-wait was not passed.
         local _nw=(); (( no_wait )) && _nw=(--no-wait)
-        cmd_send "${_nw[@]}" "$repo" --prompt "$prompt"
+        cmd_send ${_nw[@]+"${_nw[@]}"} "$repo" --prompt "$prompt"
     fi
 }
 
@@ -908,7 +912,7 @@ cmd_resume() {
         # the first-turn .last on stdout.
         sleep 3
         local _nw=(); (( no_wait )) && _nw=(--no-wait)
-        cmd_send "${_nw[@]}" "$repo" --prompt "$prompt"
+        cmd_send ${_nw[@]+"${_nw[@]}"} "$repo" --prompt "$prompt"
     fi
 }
 
