@@ -324,6 +324,7 @@ _send_keys() {
         # scope where the `local` would otherwise be unbound under `set -u`.
         # printf '%s' avoids the trailing newline that here-strings add, so the
         # paste content is exactly the prompt text byte-for-byte.
+        # shellcheck disable=SC2064  # $buf expansion at trap-set time is intentional (see comment above)
         trap "tmux delete-buffer -b '$buf' 2>/dev/null || true" RETURN
         printf '%s' "$prompt" | tmux load-buffer -b "$buf" -
         tmux paste-buffer -p -r -d -b "$buf" -t "$pane"
@@ -905,6 +906,7 @@ cmd_resume() {
         # was skipped — most resumes should target a specific task's sid.
         [[ -d "$project_dir" ]] || die "no project dir at $project_dir — has anyone ever run claude inside $path? Try 'tm spawn $repo' first."
         local latest
+        # shellcheck disable=SC2012  # need mtime sort (`ls -t`); BSD find on macOS lacks `-printf`, so the GNU find alternative isn't portable
         latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
         [[ -n "$latest" ]] || die "no .jsonl transcripts under $project_dir — try 'tm spawn $repo' to start fresh."
         sid=$(basename "$latest" .jsonl)
@@ -949,7 +951,7 @@ cmd_states() {
     {
         printf 'REPO\tSID\tBUSY\tLAST\tPREVIEW\n'
         while IFS= read -r name; do
-            local repo="${name#$PREFIX}"
+            local repo="${name#"$PREFIX"}"
             local sid sid_short busy last preview
             if sid=$(resolve_sid "$repo"); then
                 sid_short="${sid:0:8}"
@@ -1582,10 +1584,13 @@ cmd_doctor() {
     if [[ -n "${TM_DISPATCHER_DIR:-}" ]]; then
         kv TM_DISPATCHER_DIR "set (= $TM_DISPATCHER_DIR)"
     else
+        # shellcheck disable=SC2016  # literal "$PWD" in user message — naming the shell var, not expanding it
         kv TM_DISPATCHER_DIR 'unset — falling back to $PWD (run /claudemux:setup to inoculate against cwd drift)'
     fi
+    # shellcheck disable=SC2016  # literal "$PWD" as the label of the next row (the value is the real expansion)
     kv '$PWD' "$PWD"
     if [[ "$DISPATCHER_DIR" != "$PWD" ]]; then
+        # shellcheck disable=SC2016  # literal "$PWD" in user message — naming the shell var, not expanding it
         kv status 'DIVERGED — dispatcher dir != $PWD; env override is currently keeping tm correct despite the drifted PWD'
     else
         kv status matched
@@ -1615,6 +1620,7 @@ cmd_doctor() {
     # --- idle dir ---
     echo "idle dir ($IDLE_DIR):"
     if [[ -d "$IDLE_DIR" ]]; then
+        # shellcheck disable=SC2012  # `ls | wc -l` is idiomatic for a flat file count; the alternative (`find ... -maxdepth 1 ... | wc -l`) buys nothing for this trusted, claudemux-managed directory
         kv exists "yes ($(ls -1 "$IDLE_DIR" 2>/dev/null | wc -l | tr -d ' ') file(s))"
     else
         kv exists 'no — gets created on first tm spawn / scripts/setup.sh'
