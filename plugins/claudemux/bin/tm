@@ -108,6 +108,27 @@ send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 ready_file() { echo "/tmp/teammate-$1.ready"; }
 cwd_file() { echo "/tmp/teammate-$1.cwd"; }
 
+# Builders for the per-sid files under $IDLE_DIR. The three files form
+# one protocol with hooks/on-busy.sh and hooks/on-stop.sh:
+#
+#   idle_marker_for(sid)   bare <sid> — touched by on-stop on Stop /
+#                          StopFailure / PostCompact / SessionEnd; the
+#                          file 'tm wait' blocks on.
+#   busy_marker_for(sid)   <sid>.busy — touched by on-busy on Submit/
+#                          PreToolUse/PreCompact; removed by on-stop.
+#                          Its existence IS the BUSY signal.
+#   last_file_for(sid)     <sid>.last — written by on-stop with the
+#                          turn's text; read by tm last / tm states /
+#                          cmd_compact / _print_last_or_empty.
+#
+# Routing every path construction through these builders means the
+# protocol shape lives in one place. Hooks duplicate the same scheme
+# inline (they cannot source bin/tm); the path strings stay aligned
+# by convention enforced via CLAUDE.md's path-builder invariant.
+idle_marker_for() { echo "$IDLE_DIR/$1"; }
+busy_marker_for() { echo "$IDLE_DIR/$1.busy"; }
+last_file_for()   { echo "$IDLE_DIR/$1.last"; }
+
 # Encode a filesystem path into Claude Code's project-dir address and
 # return the absolute "$HOME/.claude/projects/<encoded>" path.
 #
@@ -189,7 +210,7 @@ resolve_sid_or_die() {
 # the NEW turn, not a stale one. Used at spawn, send, and kill; the
 # three paths must move in lockstep.
 clear_idle() {
-    [[ -n "${1:-}" ]] && rm -f "$IDLE_DIR/$1" "$IDLE_DIR/$1.last" "$IDLE_DIR/$1.busy"
+    [[ -n "${1:-}" ]] && rm -f "$(idle_marker_for "$1")" "$(last_file_for "$1")" "$(busy_marker_for "$1")"
 }
 
 # Format an absolute second-count as a short relative age (e.g. "12s", "3m", "2h").
@@ -274,7 +295,7 @@ fmt_size() {
 pane_busy() {
     local repo="$1" sid
     sid=$(resolve_sid "$repo") || return 1
-    [[ -f "$IDLE_DIR/$sid.busy" ]]
+    [[ -f "$(busy_marker_for "$sid")" ]]
 }
 
 # Generate a lowercase UUID. macOS uuidgen emits uppercase; Claude Code
@@ -413,7 +434,7 @@ _wait_idle_signal() {
 
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
-        [[ -e "$IDLE_DIR/$sid" ]] && return 0
+        [[ -e "$(idle_marker_for "$sid")" ]] && return 0
         sleep 3
     done
     return 1
@@ -455,7 +476,7 @@ _wait_pane_quiet() {
 _print_last_or_empty() {
     local repo="$1" sid
     sid=$(resolve_sid "$repo") || { echo "(no sid for $repo)"; return 0; }
-    local lf="$IDLE_DIR/$sid.last"
+    local lf; lf=$(last_file_for "$sid")
     if [[ -s "$lf" ]]; then
         cat "$lf"
     else
@@ -633,7 +654,7 @@ cmd_spawn() {
         # exist, and `set -e` would abort spawn on that. clear_idle uses
         # rm -f which is tolerant; the truncate is not.
         mkdir -p "$IDLE_DIR"
-        : > "$IDLE_DIR/$sid.last"
+        : > "$(last_file_for "$sid")"
     fi
 
     # Poll for spawn readiness. The hook fires once the SessionStart
@@ -818,7 +839,7 @@ cmd_last() {
     local repo="${1:-}"
     [[ -n "$repo" ]] || die "usage: tm last <repo>"
     local sid; sid=$(resolve_sid_or_die "$repo")
-    local lf="$IDLE_DIR/$sid.last"
+    local lf; lf=$(last_file_for "$sid")
     # Two empty states are both treated as "no reply yet":
     #   - file missing: never written, or rm'd by clear_idle between send and Stop
     #   - file zero bytes: fresh-spawn sentinel, or a Stop hook that
@@ -1022,7 +1043,7 @@ cmd_states() {
             last="-"
             preview="-"
             if [[ -n "$sid" ]]; then
-                local lf="$IDLE_DIR/$sid.last"
+                local lf; lf=$(last_file_for "$sid")
                 if [[ -s "$lf" ]]; then
                     local sz lmt age
                     sz=$(wc -c < "$lf" | tr -d ' ')
@@ -1095,7 +1116,7 @@ cmd_compact() {
     local end; end=$(( $(date +%s) + timeout ))
     while [[ $(date +%s) -lt $end ]]; do
         # PostCompact succeeded — on-stop.sh touched the idle marker.
-        if [[ -e "$IDLE_DIR/$sid" ]]; then
+        if [[ -e "$(idle_marker_for "$sid")" ]]; then
             echo "compacted"
             return 0
         fi

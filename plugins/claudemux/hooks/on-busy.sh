@@ -29,5 +29,12 @@ sid=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\
 
 idle_dir="/tmp/claude-idle"
 mkdir -p "$idle_dir" 2>/dev/null || exit 0
-touch "$idle_dir/$sid.busy"
+
+# Path builders for the per-sid protocol files under $idle_dir. Mirror
+# bin/tm's idle_marker_for / busy_marker_for / last_file_for so the
+# scheme has a named accessor at every site — hooks can't source tm,
+# so the discipline is enforced by repeating the builders here.
+busy_marker_for() { echo "$idle_dir/$1.busy"; }
+
+touch "$(busy_marker_for "$sid")"
 exit 0

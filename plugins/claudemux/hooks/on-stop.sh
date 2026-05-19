@@ -66,10 +66,19 @@ IFS=$'\t' read -r sid transcript event < <(
 
 idle_dir="/tmp/claude-idle"
 mkdir -p "$idle_dir" 2>/dev/null || exit 0
+
+# Path builders for the per-sid protocol files under $idle_dir. Mirror
+# bin/tm's idle_marker_for / busy_marker_for / last_file_for so the
+# scheme has a named accessor at every site — hooks can't source tm,
+# so the discipline is enforced by repeating the builders here.
+idle_marker_for() { echo "$idle_dir/$1"; }
+busy_marker_for() { echo "$idle_dir/$1.busy"; }
+last_file_for()   { echo "$idle_dir/$1.last"; }
+
 diag_log "phase=enter event=${event:-?} transcript=${transcript:-<empty>}"
 
 # BUSY marker is cleared on ALL four events. Cheap, no branching needed.
-rm -f "$idle_dir/$sid.busy" 2>/dev/null
+rm -f "$(busy_marker_for "$sid")" 2>/dev/null
 
 # Occasionally sweep stale idle/last files older than 7 days. The hook is the
 # only writer to $idle_dir, but `tm kill` only cleans entries for sessions it
@@ -81,7 +90,7 @@ if (( RANDOM % 16 == 0 )); then
     disown 2>/dev/null || true
 fi
 
-last_file="$idle_dir/$sid.last"
+last_file=$(last_file_for "$sid")
 
 # Reverse input by line. GNU `tac` if available (Linux), else BSD `tail -r`
 # (macOS). Both seek from end on a regular file (true backward streaming),
@@ -239,6 +248,6 @@ fi
 # 'tm compact' / 'tm spawn --prompt') wakes up on StopFailure /
 # PostCompact / SessionEnd too — without those, /compact and API-error
 # turns would hang the wait forever.
-touch "$idle_dir/$sid"
+touch "$(idle_marker_for "$sid")"
 diag_log "phase=touch-idle event=${event:-?}"
 exit 0
