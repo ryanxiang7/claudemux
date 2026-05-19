@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux + bats + shellcheck (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux bats shellcheck
+
+      - name: Install bats + shellcheck (macos)
+        if: runner.os == 'macOS'
+        run: brew install bats-core shellcheck
+
+      - name: Versions
+        run: |
+          tmux -V
+          bats --version
+          shellcheck --version | head -2
+          bash --version | head -1
+
+      - name: shellcheck
+        run: |
+          shellcheck \
+            plugins/claudemux/bin/tm \
+            plugins/claudemux/hooks/*.sh \
+            plugins/claudemux/scripts/*.sh \
+            bin/bump-version
+
+      - name: bats — pure functions
+        if: hashFiles('tests/pure/*.bats') != ''
+        run: bats tests/pure/
+
+      - name: bats — help snapshots
+        if: hashFiles('tests/help/*.bats') != ''
+        run: bats tests/help/
