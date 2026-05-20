@@ -63,11 +63,8 @@ The hook is a workflow nudge, not a security wall — `git commit --no-verify` b
 
 ## Commit Author
 
-All commits in this repository must be authored by `YourWildDad <053700@gmail.com>`. Set the identity once per clone:
+Commit author email must be a real, well-formed address — not a machine-default identity (git's `whoami@hostname` guess, e.g. `dyzhu@MacBook.local`, which git fabricates when `user.email` is unset). Any valid public email passes; there is no per-person whitelist.
 
-```
-git config user.name "YourWildDad"
-git config user.email "053700@gmail.com"
-```
+The `.githooks/pre-commit` enforces this — it rejects an unparseable email or an mDNS/LAN suffix (`.local`, `.localdomain`, `.lan`, `.home`, `.internal`) and prints the `git config user.email` command to run. Enabling the hook is the same one-time step as the versioning nudge: `git config core.hooksPath .githooks`. `.githooks/` itself is not a feature-class path, so changes to the hook don't trigger the version-bump rule.
 
-The same `.githooks/pre-commit` enforces this — a commit authored under any other email is rejected with the exact `git config` commands to run. Enabling the hook is the same one-time step as the versioning nudge: `git config core.hooksPath .githooks`. `.githooks/` itself is not a feature-class path, so changes to the hook don't trigger the version-bump rule.
+To stop machine-default identities at the root, set once per machine: `git config --global user.useConfigOnly true` — git then refuses to commit until `user.email` is explicitly configured, instead of silently guessing.

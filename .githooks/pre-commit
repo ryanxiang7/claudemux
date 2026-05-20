@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # pre-commit — two checks, in order:
-#   1) Commit author identity must equal YourWildDad <053700@gmail.com>.
-#      Catches the easy mistake of committing under a machine-default
-#      identity (e.g. dyzhu@dyzhudeMacBook-Pro.local) before the rest
-#      of the world sees the commit. The CI workflow added in PR#1
-#      can mirror this check as a fast-fail step.
+#   1) Commit author email must be a real, well-formed address — not a
+#      machine-default identity (git's whoami@hostname guess, e.g.
+#      dyzhu@MacBook.local). Format gate + mDNS/LAN-suffix blacklist;
+#      no per-person whitelist.
 #   2) Touching a feature-class path (bin/, hooks/, scripts/, templates/,
 #      skills/*/SKILL.md) requires a matching version bump in the
 #      plugin manifest.
@@ -17,18 +16,28 @@
 
 set -euo pipefail
 
-# --- 1) Author identity check ---------------------------------------------
-expected_email="053700@gmail.com"
-expected_name="YourWildDad"
+# --- 1) Author email sanity check -----------------------------------------
+# Reject machine-default identities (git's whoami@hostname guess) so they
+# never reach a commit. Any real, well-formed email passes — no whitelist.
 author_email=$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')
-if [ "$author_email" != "$expected_email" ]; then
-  echo "pre-commit: commit author email must be $expected_email, got: $author_email" >&2
-  echo "Fix once for this repo:" >&2
-  echo "  git config user.email $expected_email" >&2
-  echo "  git config user.name '$expected_name'" >&2
+
+# Format gate: gitlint's pragmatic default — name@domain.tld, no spaces.
+# A bare hostname (user@MacBook) has no dot and fails here.
+if ! grep -Eq '^[^@ ]+@[^@ ]+\.[^@ ]+$' <<< "$author_email"; then
+  echo "pre-commit: commit author email is not a valid address: '$author_email'" >&2
+  echo "  git config user.email you@example.com" >&2
   echo "Bypass with --no-verify if this is intentional." >&2
   exit 1
 fi
+
+# Blacklist mDNS / LAN suffixes — git lands here when user.email is unset.
+case "$author_email" in
+  *@*.local|*@*.localdomain|*@*.lan|*@*.home|*@*.internal)
+    echo "pre-commit: '$author_email' looks like a machine-default identity." >&2
+    echo "  git config user.email you@example.com" >&2
+    echo "Bypass with --no-verify if this is intentional." >&2
+    exit 1 ;;
+esac
 
 # --- 2) Version-bump check ------------------------------------------------
 manifest="plugins/claudemux/.claude-plugin/plugin.json"
