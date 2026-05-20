@@ -176,11 +176,14 @@ is_assistant_settled() {
 
 # Poll the jsonl until the latest assistant entry is "settled" (terminal
 # stop_reason AND has text/tool_use content). Returns 0 on hit, 1 on
-# timeout. Budget 15 × 0.2s = 3s, well within the default 60s hook
-# timeout. Fast path adds zero latency when the entry is already settled.
+# timeout. Budget 75 × 0.2s = 15s, well within the default 60s hook
+# timeout. The loop early-exits the instant the entry settles, so the
+# budget is a ceiling for the slow-flush case, not a fixed cost: a fast
+# turn returns in one iteration. 15s covers a long reply with deep
+# thinking flushing to the transcript; past that, suspect a real stall.
 wait_for_jsonl_terminal() {
     local jsonl="$1" summary i
-    for ((i = 0; i < 15; i++)); do
+    for ((i = 0; i < 75; i++)); do
         summary=$(latest_assistant_summary "$jsonl")
         if is_assistant_settled "$summary"; then
             return 0
@@ -233,12 +236,12 @@ if [[ "$event" == "Stop" && -n "${transcript:-}" && -f "$transcript" ]]; then
             rm -f "$last_file"
         fi
     else
-        # On timeout, leave .last untouched. A 3s poll miss does not
+        # On timeout, leave .last untouched. A 15s poll miss does not
         # prove the file is stale — it just means the jsonl has not
         # reached a terminal stop_reason within our budget; the prior
         # turn's settled content in .last may still be the correct
         # thing for `tm wait` / `tm last` to surface.
-        diag_log "phase=timeout (jsonl never reached terminal stop_reason within 3s — leaving .last as-is)"
+        diag_log "phase=timeout (jsonl never reached terminal stop_reason within 15s — leaving .last as-is)"
     fi
 fi
 
