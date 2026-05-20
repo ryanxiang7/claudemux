@@ -61,7 +61,7 @@ For any verb's flag/output contract: `tm <verb> --help`. Don't reason about `tm`
 
 ## Long-running waits — run them in the background
 
-**Every verb that may block longer than a couple of seconds MUST run with `run_in_background: true` on the Bash tool.** This covers `tm send` (sync default, blocks until Stop), `tm wait`, `tm spawn --prompt`, `tm resume --prompt`, `tm compact` (default 600 s cap because large contexts take minutes), `tm poll`, and any file-polling loop you write yourself. The harness fires a task-notification when the verb returns with the reply already in stdout.
+**Every verb that may block longer than a couple of seconds MUST run with `run_in_background: true` on the Bash tool.** This covers `tm send` (sync default, blocks until Stop), `tm wait`, `tm spawn --prompt`, `tm resume --prompt`, `tm compact` (default 600 s cap because large contexts take minutes), `tm poll`, and any file-polling loop you write yourself. The harness fires a task-notification when the verb returns with the reply already in stdout. Once a call is backgrounded, wait for that notification — don't chain `sleep N && cat <output-file>` to peek at the background task's output file. The notification already delivers the full stdout when the verb returns; polling the file early only shows a half-written or still-empty reply and burns dispatcher turns for nothing.
 
 A foreground wait blocks the dispatcher end-to-end: it cannot receive or dispatch any other task while it sits there. There is no upside.
 
