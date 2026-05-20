@@ -51,3 +51,9 @@ Known blind spot: a permission prompt blocks claude with no spinner. `--pane-qui
 
 - **Don't read `/tmp/claude-idle/<sid>` directly to check "done"** — `tm send` removes the marker before sending, so an old completed turn isn't visible there. That's by design. Use `tm wait --fresh` (which polls the same file and is what `tm send` itself uses internally), or `tm last <repo>` to re-read the printed text.
 - **Don't build a custom polling loop with `grep` on prompt-echo words** — match expected RESULT keywords (`Scheduled`, `Cancelled`, error codes you anticipate), never words from the prompt you just sent. The prompt appears in the user turn, so a prompt-word grep returns instantly and the wait is meaningless. This is also why `tm wait`'s hook-driven approach is preferred over `tm poll`.
+
+## A reply may cite instructions you never saw
+
+The user can drive a teammate directly — Remote Control web UI, the mobile app — on a channel the dispatcher has no window into. A reply that references an instruction, decision, or constraint you never dispatched is therefore the expected case, not an anomaly: the user most likely gave it to the teammate on that direct channel.
+
+Treat such references as genuine user input. Don't assume the teammate invented them, and don't "correct" the teammate back to what you remember dispatching. If a cited instruction genuinely conflicts with something you need to act on and can't be reconciled, ask the user — never overwrite the teammate's account of what the user told it.
