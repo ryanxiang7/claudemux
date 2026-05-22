@@ -1,25 +1,33 @@
 # Component: the orchestration core (the `next` line)
 
-The orchestration core is the resident process that replaces [`bin/tm`](/plugins/claudemux/bin/tm)
-on the **`next`** branch — the `1.0.0-beta.0` line developed in parallel with
-`main`'s 0.x. It lives at [`/plugins/claudemux/core/`](/plugins/claudemux/core),
-a Bun/TypeScript project alongside the Bash plugin.
+The `core/` directory holds the TypeScript codebase of claudemux's **`next`**
+line — the `1.0.0-beta.0` line developed in parallel with `main`'s 0.x. It
+lives at [`/plugins/claudemux/core/`](/plugins/claudemux/core), alongside the
+Bash plugin.
 
-The architecture, the rationale, and the strangler-migration plan are the
-domain spec, [domains/mcp-native-orchestrator.md](/.agents/domains/mcp-native-orchestrator.md),
-and decision [0018](/.agents/decisions/0018-mcp-native-orchestration-core.md).
-This document is the **component** view: what the core's modules are and what
-contracts they hold.
+[Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) pivoted the
+`next` line away from the resident MCP-native core that
+[decision 0018](/.agents/decisions/0018-mcp-native-orchestration-core.md) had
+planned: 1.0 is a pure Node CLI, not a resident MCP server. The target
+architecture and the migration roadmap are the domain spec,
+[domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md).
+This document is the **component** view of the code *as it stands today* — the
+modules below are the MCP-native core 0018 built; roadmap stage 2 removes the
+MCP modules and stands up the CLI front end.
 
-> **Status — Phase B of the strangler migration.** The core stands up as a
-> resident MCP server, holds the teammate registry and a resident idle
-> subscription, and serves the `tm` verb set. Phase A shelled every verb out
-> to the unmodified `tm`; Phase B migrates verbs into native core code one at
-> a time, read-only verbs first — the read-only set (`ls`, `last`, `ctx`,
-> `states`, `mem`, `history`), the diagnostic verbs (`status`, `poll`), the
-> mutating verbs (`kill`, `archive`), and `reload` run natively; the racy
-> hot path (`spawn`, `send`, `wait`, `compact`, `resume`) still shells out.
-> `tm` is unchanged and remains fully usable on its own.
+> **Status — pivoting from the MCP-native core to a Node CLI
+> ([decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md)).** The
+> code as it stands is 0018's resident MCP server: it holds the teammate
+> registry and a resident idle subscription, serves the `tm` verb set, and has
+> 11 of the 17 verbs reimplemented as native TypeScript (0018's Phase B — the
+> read-only set, the diagnostics, the simple mutating verbs, and `reload`); the
+> remaining six — the racy hot path (`spawn`, `send`, `wait`, `compact`,
+> `resume`) and `doctor` — still shell out to `tm`. The decision-0019 pivot
+> keeps that native-verb code and removes the MCP shell around it. The module
+> sections below describe the current code — they still use 0018's Phase A–D
+> labels for it; [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) §8
+> is the roadmap (stages 1–4) that reshapes it. The Bash `tm` is unchanged and
+> fully usable.
 
 ## Module layout
 
@@ -193,7 +201,8 @@ as the two `TmResult`s).
 
 ## See also
 
-- [domains/mcp-native-orchestrator.md](/.agents/domains/mcp-native-orchestrator.md) — the architecture and the Phase A–D strangler migration.
-- [decisions/0018-mcp-native-orchestration-core.md](/.agents/decisions/0018-mcp-native-orchestration-core.md) — why the core replaces `tm`.
+- [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) — the target CLI architecture and the migration roadmap.
+- [decisions/0019-node-cli-orchestrator.md](/.agents/decisions/0019-node-cli-orchestrator.md) — the pivot to a pure Node CLI; supersedes 0018.
+- [decisions/0018-mcp-native-orchestration-core.md](/.agents/decisions/0018-mcp-native-orchestration-core.md) — the superseded MCP-native design the current modules implement.
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the `/tmp` marker protocol the subscription reads.
 - [components/tm.md](/.agents/components/tm.md) — the `tm` CLI the core fronts and will progressively hollow.

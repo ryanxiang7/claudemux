@@ -1,6 +1,6 @@
 # 0018 — The `next` line replaces `tm` with an MCP-native orchestration core hosting multiple agent families
 
-- **Status:** Accepted
+- **Status:** Superseded by [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md)
 - **Date:** 2026-05-22
 - **Affects:** the whole claudemux orchestrator — [`bin/tm`](/plugins/claudemux/bin/tm) (retired), the [`hooks/`](/plugins/claudemux/hooks/hooks.json) bundle (kept, behind a driver), a new resident orchestration core. Lands on the **`next`** branch, version line **`1.0.0-beta.0`** (parallel to `main`'s 0.x).
 
@@ -21,9 +21,11 @@ natively; forcing Codex through tmux-and-scrape would discard its protocol.
 A three-round design debate between two analyst teammates (a claudemux-side
 and a Codex-side), each round reviewed by an independent architecture-review
 agent, plus a final review of the spec, converged on the architecture below.
-This record states *that* it was chosen and the load-bearing rulings; the full
-design contract is
-[domains/mcp-native-orchestrator.md](/.agents/domains/mcp-native-orchestrator.md).
+This record states *that* it was chosen and the load-bearing rulings. The full
+MCP-native design contract was a domain spec retired with this decision — see
+[decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) and
+[domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md)
+for the architecture that replaced it.
 
 The headline use case that the architecture is tuned for: **Codex as a
 cross-model reviewer / advisor** — a different model family's judgement during
@@ -110,7 +112,7 @@ with **per-agent teammate drivers**. The load-bearing rulings:
 
 ## References
 
-- [domains/mcp-native-orchestrator.md](/.agents/domains/mcp-native-orchestrator.md) — the full design contract: architecture, the two drivers, the asymmetric adapter, completion mechanism (a) with the (b)/(c) analysis, the two call contracts, failure semantics, metrics, the Phase A–D strangler migration, and the open verification items.
+- [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) — the pivot that supersedes this decision: the MCP-native design recorded here was retired in favor of a pure Node CLI, specified in [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md).
 - [components/tm.md](/.agents/components/tm.md), [components/hooks.md](/.agents/components/hooks.md) — the components this supersedes / re-homes.
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the `/tmp` marker protocol that becomes a versioned cross-language contract.
 - [decision 0001](/.agents/decisions/0001-hook-driven-busy-idle-signal.md), [0002](/.agents/decisions/0002-atomic-tm-verbs.md), [0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md), [0007](/.agents/decisions/0007-teammates-launch-without-askuserquestion.md) — the Claude-side design this builds on and carries forward.
