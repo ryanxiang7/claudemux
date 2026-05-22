@@ -15,9 +15,11 @@ contracts they hold.
 > resident MCP server, holds the teammate registry and a resident idle
 > subscription, and serves the `tm` verb set. Phase A shelled every verb out
 > to the unmodified `tm`; Phase B migrates verbs into native core code one at
-> a time, read-only verbs first — `ls`, `last`, `ctx`, and `states` run
-> natively, the rest still shell out. `tm` is unchanged and remains fully
-> usable on its own.
+> a time, read-only verbs first — the read-only set (`ls`, `last`, `ctx`,
+> `states`, `mem`, `history`), the diagnostic verbs (`status`, `poll`), the
+> mutating verbs (`kill`, `archive`), and `reload` run natively; the racy
+> hot path (`spawn`, `send`, `wait`, `compact`, `resume`) still shells out.
+> `tm` is unchanged and remains fully usable on its own.
 
 ## Module layout
 
@@ -27,9 +29,10 @@ single-purpose; the testable logic is separated from the process wiring.
 | Module | Role |
 |---|---|
 | `paths.ts` | Path builders for every `/tmp` protocol file and the core's own state — the path-builder discipline ([decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)) applied to the TypeScript side. |
-| `tm.ts` | The `tm` shell-out layer — `runTm` spawns `tm` and captures its exit code, stdout, and stderr. Fronts every verb not yet migrated to native code. |
-| `tmux.ts` | The `tmux` shell-out layer — `runTmux` spawns `tmux` for natively-migrated verbs that still query it (`ls`, `states`, `ctx --all`). |
-| `column.ts` | The `column` shell-out layer — `runColumn` pipes tab-separated rows through `column -t` for table-rendering verbs (`states`). |
+| `tm.ts` | The `tm` shell-out layer — `runTm` spawns `tm` and captures its exit code, stdout, and stderr. Fronts every verb not yet migrated to native code, and is also the backend the native `reload` fans out over. |
+| `tmux.ts` | The `tmux` shell-out layer — `runTmux` spawns `tmux` for natively-migrated verbs that still query it (`ls`, `states`, `ctx --all`, `status`, `poll`). |
+| `column.ts` | The `column` shell-out layer — `runColumn` pipes tab-separated rows through `column -t` for table-rendering verbs (`states`, `history`). |
+| `grep.ts` | The `grep` shell-out layer — `runGrep` matches input against a regex with `grep -qE` for the `poll` verb. |
 | `verbs.ts` | The catalog of `tm` verbs the core re-exposes as MCP tools. |
 | `native.ts` | Native verb implementations — Phase B reimplements verbs here, one at a time, replacing their `tm` shell-out. |
 | `registry.ts` | The teammate registry — see below. |
@@ -126,21 +129,33 @@ at a time — read-only verbs first, the racy hot path (`spawn`, `send`, `wait`)
 last. A migrated verb is a `NativeVerb` in
 [`native.ts`](/plugins/claudemux/core/src/native.ts); `core.ts` consults
 `NATIVE_VERBS` per call and falls back to the `tm` shell-out for verbs not yet
-migrated. `ls`, `last`, `ctx`, and `states` are native; some native verbs
-still need a backend — `ls`, `states`, and `ctx --all` run `tmux` through
-[`tmux.ts`](/plugins/claudemux/core/src/tmux.ts), and `ctx` reads Claude Code
-transcript files under the dispatcher dir and `~/.claude/projects` (both
-resolved once at boot and injected, so a test can sandbox them).
+migrated. The read-only set — `ls`, `last`, `ctx`, `states`, `mem`, `history`
+— the diagnostic verbs `status` and `poll`, the mutating verbs `kill` and
+`archive`, and `reload` are native; several still need a backend — `ls`,
+`states`, `ctx --all`, `status`, `poll`, `kill`, and `reload` run `tmux`
+through [`tmux.ts`](/plugins/claudemux/core/src/tmux.ts), and `ctx`, `mem`,
+`history`, and `archive` resolve a teammate's transcripts, auto-memory, or
+task ledgers under the dispatcher dir and `~/.claude/projects` (both resolved
+once at boot and injected, so a test can sandbox them).
+
+`reload` is the one native verb that itself shells out to `tm`: it is sugar
+over `tm send --no-wait`, and `send` is in the unmigrated hot path, so
+`reload` parses and fans out natively but delegates each teammate's send to a
+`tm send` subprocess (`runTm`, injected like the other backends).
 
 A native verb keeps the *logic* in the core but may still shell out to a
-presentation or session backend. `states` builds its rows natively, then pipes
-them through the real `column -t` ([`column.ts`](/plugins/claudemux/core/src/column.ts))
-rather than reimplementing it: `column` aligns by display width — a CJK
-teammate name occupies two columns, not two code units — and that exact
-output *is* the behavior the migration must preserve, so a hand-written
-aligner could not stay faithful across platforms. `column` is a presentation
-backend here, the way `tmux` is the session backend; `history`'s table will
-shell out to it on the same reasoning.
+presentation, session, or matching backend. `states` and `history` build
+their rows natively, then pipe them through the real `column -t`
+([`column.ts`](/plugins/claudemux/core/src/column.ts)) rather than
+reimplementing it: how `column` measures a field's width — bytes, characters,
+or display columns — is implementation- and locale-dependent and differs
+between the BSD and GNU builds, yet `column`'s exact output *is* the behavior
+the migration must preserve, so a hand-written aligner counting code units
+could not stay faithful across platforms. `poll` is the same call: it keeps
+the poll loop native but delegates the regex match to the real `grep -qE`
+([`grep.ts`](/plugins/claudemux/core/src/grep.ts)), because `grep`'s POSIX
+extended-regex dialect is not a JavaScript `RegExp`. `column` and `grep` are
+backends here, the way `tmux` is the session backend.
 
 A `NativeVerb` returns the same `{code, stdout, stderr}` `TmResult` a shell-out
 returns — not a shaped MCP result. That keeps `verbResult` the single
@@ -160,6 +175,21 @@ file. tmux is faked — a script both sides reach (`tm` through `PATH`, the core
 through `CLAUDEMUX_TMUX`) — so the harness needs no real tmux; the `/tmp`
 marker files are written under their real paths with
 collision-proof unique names.
+
+Most scenarios are OS-agnostic, but not all: `tm history`'s detail view
+formats a timestamp with BSD `date -r`, which is not portable to GNU, so those
+scenarios are macOS-gated. The `claudemux-core` CI job therefore runs on both
+Linux and macOS — the conformance harness shells out to `tm`, whose
+cross-platform behavior is itself what it pins.
+
+A *mutating* verb cannot be checked by running the oracle and the native
+handler against the same fixture: the oracle changes the world the native run
+would then see. Such a scenario instead supplies a `snapshot` closure
+capturing its "world" — for `kill`, its `/tmp` files, idle markers, and the
+session list; for `archive`, the dispatcher's memory directory. The harness
+snapshots the world, runs the oracle, snapshots the effect, resets the world
+to the snapshot, runs native, and asserts the two post-states match (as well
+as the two `TmResult`s).
 
 ## See also
 
