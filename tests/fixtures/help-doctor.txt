@@ -5,8 +5,10 @@ tm doctor
         - dispatcher dir: TM_DISPATCHER_DIR (or $PWD fallback),
           whether the env was actually set, and whether the
           resolved path matches your current $PWD
-        - tmux: installed? version? server running? are we inside
-          a tmux session?
+        - tmux: installed? version? server running? which tmux
+          server tm was launched from, and whether deployment
+          topology 3b (dispatcher isolated in its own tmux server)
+          is set up
         - idle dir: does /tmp/claude-idle/ exist?
         - active teammates: count + names from `tm ls`
       Read-only — doesn't change any state. Use it when something

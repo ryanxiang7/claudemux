@@ -21,7 +21,7 @@ The script is one file, organized top to bottom:
 |---|---|
 | Header | `set -euo pipefail`, `PREFIX="teammate-"`, `IDLE_DIR`, dispatcher-dir resolution |
 | OS-detection helpers | `stat_size`, `stat_mtime`, `stat_mtime_human` — BSD/GNU split, detected once into `_STAT_FLAVOR` |
-| Path builders | `sid_file`, `cwd_file`, `ready_file`, `send_at_file`, `idle_marker_for`, `busy_marker_for`, `last_file_for`, `encode_project_dir`, `project_dir_for_repo`, `memory_dir` |
+| Path builders | `sid_file`, `cwd_file`, `ready_file`, `send_at_file`, `idle_marker_for`, `busy_marker_for`, `last_file_for`, `encode_project_dir`, `project_dir_for_repo`, `memory_dir`; heartbeat: `proc_file`, `health_file`, `resumed_at_file`, `resume_log_file`, `launch_marker_file`, `resume_lock_dir` |
 | Internal helpers | `die`, `session_name`, `resolve_pane_target`, `resolve_sid`, `sanitize_task_slug`, `pane_busy`, `iter_repos`, `clear_idle`, `fmt_age`, `fmt_size`, … |
 | Shared atomic helpers | `_send_keys`, `_wait_idle_signal`, `_wait_pane_quiet`, `_print_last_or_empty`, `_echo_ctx_to_stderr` |
 | `cmd_*` functions | one per verb, each paired with a `help_*` function |
@@ -38,6 +38,20 @@ The script is one file, organized top to bottom:
   `mem`, `doctor`, `kill`, `reload`, `archive`. Sub-second; safe foreground.
 - **Diagnostic verbs** — `status` (capture the live pane), `poll` (regex-poll
   intermediate pane state). Used when the atomic verbs do not fit.
+
+## Heartbeat / liveness
+
+The dispatcher-side liveness and auto-resume capability adds **no new verb**.
+It folds into two existing verbs: `tm states` classifies every teammate
+(`STATUS` column, `--json`, a persisted `.health` verdict) and `tm resume`
+gains dead-shell `tm kill`-first sequencing plus an opt-in `--auto` flag that
+engages a deterministic file-based circuit breaker. `tm` also `unset`s `TMUX`
+at startup to pin teammate sessions to the default tmux server (deployment
+topology 3b). The model, the breaker, and the code-landing points are in
+[the heartbeat design doc](/.agents/designs/tm-heartbeat-passive-liveness.md)
+and [decision 0009](/.agents/decisions/0009-tm-heartbeat-passive-liveness.md);
+the new `/tmp/teammate-<repo>.*` files are in
+[the cross-process protocol](/.agents/domains/cross-process-protocol.md).
 
 ## Editing rules — the invariants you must hold
 
@@ -74,6 +88,11 @@ record — see [decision 0004](/.agents/decisions/0004-cross-process-cross-platf
 - The `main` help pre-scan stops at the first non-flag positional or at
   `--prompt`, so a `--help` substring *inside* a prompt does not trigger
   help mode.
+- `tm` `unset`s `TMUX` at startup, so every bare `tmux` call targets the
+  *default* tmux server regardless of which server `tm` was launched from.
+  This pins teammate sessions to one server even when the dispatcher runs
+  in its own `tmux -L dispatcher` server. `TM_OUTER_TMUX` keeps the
+  pre-`unset` value for `tm doctor` to report.
 
 ## See also
 

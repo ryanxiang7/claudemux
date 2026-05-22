@@ -160,8 +160,11 @@ cat <<EOF
 [setup] done.
 
 Verify by starting a dispatcher session:
-  1. From a regular shell, open a tmux session whose cwd is the dispatcher dir:
-       tmux new-session -s dispatcher -c "$DISPATCHER_DIR"
+  1. From a regular shell, start the dispatcher in its OWN tmux server.
+     The -L flag isolates it from the teammate server, so a teammate-server
+     crash can no longer take the dispatcher (and its fleet-health cron)
+     down with it:
+       tmux -L dispatcher new-session -s dispatcher -c "$DISPATCHER_DIR"
   2. Inside that pane, launch Claude Code:
        claude
   3. Once Claude is at the prompt, spawn a teammate against a sibling repo:
@@ -179,6 +182,9 @@ Notes:
     \`tm doctor\` from inside the dispatcher claude session.
   * The Stop hook touches /tmp/claude-idle/<sid> for every Claude Code
     session, including the dispatcher itself. Nothing waits on that signal.
+  * Starting the dispatcher under \`tmux -L dispatcher\` keeps it in its own
+    tmux server, separate from the teammate sessions \`tm\` pins to the
+    default server — \`tm doctor\` reports whether this isolation is in place.
   * AutoMemory and the live task ledger live under
     ~/.claude/projects/<cwd-sanitized>/memory/ — not managed by this script.
 EOF

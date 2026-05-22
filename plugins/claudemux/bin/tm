@@ -52,6 +52,31 @@ set -euo pipefail
 PREFIX="teammate-"
 IDLE_DIR="/tmp/claude-idle"
 
+# Topology 3b — pin teammate sessions to the default tmux server.
+# Bare `tmux` follows $TMUX. When the dispatcher itself runs inside a
+# dedicated server (`tmux -L dispatcher`, wired up by /claudemux:setup),
+# an un-pinned `tmux new-session` here would create teammates in that
+# same server and defeat the isolation that keeps the dispatcher alive
+# when the teammate server crashes. Unsetting TMUX makes every bare
+# tmux call in this script fall back to the default socket, so teammate
+# sessions always share one server, separate from the dispatcher's.
+# TM_OUTER_TMUX preserves the original value so `tm doctor` can still
+# report which server tm was launched from. A no-op when tm runs
+# outside tmux, and a no-op for the legacy single-server setup (there
+# $TMUX already points at the default socket).
+TM_OUTER_TMUX="${TMUX:-}"
+unset TMUX
+
+# Heartbeat / liveness tunables — integer seconds unless noted,
+# env-overridable. The model behind them is in the tm-heartbeat design
+# doc (.agents/designs/tm-heartbeat-passive-liveness.md).
+TM_BOOT_GRACE="${TM_BOOT_GRACE:-60}"                       # a teammate launched this recently is `starting`, never judged dead
+TM_WEDGE_SECS="${TM_WEDGE_SECS:-1200}"                     # a .busy marker older than this → `maybe-wedged` (suspected L3)
+TM_HEALTH_TTL="${TM_HEALTH_TTL:-3600}"                     # a `tm states` dead verdict older than this is too stale to act on
+TM_RESUME_COOLDOWN="${TM_RESUME_COOLDOWN:-300}"            # min gap between auto-resumes of one repo
+TM_RESUME_BUDGET="${TM_RESUME_BUDGET:-3}"                  # max auto-resumes per repo per window (a count, not seconds)
+TM_RESUME_BUDGET_WINDOW="${TM_RESUME_BUDGET_WINDOW:-3600}" # the rolling window the budget is counted over
+
 # Resolved-once dispatcher directory: env override first, $PWD fallback
 # for backward compat. Every "the parent of sibling repos" reference in
 # this script should consult $DISPATCHER_DIR, not $PWD directly — that's
@@ -107,6 +132,35 @@ sid_file() { echo "/tmp/teammate-$1.sid"; }
 send_at_file() { echo "/tmp/teammate-$1.send-at"; }
 ready_file() { echo "/tmp/teammate-$1.ready"; }
 cwd_file() { echo "/tmp/teammate-$1.cwd"; }
+
+# Repo-keyed builders for the heartbeat / auto-resume protocol files.
+# All tm-owned (the hooks never touch them), so they stay in the
+# repo-keyed namespace alongside the builders above.
+#
+#   proc_file(repo)          .proc — pane_current_command captured at
+#                            spawn once the REPL is up; the L2 probe
+#                            self-calibrates against it.
+#   health_file(repo)        .health — one line "<verdict> <epoch>",
+#                            (re)written by `tm states` every run; read
+#                            by `tm resume --auto`'s N-strike gate.
+#   resumed_at_file(repo)    .resumed-at — empty; mtime is the time of
+#                            the last resume (manual or --auto). The
+#                            per-repo cooldown reads it.
+#   resume_log_file(repo)    .resume-log — one epoch per line, appended
+#                            by `tm resume --auto`. The hourly budget
+#                            counts it.
+#   launch_marker_file(repo) .last-launch — empty; mtime is the time of
+#                            the last spawn/resume launch. The boot-race
+#                            grace (`starting` verdict) reads it.
+#   resume_lock_dir(repo)    .resume.lock — a directory; `mkdir` is the
+#                            atomic per-repo resume mutex (both manual
+#                            and --auto take it).
+proc_file()          { echo "/tmp/teammate-$1.proc"; }
+health_file()        { echo "/tmp/teammate-$1.health"; }
+resumed_at_file()    { echo "/tmp/teammate-$1.resumed-at"; }
+resume_log_file()    { echo "/tmp/teammate-$1.resume-log"; }
+launch_marker_file() { echo "/tmp/teammate-$1.last-launch"; }
+resume_lock_dir()    { echo "/tmp/teammate-$1.resume.lock"; }
 
 # Builders for the per-sid files under $IDLE_DIR. The three files form
 # one protocol with hooks/on-busy.sh and hooks/on-stop.sh:
@@ -320,6 +374,196 @@ require_session() {
 iter_repos() {
     { tmux ls 2>/dev/null || true; } \
         | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print substr($1, length(p)+1)}'
+}
+
+# Enumerate every repo that has a /tmp/teammate-<repo>.sid file — i.e.
+# every teammate that was ever spawned and not yet `tm kill`ed. Unlike
+# iter_repos (tmux-backed), this still sees a teammate whose tmux
+# session has vanished entirely. `tm states` unions the two so a fully
+# dead teammate shows up as a `dead-session` row instead of silently
+# disappearing.
+iter_sid_repos() {
+    local f base
+    for f in /tmp/teammate-*.sid; do
+        [[ -e "$f" ]] || continue          # no match → literal glob; skip
+        base=${f#/tmp/teammate-}
+        printf '%s\n' "${base%.sid}"
+    done
+}
+
+# The pane's current foreground command for <repo> (e.g. `node` while a
+# claude REPL runs, `zsh` after claude exits back to a shell). Empty if
+# the session/pane can't be resolved. This is the raw signal the L2
+# liveness probe is built on.
+pane_current_command() {
+    local pane; pane=$(resolve_pane_target "$1")
+    [[ -n "$pane" ]] || return 0
+    tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true
+}
+
+# --- liveness model (the tm-heartbeat design) --------------------------
+#
+# Classify a teammate into exactly one verdict. The verdicts mirror the
+# three-tier model in .agents/designs/tm-heartbeat-passive-liveness.md:
+#
+#   alive         L1+L2 present — session up, claude process up
+#   dead-session  L1 death — the tmux session is gone
+#   dead-proc     L2 death — session up, but claude crashed back to a
+#                 shell (the pane survives, so has-session still passes)
+#   maybe-wedged  suspected L3 — claude is up but .busy is very stale;
+#                 reported only, never auto-resumed (can't be told apart
+#                 from a legitimate long turn)
+#   starting      launched within the boot-grace window — not judged
+#                 dead yet, because the REPL may still be coming up
+#
+# liveness_from_probe is the pure decision: it takes already-gathered
+# facts and no IO, so it is cheap to unit-test. teammate_liveness is the
+# thin IO wrapper that gathers the facts and calls it.
+
+# liveness_from_probe <has_session yes|no> <recent_launch yes|no> \
+#                     <cur_cmd> <recorded_cmd> <busy_age> <wedge_secs>
+# busy_age is seconds since the .busy marker's mtime, or -1 when there
+# is no .busy marker. recorded_cmd empty → fall back to a static command
+# allowlist. When the command is unrecognised, err toward `alive`: a
+# false `alive` only misses a death, a false death would resurrect a
+# healthy teammate.
+liveness_from_probe() {
+    local has_session="$1" recent_launch="$2" cur_cmd="$3" recorded_cmd="$4"
+    local busy_age="$5" wedge_secs="$6"
+    [[ "$has_session" == yes ]] || { echo "dead-session"; return 0; }
+    [[ "$recent_launch" != yes ]] || { echo "starting"; return 0; }
+    local claude_alive
+    if [[ -n "$recorded_cmd" ]]; then
+        # Self-calibrated: spawn recorded what the pane ran once the REPL
+        # was up; a mismatch now means claude exited.
+        if [[ "$cur_cmd" == "$recorded_cmd" ]]; then claude_alive=yes; else claude_alive=no; fi
+    else
+        case "$cur_cmd" in
+            node|claude|claude-code|bun)       claude_alive=yes ;;
+            sh|bash|zsh|fish|dash|ksh|tcsh|"") claude_alive=no  ;;
+            *)                                 claude_alive=yes ;;
+        esac
+    fi
+    [[ "$claude_alive" == yes ]] || { echo "dead-proc"; return 0; }
+    if (( busy_age > wedge_secs )); then echo "maybe-wedged"; return 0; fi
+    echo "alive"
+}
+
+# teammate_liveness <repo> — gather the live facts, then classify.
+teammate_liveness() {
+    local repo="$1" now; now=$(date +%s)
+    local name; name=$(session_name "$repo")
+    local has_session=no
+    tmux has-session -t "=$name" 2>/dev/null && has_session=yes
+
+    local recent_launch=no cur_cmd="" recorded_cmd="" busy_age=-1
+    if [[ "$has_session" == yes ]]; then
+        local lm; lm=$(launch_marker_file "$repo")
+        if [[ -e "$lm" ]] && (( now - $(stat_mtime "$lm") < TM_BOOT_GRACE )); then
+            recent_launch=yes
+        fi
+        cur_cmd=$(pane_current_command "$repo")
+        local pf; pf=$(proc_file "$repo")
+        [[ -s "$pf" ]] && recorded_cmd=$(cat "$pf")
+        local sid
+        if sid=$(resolve_sid "$repo"); then
+            local bm; bm=$(busy_marker_for "$sid")
+            [[ -e "$bm" ]] && busy_age=$(( now - $(stat_mtime "$bm") ))
+        fi
+    fi
+    liveness_from_probe "$has_session" "$recent_launch" "$cur_cmd" \
+        "$recorded_cmd" "$busy_age" "$TM_WEDGE_SECS"
+}
+
+# Fast-fail guard for the send/wait entry path. A `dead-proc` teammate's
+# tmux pane survives (it fell back to a shell), so require_session still
+# passes — keys would be typed into a shell and the Stop-hook wait would
+# block until --timeout (default 1800s). Detecting it here turns that
+# 1800s hang into an immediate, actionable error. Only `dead-proc` is
+# intercepted: `dead-session` already dies clearly in require_session,
+# and a `maybe-wedged` teammate may simply be on a long turn (the
+# dispatcher's --timeout governs that case).
+assert_live_for_send() {
+    local repo="$1" verb="$2"
+    [[ "$(teammate_liveness "$repo" 2>/dev/null || true)" == "dead-proc" ]] || return 0
+    die "tm $verb: $repo is a dead shell — claude has exited and its tmux pane fell back to a shell. The prompt would go nowhere and no Stop hook would ever fire. Recover with 'tm resume $repo <sid>' (sid from your task ledger), then retry."
+}
+
+# --- auto-resume circuit breaker (pure helpers + the gate) -------------
+#
+# count_epochs_within / prune_epochs are pure: they take <now> <window>
+# then a list of epoch timestamps, and respectively count / re-emit the
+# ones still inside the window. The hourly resume budget is built on
+# them, and they unit-test without touching the filesystem.
+count_epochs_within() {
+    local now="$1" window="$2"; shift 2
+    local n=0 e
+    for e in "$@"; do
+        [[ "$e" =~ ^[0-9]+$ ]] || continue
+        (( now - e <= window )) && n=$(( n + 1 ))
+    done
+    echo "$n"
+}
+prune_epochs() {
+    local now="$1" window="$2"; shift 2
+    local e
+    for e in "$@"; do
+        [[ "$e" =~ ^[0-9]+$ ]] || continue
+        (( now - e <= window )) && echo "$e"
+    done
+}
+
+# resume_breaker_check <repo> — the deterministic gate for
+# `tm resume --auto`. Returns 0 to allow the resume, non-zero (with a
+# stderr explanation) to refuse it. Manual `tm resume` never calls this:
+# a human-driven resume is authoritative and must not be rate-limited.
+# Three gates, all file-backed so the counting is not delegated to a
+# model:
+#   N-strike  `tm states` must have recorded this repo dead recently —
+#             an independent observation from the one tm resume makes
+#             itself, so a single transient probe cannot trigger resume.
+#   cooldown  no auto-resume within TM_RESUME_COOLDOWN of the last one.
+#   budget    no more than TM_RESUME_BUDGET auto-resumes per repo per
+#             TM_RESUME_BUDGET_WINDOW.
+resume_breaker_check() {
+    local repo="$1" now; now=$(date +%s)
+
+    local hf; hf=$(health_file "$repo")
+    if [[ ! -s "$hf" ]]; then
+        echo "tm resume --auto: refusing $repo — no 'tm states' health verdict on record. Run 'tm states' first so the death is confirmed by an independent observation (N-strike)." >&2
+        return 1
+    fi
+    local hv hepoch _rest; read -r hv hepoch _rest < "$hf" || true
+    case "$hv" in
+        dead-session|dead-proc) ;;
+        *)  echo "tm resume --auto: refusing $repo — the last 'tm states' verdict was '$hv', not a death. N-strike needs an independent dead observation; re-run 'tm states'." >&2
+            return 1 ;;
+    esac
+    local hage=$(( now - ${hepoch:-0} ))
+    if (( hage > TM_HEALTH_TTL )); then
+        echo "tm resume --auto: refusing $repo — the 'tm states' dead verdict is stale (${hage}s old, max ${TM_HEALTH_TTL}s). Re-run 'tm states' to re-confirm." >&2
+        return 1
+    fi
+
+    local raf; raf=$(resumed_at_file "$repo")
+    if [[ -e "$raf" ]]; then
+        local cdage=$(( now - $(stat_mtime "$raf") ))
+        if (( cdage < TM_RESUME_COOLDOWN )); then
+            echo "tm resume --auto: refusing $repo — it was resumed ${cdage}s ago (cooldown ${TM_RESUME_COOLDOWN}s). Dying again this fast means it is flapping; a human should look before it is resumed again." >&2
+            return 1
+        fi
+    fi
+
+    local rlf; rlf=$(resume_log_file "$repo")
+    if [[ -s "$rlf" ]]; then
+        local recent
+        recent=$(count_epochs_within "$now" "$TM_RESUME_BUDGET_WINDOW" $(cat "$rlf"))
+        if (( recent >= TM_RESUME_BUDGET )); then
+            echo "tm resume --auto: refusing $repo — auto-resumed ${recent}x in the last $(( TM_RESUME_BUDGET_WINDOW / 60 ))min (budget ${TM_RESUME_BUDGET}). Quarantined: a human should find out why it keeps dying." >&2
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # --- shared helpers used by send / wait / compact / spawn --prompt ---
@@ -645,6 +889,12 @@ cmd_spawn() {
     # those don't restart the claude process.
     local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" \
         -e "CLAUDEMUX_TEAMMATE_REPO=$repo" -P -F '#{session_id}')
+    # Stamp the launch marker the moment the session exists: its mtime
+    # is what the liveness probe reads to grant a boot-grace window, so
+    # a teammate still coming up classifies as `starting`, not as a dead
+    # shell. cmd_resume reaches the REPL through here too, so a resume
+    # gets the same grace.
+    : > "$(launch_marker_file "$repo")"
     local sid sf; sf=$(sid_file "$repo")
     local name_note=""
     [[ -n "$display_name" ]] && name_note=", name=$display_name"
@@ -702,6 +952,12 @@ cmd_spawn() {
     done
     if [[ -n "$ready_after_ms" ]]; then
         echo "ready: $repo (tmux=$name, SessionStart fired after ~${ready_after_ms} ms)" >&2
+        # Record what the pane runs now that the REPL is up. `tm states`
+        # later self-calibrates against this to detect an L2 death
+        # (claude crashed back to a shell) without hardcoding a process
+        # name — what tmux reports for claude varies by launch.
+        local _pcmd; _pcmd=$(pane_current_command "$repo")
+        [[ -n "$_pcmd" ]] && printf '%s\n' "$_pcmd" > "$(proc_file "$repo")"
     else
         echo "WARN: $repo (tmux=$name) did not signal ready within 18s (no SessionStart hook fire — the plugin's on-session-start.sh may not be loaded, or claude failed to boot). Continuing, but if the REPL is actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / 'tm compact' will block until its --timeout expires (default 1800s). 'tm status $repo' shows the live pane if you need to verify." >&2
     fi
@@ -770,6 +1026,9 @@ cmd_send() {
     [[ -n "$repo" ]] || die "tm send: missing <repo>. Usage: tm send <repo> --prompt \"...\" [--no-wait] [--pane-quiet] [--timeout N]"
     (( has_prompt )) || die "tm send: missing --prompt. Usage: tm send <repo> --prompt \"...\" [--no-wait] [--pane-quiet] [--timeout N]"
 
+    # Fast-fail a dead-shell teammate before sending — see assert_live_for_send.
+    assert_live_for_send "$repo" send
+
     _send_keys "$repo" "$prompt"
 
     if (( no_wait )); then
@@ -836,6 +1095,9 @@ cmd_wait() {
         esac
     done
     [[ -n "$repo" ]] || die "usage: tm wait <repo> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]"
+
+    # Fast-fail a dead-shell teammate before waiting — see assert_live_for_send.
+    assert_live_for_send "$repo" wait
 
     local waiter_rc=0
     if (( pane_quiet )); then
@@ -906,7 +1168,14 @@ cmd_kill() {
     if sid=$(resolve_sid "$repo"); then
         clear_idle "$sid" || true
     fi
-    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")"
+    # Clear the spawn-time state files. The auto-resume breaker files
+    # (.health, .resumed-at, .resume-log) are deliberately NOT removed:
+    # they are observation history, not session state, and keeping them
+    # durable across a kill is what stops `tm resume --auto`'s own
+    # dead-shell kill-first step from wiping the budget it is counting.
+    # .resume.lock is owned solely by an in-flight cmd_resume.
+    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" \
+          "$(cwd_file "$repo")" "$(proc_file "$repo")" "$(launch_marker_file "$repo")"
     if tmux has-session -t "=$name" 2>/dev/null; then
         tmux kill-session -t "=$name"
         echo "killed: $repo (tmux=$name)"
@@ -972,7 +1241,15 @@ cmd_resume() {
     # resumed REPL, settle for 3s, then send the prompt via the sync
     # cmd_send (waits for Stop, prints .last). Pair with --no-wait to
     # fire-and-forget the follow-up message.
-    local repo="" sid="" prompt="" has_prompt=0 task="" no_wait=0
+    #
+    # --auto marks a guarded AUTOMATIC resume — the form the fleet-health
+    # sweep cron and the dispatcher boot flow use. It engages the
+    # deterministic circuit breaker (resume_breaker_check: N-strike,
+    # per-repo cooldown, hourly budget) and, with no explicit --prompt,
+    # drives the resumed teammate with a post-crash recovery instruction.
+    # A plain `tm resume` is a manual, authoritative action: it is never
+    # rate-limited, so the breaker stays out of the human's way.
+    local repo="" sid="" prompt="" has_prompt=0 task="" no_wait=0 auto=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --prompt) [[ $# -ge 2 ]] || die "tm resume: --prompt requires a value"
@@ -981,6 +1258,7 @@ cmd_resume() {
             --task) task="${2:-}"; shift 2 ;;
             --task=*) task="${1#--task=}"; shift ;;
             --no-wait) no_wait=1; shift ;;
+            --auto) auto=1; shift ;;
             --) shift; break ;;
             -*) die "unknown flag: $1" ;;
             *)
@@ -992,7 +1270,16 @@ cmd_resume() {
                 ;;
         esac
     done
-    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt \"...\"] [--no-wait]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation; --no-wait only with --prompt)"
+    [[ -n "$repo" ]] || die "usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt \"...\"] [--no-wait] [--auto]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation; --auto = guarded automatic resume with the circuit breaker; --no-wait only with --prompt)"
+
+    # --auto with no explicit --prompt: drive the resumed teammate with a
+    # recovery instruction. The jsonl restores the conversation, but a
+    # tool call left half-finished at crash time is not — tell it to
+    # re-check before carrying on.
+    if (( auto )) && ! (( has_prompt )); then
+        prompt="You were automatically resumed after an unexpected exit or crash. Before continuing, run 'git status' and re-check whether your previous action half-completed; reconcile anything left in a partial state, then carry on with the task."
+        has_prompt=1
+    fi
     if (( no_wait )) && ! (( has_prompt )); then
         die "tm resume: --no-wait is only valid with --prompt"
     fi
@@ -1000,9 +1287,40 @@ cmd_resume() {
     local path="$DISPATCHER_DIR/$repo"
     [[ -d "$path" ]] || die_repo_not_found resume "$repo" "$path"
 
+    # Per-repo resume mutex — mkdir is atomic on every POSIX filesystem.
+    # Taken by manual and --auto resumes alike: it is a concurrency
+    # guard, not a rate limit, so a sweep-cron --auto resume and a
+    # hand-typed resume cannot drive the same repo at once. The EXIT
+    # trap releases it on every exit path, die included.
+    local _lock; _lock=$(resume_lock_dir "$repo")
+    if ! mkdir "$_lock" 2>/dev/null; then
+        die "tm resume: another resume of $repo is already in progress ($_lock exists). If no resume is actually running, clear the stale lock:  rmdir $_lock"
+    fi
+    # shellcheck disable=SC2064  # bake $_lock in at trap-set time — at EXIT the local is out of scope
+    trap "rmdir '$_lock' 2>/dev/null || true" EXIT
+
+    # --auto only: run the deterministic circuit breaker before doing
+    # anything destructive. A refusal prints its own reason to stderr.
+    if (( auto )); then
+        resume_breaker_check "$repo" || exit 1
+    fi
+
     local name; name=$(session_name "$repo")
     if tmux has-session -t "=$name" 2>/dev/null; then
-        die "$repo already running (tmux=$name) — 'tm kill $repo' first if you really want to start over"
+        # A teammate session already exists. Classify it: if claude is
+        # genuinely running, refuse — resuming would fork the
+        # conversation. If it is a dead shell (claude crashed back to a
+        # shell; the pane survives so has-session still passes), kill the
+        # stale session first so the resume can recreate it cleanly.
+        case "$(teammate_liveness "$repo")" in
+            dead-proc)
+                echo "tm resume: $repo is a dead shell (claude exited, pane fell back to a shell) — killing the stale session before resuming" >&2
+                cmd_kill "$repo" >/dev/null
+                ;;
+            *)
+                die "$repo already running (tmux=$name) — 'tm kill $repo' first if you really want to start over"
+                ;;
+        esac
     fi
 
     local project_dir; project_dir=$(project_dir_for_repo "$repo")
@@ -1029,6 +1347,22 @@ cmd_resume() {
     [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
         || die "sid is not a valid uuid: $sid"
 
+    # Record this resume for the breaker BEFORE launching. .resumed-at
+    # (mtime = now) feeds the NEXT auto-resume's per-repo cooldown;
+    # manual and --auto both stamp it, so an --auto resume stands down
+    # right after a human just resumed the same repo. The hourly budget
+    # log is --auto only — a manual resume is intentional and must not
+    # spend the automatic budget. Old budget entries are pruned on write.
+    : > "$(resumed_at_file "$repo")"
+    if (( auto )); then
+        local _now _rlf _kept
+        _now=$(date +%s)
+        _rlf=$(resume_log_file "$repo")
+        _kept=""
+        [[ -s "$_rlf" ]] && _kept=$(prune_epochs "$_now" "$TM_RESUME_BUDGET_WINDOW" $(cat "$_rlf"))
+        { [[ -n "$_kept" ]] && printf '%s\n' "$_kept"; echo "$_now"; } > "$_rlf"
+    fi
+
     if [[ -n "$task" ]]; then
         cmd_spawn "$repo" --resume "$sid" --task "$task"
     else
@@ -1047,23 +1381,73 @@ cmd_resume() {
 }
 
 cmd_states() {
-    local rows
-    rows=$( { tmux ls 2>/dev/null || true; } | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print $1}')
-    if [[ -z "$rows" ]]; then
-        echo "(no teammate sessions)"
+    # One-line fleet snapshot plus a per-teammate liveness verdict. The
+    # liveness probe folds into this verb (the dispatcher already runs
+    # `tm states` to see what the fleet is doing — liveness is the same
+    # fact, observed the same way, at the same moment). Every run also
+    # writes each repo's verdict to /tmp/teammate-<repo>.health, the
+    # independent observation `tm resume --auto`'s N-strike gate reads.
+    local json=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json=1; shift ;;
+            -*) die "tm states: unknown flag: $1 (accepts only --json)" ;;
+            *)  die "tm states: unexpected argument: '$1' — states snapshots the whole fleet and takes no <repo>" ;;
+        esac
+    done
+
+    # Enumerate the UNION of live tmux teammate sessions and orphan
+    # /tmp/teammate-*.sid files. A teammate whose session has vanished
+    # entirely is invisible to tmux but still has its .sid — without the
+    # union it would silently drop off the snapshot instead of showing
+    # up as a `dead-session` row.
+    local repos
+    repos=$( { iter_repos; iter_sid_repos; } | sort -u )
+    if [[ -z "$repos" ]]; then
+        if (( json )); then echo '[]'; else echo "(no teammate sessions)"; fi
         return 0
     fi
+
     local now; now=$(date +%s)
+
+    if (( json )); then
+        # Hand-built JSON keeps the output path free of a jq dependency.
+        # Repo names are directory names; escape backslash then
+        # doublequote so even an exotic name yields valid JSON.
+        local first=1
+        printf '['
+        while IFS= read -r repo; do
+            [[ -n "$repo" ]] || continue
+            local sid status busy esc
+            sid=$(resolve_sid "$repo" || true)
+            status=$(teammate_liveness "$repo")
+            printf '%s %s\n' "$status" "$now" > "$(health_file "$repo")"
+            if pane_busy "$repo"; then busy=true; else busy=false; fi
+            esc=${repo//\\/\\\\}; esc=${esc//\"/\\\"}
+            (( first )) || printf ','
+            first=0
+            if [[ -n "$sid" ]]; then
+                printf '{"repo":"%s","sid":"%s","status":"%s","busy":%s}' "$esc" "$sid" "$status" "$busy"
+            else
+                printf '{"repo":"%s","sid":null,"status":"%s","busy":%s}' "$esc" "$status" "$busy"
+            fi
+        done <<< "$repos"
+        printf ']\n'
+        return 0
+    fi
+
     {
-        printf 'REPO\tSID\tBUSY\tLAST\tPREVIEW\n'
-        while IFS= read -r name; do
-            local repo="${name#"$PREFIX"}"
-            local sid sid_short busy last preview
+        printf 'REPO\tSID\tSTATUS\tBUSY\tLAST\tPREVIEW\n'
+        while IFS= read -r repo; do
+            [[ -n "$repo" ]] || continue
+            local sid sid_short status busy last preview
             if sid=$(resolve_sid "$repo"); then
                 sid_short="${sid:0:8}"
             else
                 sid="" sid_short="?"
             fi
+            status=$(teammate_liveness "$repo")
+            printf '%s %s\n' "$status" "$now" > "$(health_file "$repo")"
             if pane_busy "$repo"; then busy="yes"; else busy="no"; fi
             last="-"
             preview="-"
@@ -1087,8 +1471,8 @@ cmd_states() {
                     [[ -z "$preview" ]] && preview="(no first line)"
                 fi
             fi
-            printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$sid_short" "$busy" "$last" "$preview"
-        done <<< "$rows"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "$sid_short" "$status" "$busy" "$last" "$preview"
+        done <<< "$repos"
     } | column -t -s $'\t'
 }
 
@@ -1711,10 +2095,25 @@ cmd_doctor() {
         else
             kv server "not running (no sessions exist yet — that's fine pre-spawn)"
         fi
-        if [[ -n "${TMUX:-}" ]]; then
-            kv 'in tmux' "yes (TMUX=$TMUX)"
+        # Topology 3b: tm pins teammate sessions to the default tmux
+        # server (it unset $TMUX at startup). Report which server tm
+        # itself was launched from — TM_OUTER_TMUX is the captured
+        # pre-unset value. A dedicated server (name other than
+        # `default`) means the dispatcher is isolated from the teammate
+        # server, so a teammate-server crash no longer takes the
+        # dispatcher with it; `default` means topology 3b is not set up.
+        if [[ -n "$TM_OUTER_TMUX" ]]; then
+            local _sock _srv
+            _sock=${TM_OUTER_TMUX%%,*}
+            _srv=$(basename "$_sock" 2>/dev/null || echo '?')
+            kv 'tm launched in' "tmux server '$_srv' (socket $_sock)"
+            if [[ "$_srv" == "default" ]]; then
+                kv topology 'dispatcher shares the DEFAULT server with teammates — topology 3b NOT set up; one tmux server crash takes down the whole fleet. Run /claudemux:setup to isolate the dispatcher.'
+            else
+                kv topology "dispatcher isolated in server '$_srv'; teammates pinned to the default server — topology 3b active"
+            fi
         else
-            kv 'in tmux' 'no — tm is being run from outside a tmux session'
+            kv 'tm launched in' 'no tmux (tm is being run from outside a tmux session)'
         fi
     fi
     echo
@@ -1767,7 +2166,7 @@ USAGE  (most common first)
   tm kill <repo>                         kill the teammate's tmux session
   tm reload <repo>... | --all            fan out /reload-plugins
   tm ls                                  list running teammate sessions
-  tm states                              one-line fleet snapshot
+  tm states [--json]                     one-line fleet snapshot + liveness
   tm ctx <repo>... | --all               real ctx-window usage from jsonl
   tm history <repo> [<sid-prefix>]       inspect past sessions for this repo
   tm mem <repo>                          cat sibling repo's auto-memory index
@@ -1815,12 +2214,30 @@ EOF
 
 help_states() {
     cat <<'EOF'
-tm states
+tm states [--json]
 
-      One-line fleet snapshot: REPO, SID (first 8 chars), BUSY (yes
-      if the .busy file from the on-busy hook is present), LAST
+      One-line fleet snapshot: REPO, SID (first 8 chars), STATUS,
+      BUSY (yes if the on-busy hook's .busy file is present), LAST
       (size + age of <sid>.last), PREVIEW (first 50 chars of last
-      reply). Use to see what every teammate is doing at a glance.
+      reply). Use it to see what every teammate is doing at a glance.
+      STATUS is the liveness verdict:
+        alive         session up, claude process up
+        dead-session  the tmux session is gone (L1 death)
+        dead-proc     session up but claude crashed back to a shell
+                      (L2 death)
+        maybe-wedged  claude up but its .busy marker is very stale —
+                      a suspected wedge; reported only, never resumed
+        starting      launched moments ago, still coming up
+      The snapshot covers every live teammate session AND every repo
+      with a /tmp/teammate-<repo>.sid file, so a teammate whose
+      session vanished still shows up (as dead-session) instead of
+      silently disappearing.
+      --json emits a machine-readable array — one object per teammate
+      with repo, sid, status, busy — for the fleet-health sweep cron
+      and the dispatcher boot-recovery flow.
+      Every run also records each repo's verdict to
+      /tmp/teammate-<repo>.health, the independent observation that
+      'tm resume --auto' checks before an automatic resume.
 EOF
 }
 
@@ -1941,19 +2358,34 @@ EOF
 
 help_resume() {
     cat <<'EOF'
-tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
+tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait] [--auto]
 
       Resume a prior conversation. PREFER passing <sid> from the
       dispatcher's task ledger (active-dispatcher-tasks.md records
       the sid of each teammate it spawned). Without sid, picks the
       newest jsonl by mtime as a one-off convenience (stderr
       warning). Validates the jsonl exists in the project dir; UUID
-      format enforced. Fails if a teammate session for <repo>
-      already exists.
+      format enforced.
+      If a teammate session for <repo> already exists, resume
+      classifies it: a live claude is refused ("already running" —
+      resuming would fork the conversation); a dead shell (claude
+      crashed, the pane fell back to a shell) is killed first so the
+      resume can recreate it cleanly.
       --prompt sends a follow-up after a 3s settle, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
       the sync path). --no-wait (with --prompt) fires without
       waiting. --task relabels the resumed conversation.
+      --auto marks a guarded AUTOMATIC resume — the form the
+      fleet-health sweep cron and the dispatcher boot flow use. It
+      runs the deterministic circuit breaker before resuming:
+        N-strike  'tm states' must have independently recorded this
+                  repo dead, and recently — run 'tm states' first.
+        cooldown  no auto-resume within ~5min of the last resume.
+        budget    at most ~3 auto-resumes per repo per hour.
+      A blocked gate prints the reason and exits non-zero. With no
+      explicit --prompt, --auto drives the resumed teammate with a
+      post-crash recovery instruction. A plain (non --auto) resume is
+      a manual, authoritative action and is never rate-limited.
       Like every teammate launch, the resumed REPL starts with the
       AskUserQuestion tool disabled (see 'tm help spawn' for why): a
       resumed teammate raises questions by ending its turn with
@@ -1999,8 +2431,11 @@ help_kill() {
     cat <<'EOF'
 tm kill <repo>
 
-      Kill the teammate's tmux session and clean up its state files
-      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}).
+      Kill the teammate's tmux session and clear its spawn-time
+      state files (/tmp/teammate-<repo>.{sid,send-at,ready,cwd,proc,
+      last-launch}). The auto-resume breaker files (.health,
+      .resumed-at, .resume-log) are deliberately left in place —
+      they are observation history, not session state.
 EOF
 }
 
@@ -2092,8 +2527,10 @@ tm doctor
         - dispatcher dir: TM_DISPATCHER_DIR (or $PWD fallback),
           whether the env was actually set, and whether the
           resolved path matches your current $PWD
-        - tmux: installed? version? server running? are we inside
-          a tmux session?
+        - tmux: installed? version? server running? which tmux
+          server tm was launched from, and whether deployment
+          topology 3b (dispatcher isolated in its own tmux server)
+          is set up
         - idle dir: does /tmp/claude-idle/ exist?
         - active teammates: count + names from `tm ls`
       Read-only — doesn't change any state. Use it when something

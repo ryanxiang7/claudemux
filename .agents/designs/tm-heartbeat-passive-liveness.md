@@ -1,6 +1,6 @@
 # Design: tm heartbeat — passive dispatcher-side liveness
 
-- **Status:** Approved — not yet implemented
+- **Status:** Implemented
 - **Date:** 2026-05-22
 - **Affects:** `tm` (`states` and `resume` enhancements, internal helpers, path builders), the `dispatcher` skill, `/claudemux:setup`, deployment topology
 - **Decision record:** [0009](/.agents/decisions/0009-tm-heartbeat-passive-liveness.md)

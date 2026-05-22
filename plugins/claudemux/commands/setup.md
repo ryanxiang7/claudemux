@@ -171,7 +171,29 @@ jq '.remoteControlAtStartup = true' "$settings" > /tmp/cmx-rc.tmp \
 After an automated edit, re-run the `jq -r` check. If the edit fails, report the
 exact failure and give the `/config` path as the recovery step.
 
-## Step 3: report
+## Step 3: explain the dispatcher's own tmux server
+
+This step is guidance, not an action you run — the user makes the choice at
+launch time. Explain it, then carry it into the start command in the report.
+
+The dispatcher and its teammates must not share one tmux server. A tmux
+server crash takes down every session inside it at once; if the dispatcher
+lives in the same server as the teammates, one crash ends the whole fleet
+and nothing is left running to recover it. This is not hypothetical — it
+has happened.
+
+Deployment topology 3b fixes it structurally: run the dispatcher in its own
+named tmux server with `tmux -L dispatcher`. `tm` already pins every teammate
+session to the default tmux server, so once the dispatcher is in its own
+`-L dispatcher` server a teammate-server crash leaves the dispatcher — and
+its fleet-health sweep cron — alive to auto-resume the dead teammates.
+
+Tell the user plainly: always start the dispatcher with `tmux -L dispatcher`.
+Starting it with a bare `tmux new-session` puts it back in the shared default
+server and silently loses the isolation. The start command in the report
+below already uses the `-L dispatcher` form.
+
+## Step 4: report
 
 Print a short, human-facing summary:
 
@@ -187,11 +209,14 @@ Print a short, human-facing summary:
   skipped by user / failed with manual recovery.
 - Reminder: Remote Control is read at Claude Code startup, so changes apply to
   the next `claude` launch.
+- The dispatcher runs in its own tmux server (`-L dispatcher`) so a
+  teammate-server crash cannot take it down. `tm doctor` reports the topology
+  once the dispatcher is up.
 - The exact command for the user to start their dispatcher. Use the absolute
   dispatcher path from the preflight or setup script output:
 
   ```
-  tmux new-session -s dispatcher -c "<dispatcher-dir>"
+  tmux -L dispatcher new-session -s dispatcher -c "<dispatcher-dir>"
   # inside the new pane:
   claude
   ```

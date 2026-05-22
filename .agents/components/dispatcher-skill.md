@@ -27,6 +27,7 @@ agent reads exactly the one that applies. The references:
 | `sibling-memory.md` | Compose a prompt that quotes sibling-repo state (`tm mem`) |
 | `wait-and-readback.md` | Wait for a turn an external actor drove; pane-quiet blind spot |
 | `inspect-and-resume.md` | Read `tm states`; look up / resume past sessions |
+| `fleet-health.md` | Detect dead teammates, auto-resume them, the health sweep cron |
 | `compact-a-teammate.md` | Check or compact a teammate's context window |
 | `ledger-and-archive.md` | Append / archive the dispatcher task ledger |
 | `agent-teams.md` | Spawn an Agent Teams teammate instead of a tmux one |

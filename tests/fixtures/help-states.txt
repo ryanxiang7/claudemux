@@ -1,6 +1,24 @@
-tm states
+tm states [--json]
 
-      One-line fleet snapshot: REPO, SID (first 8 chars), BUSY (yes
-      if the .busy file from the on-busy hook is present), LAST
+      One-line fleet snapshot: REPO, SID (first 8 chars), STATUS,
+      BUSY (yes if the on-busy hook's .busy file is present), LAST
       (size + age of <sid>.last), PREVIEW (first 50 chars of last
-      reply). Use to see what every teammate is doing at a glance.
+      reply). Use it to see what every teammate is doing at a glance.
+      STATUS is the liveness verdict:
+        alive         session up, claude process up
+        dead-session  the tmux session is gone (L1 death)
+        dead-proc     session up but claude crashed back to a shell
+                      (L2 death)
+        maybe-wedged  claude up but its .busy marker is very stale —
+                      a suspected wedge; reported only, never resumed
+        starting      launched moments ago, still coming up
+      The snapshot covers every live teammate session AND every repo
+      with a /tmp/teammate-<repo>.sid file, so a teammate whose
+      session vanished still shows up (as dead-session) instead of
+      silently disappearing.
+      --json emits a machine-readable array — one object per teammate
+      with repo, sid, status, busy — for the fleet-health sweep cron
+      and the dispatcher boot-recovery flow.
+      Every run also records each repo's verdict to
+      /tmp/teammate-<repo>.health, the independent observation that
+      'tm resume --auto' checks before an automatic resume.

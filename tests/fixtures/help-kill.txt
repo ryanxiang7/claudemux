@@ -1,4 +1,7 @@
 tm kill <repo>
 
-      Kill the teammate's tmux session and clean up its state files
-      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}).
+      Kill the teammate's tmux session and clear its spawn-time
+      state files (/tmp/teammate-<repo>.{sid,send-at,ready,cwd,proc,
+      last-launch}). The auto-resume breaker files (.health,
+      .resumed-at, .resume-log) are deliberately left in place —
+      they are observation history, not session state.

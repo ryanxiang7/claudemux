@@ -49,6 +49,7 @@ Match the user's intent to one of these scenarios, then read the corresponding r
 | Composing a spawn / send prompt that references sibling-repo state (feature-gate name, branch, in-progress project, owner) | `references/sibling-memory.md` | `tm mem <repo>` |
 | Waiting for a turn an external actor (Remote Control, mobile, cron, sub-agent) drove | `references/wait-and-readback.md` | `tm wait --fresh <repo>` |
 | Reading `tm states` fleet snapshot — what every teammate is doing right now | `references/inspect-and-resume.md` (`LAST` / `PREVIEW` read the same `.last` file as `tm last`) | `tm states` |
+| Checking teammate liveness, recovering a dead teammate, or arming the fleet-health sweep cron | `references/fleet-health.md` | `tm states` / `tm resume --auto` |
 | A teammate looks hung mid-turn — need pane ground truth (e.g. blocked on a permission prompt the hook missed) | `references/wait-and-readback.md` (`--pane-quiet` blind spot + `tm status` fallback) | `tm status <repo>` |
 | Looking up past sessions for a repo / picking a sid to resume / re-reading a printed reply | `references/inspect-and-resume.md` | `tm history <repo>` / `tm resume <repo> <sid>` / `tm last <repo>` |
 | Checking or compacting a teammate's context window | `references/compact-a-teammate.md` | `tm ctx <repo>` / `tm compact <repo>` |
@@ -95,3 +96,7 @@ Two files in this dispatcher's AutoMemory directory power the task ledger; file 
 
 - **Read on boot**: `active-dispatcher-tasks.md` — before any cross-task decision, and whenever the user asks "what's running" / "看看现在在跑啥".
 - **Never read on boot**: `dispatcher-tasks-archive.md` — on demand only (when the user asks about a past task or you need history to make a decision).
+
+## Fleet health
+
+Teammates die unobserved — a crashed `claude`, a killed tmux session. On session boot, and on a recurring sweep, reconcile: run `tm states`, and `tm resume --auto` any teammate whose ledger task is still active but whose session is dead or gone. Host the sweep on a **durable** cron (`CronCreate` with `durable: true`) so it survives a dispatcher restart. `tm resume --auto` carries a circuit breaker that stops a flapping teammate from being resumed in a loop. `references/fleet-health.md` has the boot-reconciliation steps, the sweep callback, the liveness `STATUS` verdicts, and the breaker.

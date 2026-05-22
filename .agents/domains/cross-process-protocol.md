@@ -37,6 +37,28 @@ rewrites it when the session_id rotates — without that, `tm states` /
 | `.ready` | `ready_file` | Empty marker — REPL is up | `on-session-start.sh` | `tm spawn` (poll loop) |
 | `.send-at` | `send_at_file` | Empty; the *mtime* is the timestamp of the last send | `tm` (`_send_keys`) | `tm` (`_wait_pane_quiet`) |
 
+### Repo-keyed, `tm`-only — the heartbeat protocol files
+
+These also live in `/tmp/teammate-<repo>.*` and follow the same path-builder
+discipline, but unlike the files above they never cross the `tm`↔hook seam —
+the hooks do not touch them. They back the dispatcher-side liveness and
+auto-resume capability; the model behind them is in
+[the heartbeat design doc](/.agents/designs/tm-heartbeat-passive-liveness.md).
+
+| File | Builder (`tm`) | Contents | Writer | Reader |
+|---|---|---|---|---|
+| `.proc` | `proc_file` | The pane's foreground command, captured once the REPL is up | `tm spawn` (resume reaches it via spawn) | the `tm states` / `tm resume` liveness probe |
+| `.health` | `health_file` | One line `<verdict> <epoch>` — the latest liveness verdict | `tm states` (every run) | `tm resume --auto` (the N-strike gate) |
+| `.resumed-at` | `resumed_at_file` | Empty; the *mtime* is the time of the last resume | `tm resume` (manual and `--auto`) | `tm resume --auto` (the cooldown gate) |
+| `.resume-log` | `resume_log_file` | One epoch per line — `--auto` resume timestamps | `tm resume --auto` | `tm resume --auto` (the hourly-budget gate) |
+| `.last-launch` | `launch_marker_file` | Empty; the *mtime* is the time of the last spawn/resume launch | `tm spawn` (resume via spawn) | the liveness probe (boot-grace window) |
+| `.resume.lock` | `resume_lock_dir` | A *directory* — `mkdir` is the atomic per-repo resume mutex | `tm resume` (acquire/release) | `tm resume` (acquire) |
+
+`tm kill` clears `.proc` and `.last-launch` with the other spawn-time files,
+but deliberately leaves `.health`, `.resumed-at`, and `.resume-log`: that
+durability is what stops `tm resume --auto`'s own dead-shell kill-first step
+from wiping the budget the breaker is counting.
+
 ### Sid-keyed — `/tmp/claude-idle/<sid>.*`
 
 | File | Builder | Contents | Writer | Reader |

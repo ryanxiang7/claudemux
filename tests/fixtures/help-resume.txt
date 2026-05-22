@@ -1,16 +1,31 @@
-tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait]
+tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."] [--no-wait] [--auto]
 
       Resume a prior conversation. PREFER passing <sid> from the
       dispatcher's task ledger (active-dispatcher-tasks.md records
       the sid of each teammate it spawned). Without sid, picks the
       newest jsonl by mtime as a one-off convenience (stderr
       warning). Validates the jsonl exists in the project dir; UUID
-      format enforced. Fails if a teammate session for <repo>
-      already exists.
+      format enforced.
+      If a teammate session for <repo> already exists, resume
+      classifies it: a live claude is refused ("already running" —
+      resuming would fork the conversation); a dead shell (claude
+      crashed, the pane fell back to a shell) is killed first so the
+      resume can recreate it cleanly.
       --prompt sends a follow-up after a 3s settle, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
       the sync path). --no-wait (with --prompt) fires without
       waiting. --task relabels the resumed conversation.
+      --auto marks a guarded AUTOMATIC resume — the form the
+      fleet-health sweep cron and the dispatcher boot flow use. It
+      runs the deterministic circuit breaker before resuming:
+        N-strike  'tm states' must have independently recorded this
+                  repo dead, and recently — run 'tm states' first.
+        cooldown  no auto-resume within ~5min of the last resume.
+        budget    at most ~3 auto-resumes per repo per hour.
+      A blocked gate prints the reason and exits non-zero. With no
+      explicit --prompt, --auto drives the resumed teammate with a
+      post-crash recovery instruction. A plain (non --auto) resume is
+      a manual, authoritative action and is never rate-limited.
       Like every teammate launch, the resumed REPL starts with the
       AskUserQuestion tool disabled (see 'tm help spawn' for why): a
       resumed teammate raises questions by ending its turn with
