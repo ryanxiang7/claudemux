@@ -80,6 +80,13 @@ heart of the system; see [the cross-process protocol](/.agents/domains/cross-pro
 |---|---|
 | Anything that reads or writes a `/tmp` protocol file, or a `tm`↔hook seam | [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) |
 
+**Designs** — forward-looking implementation specs for features that are
+approved but not yet built:
+
+| Planning / implementing | Read |
+|---|---|
+| The `tm` heartbeat — passive dispatcher-side liveness and auto-resume | [designs/tm-heartbeat-passive-liveness.md](/.agents/designs/tm-heartbeat-passive-liveness.md) |
+
 **Decisions** — why the system is shaped the way it is:
 
 - [decisions/README.md](/.agents/decisions/README.md) — index of decision records and how to add one.

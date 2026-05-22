@@ -25,6 +25,7 @@ exploration**. A good entry is:
 | `CONTRIBUTING.md` | This file — KB rules and the knowledge-delta protocol | Before editing `.agents/` |
 | `components/*.md` | One per component: what it owns, entry points, local foot-guns | When a task touches that component |
 | `domains/*.md` | Cross-cutting contracts that span components | When a task crosses a component seam |
+| `designs/*.md` | Forward-looking implementation specs for approved-but-unbuilt features | When planning or implementing a planned feature |
 | `decisions/*.md` | Numbered decision records — context, decision, consequences | When you need the *why* behind a design |
 | `research/*.md` | Frozen point-in-time research snapshots, indexed by `research/index.md` | When you need the legwork behind a decision |
 | `rules/*.md` | Durable process rules for working in this repo | As referenced |
