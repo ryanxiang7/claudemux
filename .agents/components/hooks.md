@@ -15,7 +15,7 @@ markers, so its extra writes are harmless.
 |---|---|---|
 | [`on-busy.sh`](/plugins/claudemux/hooks/on-busy.sh) | `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse`, `PreCompact` | Touch `/tmp/claude-idle/<sid>.busy` — the idle→working transition |
 | [`on-stop.sh`](/plugins/claudemux/hooks/on-stop.sh) | `Stop`, `StopFailure`, `PostCompact`, `SessionEnd` | Remove `.busy`, touch the idle marker, and (Stop only) write `<sid>.last` — the working→idle transition |
-| [`on-session-start.sh`](/plugins/claudemux/hooks/on-session-start.sh) | `SessionStart` | Keep `/tmp/teammate-<repo>.sid` in sync when `/clear` or `/resume` rotates the session_id; touch `<repo>.ready` for `tm spawn`'s poll |
+| [`on-session-start.sh`](/plugins/claudemux/hooks/on-session-start.sh) | `SessionStart` | Keep `/tmp/teammate-<slug>.sid` in sync when `/clear` or `/resume` rotates the session_id; touch `<slug>.ready` for `tm spawn`'s poll |
 
 The event sets for `on-busy.sh` and `on-stop.sh` are chosen to cover *every*
 transition in each direction. Why this matters: if `tm wait` only woke on
@@ -31,11 +31,12 @@ transition in each direction. Why this matters: if `tm wait` only woke on
   per turn, not per tool call.
 - **A hook always exits 0.** The harness must not see a hook fail the turn.
   Every failure path degrades silently.
-- **Hooks cannot source `tm`.** They re-declare the path builders
-  (`idle_marker_for`, `busy_marker_for`, `last_file_for`) inline. The
-  invariant is "every protocol path comes from a named builder" — *not*
-  "one shared definition". When the protocol shape changes, both `tm` and
-  the hooks must change together.
+- **Hooks cannot source `tm`.** They re-declare the path builders inline
+  — `idle_marker_for`/`busy_marker_for`/`last_file_for` in the busy/stop
+  hooks, and `repo_slug`/`cwd_file`/`sid_file`/`ready_file` in
+  `on-session-start.sh`. The invariant is "every protocol path comes from
+  a named builder" — *not* "one shared definition". When the protocol
+  shape changes, both `tm` and the hooks must change together.
 - **Cross-platform.** `on-stop.sh` carries its own `stat_size` BSD/GNU
   helper and a `rev_lines` helper (`tac` on Linux, `tail -r` on macOS).
 
@@ -64,7 +65,9 @@ Sid rotation only happens when **both** gates pass:
    (whose cwd may byte-equal a sibling repo) from hijacking a teammate's
    `.sid`.
 2. **Recorded-cwd byte match** — the firing session's cwd must byte-equal
-   `/tmp/teammate-<repo>.cwd`, written by `tm spawn` with the physical path.
+   `/tmp/teammate-<slug>.cwd`, written by `tm spawn` with the physical path.
+   `CLAUDEMUX_TEAMMATE_REPO` carries the raw `<repo>`; the hook folds it to
+   the slug itself via its own `repo_slug` mirror.
 
 Each real rotation is appended to `/tmp/claudemux-sid-changes.log`.
 

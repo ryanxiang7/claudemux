@@ -49,12 +49,112 @@ setup() {
 
 @test "sid_file: matches the prefix used by session_name" {
     # Lock the invariant: sid_file and session_name share the
-    # teammate-<repo> stem. Drift between them would silently break
+    # teammate-<slug> stem. Drift between them would silently break
     # spawn -> wait coordination.
     local sn sf
     sn=$(session_name foo)
     sf=$(sid_file foo)
     [ "$sf" = "/tmp/${sn}.sid" ]
+}
+
+# ---- repo_slug: fold '/' in a nested <repo> into one flat handle ----
+
+@test "repo_slug: single-segment repo is unchanged" {
+    run repo_slug foo
+    [ "$status" -eq 0 ]
+    [ "$output" = "foo" ]
+}
+
+@test "repo_slug: single-segment repo with dashes is unchanged" {
+    # The zero-regression guarantee: an un-nested repo (the only kind
+    # that existed before nesting) slugs to itself byte-for-byte.
+    run repo_slug flow-web-monorepo
+    [ "$status" -eq 0 ]
+    [ "$output" = "flow-web-monorepo" ]
+}
+
+@test "repo_slug: nested repo folds every slash to a dash" {
+    run repo_slug web-project/flow-web-monorepo-memory-quota
+    [ "$status" -eq 0 ]
+    [ "$output" = "web-project-flow-web-monorepo-memory-quota" ]
+}
+
+@test "repo_slug: deeply nested repo folds all separators" {
+    run repo_slug a/b/c/d
+    [ "$status" -eq 0 ]
+    [ "$output" = "a-b-c-d" ]
+}
+
+@test "repo_slug: idempotent — slugging a slug is a no-op" {
+    local once twice
+    once=$(repo_slug web-project/repo)
+    twice=$(repo_slug "$once")
+    [ "$once" = "$twice" ]
+}
+
+@test "repo_slug: dots pass through (dotted repo names out of scope this round)" {
+    run repo_slug my.repo
+    [ "$status" -eq 0 ]
+    [ "$output" = "my.repo" ]
+}
+
+@test "repo_slug: empty input yields empty output" {
+    run repo_slug ""
+    [ "$status" -eq 0 ]
+    [ "$output" = "" ]
+}
+
+# ---- name/file builders: a nested <repo> slugs into one flat handle ----
+
+@test "session_name: nested repo is slugged into one segment" {
+    run session_name web-project/feature-x
+    [ "$status" -eq 0 ]
+    [ "$output" = "teammate-web-project-feature-x" ]
+}
+
+@test "sid_file: nested repo produces no '/' inside the file path" {
+    run sid_file web-project/feature-x
+    [ "$status" -eq 0 ]
+    [ "$output" = "/tmp/teammate-web-project-feature-x.sid" ]
+    # The bug this guards: a raw '/' would make the path point into a
+    # non-existent /tmp/teammate-web-project/ directory.
+    [[ "$output" != */teammate-web-project/* ]]
+}
+
+@test "send_at_file / ready_file / cwd_file / repo_file: nested repo slugged" {
+    run send_at_file web-project/feature-x
+    [ "$output" = "/tmp/teammate-web-project-feature-x.send-at" ]
+    run ready_file web-project/feature-x
+    [ "$output" = "/tmp/teammate-web-project-feature-x.ready" ]
+    run cwd_file web-project/feature-x
+    [ "$output" = "/tmp/teammate-web-project-feature-x.cwd" ]
+    run repo_file web-project/feature-x
+    [ "$output" = "/tmp/teammate-web-project-feature-x.repo" ]
+}
+
+@test "builders: nested repo's session_name and sid_file share the slugged stem" {
+    local sn sf
+    sn=$(session_name web-project/feature-x)
+    sf=$(sid_file web-project/feature-x)
+    [ "$sf" = "/tmp/${sn}.sid" ]
+}
+
+@test "repo_file: single-segment repo matches the flat pre-existing scheme" {
+    run repo_file foo
+    [ "$status" -eq 0 ]
+    [ "$output" = "/tmp/teammate-foo.repo" ]
+}
+
+@test "repo_raw_for_slug: each call emits exactly one newline-terminated line" {
+    # iter_repos pipes every teammate slug through repo_raw_for_slug and
+    # `read`s the result line by line. A missing trailing newline would
+    # concatenate adjacent teammates into a single token — breaking the
+    # tm reload/ctx --all fan-out. These slugs have no .repo sidecar, so
+    # both hit the fallback branch; the joined output must still be two
+    # distinct lines.
+    local out
+    out=$(repo_raw_for_slug zzz-no-such-slug-1; repo_raw_for_slug zzz-no-such-slug-2)
+    [ "$(printf '%s\n' "$out" | grep -c .)" -eq 2 ]
 }
 
 # ---- fmt_age: seconds -> short relative age ----

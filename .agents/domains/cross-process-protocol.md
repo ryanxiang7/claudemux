@@ -12,23 +12,27 @@ seam, read this whole document first.
 
 The protocol uses two namespaces, on purpose:
 
-- **Repo-keyed** — `/tmp/teammate-<repo>.*`. Stable across a teammate's
-  whole life. `<repo>` is the sibling directory name. `tm` owns these:
-  they are how `tm` finds a teammate given a repo name the user typed.
+- **Repo-keyed** — `/tmp/teammate-<slug>.*`. Stable across a teammate's
+  whole life. `<repo>` is a path relative to the dispatcher dir and may be
+  multi-segment (a nested worktree like `group/repo`); `<slug>` is that
+  `<repo>` with every `/` folded to `-` (`repo_slug`), so the protocol
+  file stays a flat filename and the tmux session name stays legal. For a
+  single-segment repo the slug equals the repo verbatim. `tm` owns these:
+  they are how `tm` finds a teammate given a repo the user typed.
 - **Sid-keyed** — `/tmp/claude-idle/<sid>.*`. Keyed by Claude Code's
   `session_id`. The hooks own these: a hook only knows its own
   `session_id`, never a repo name. A `session_id` rotates on `/clear` and
   `/resume`.
 
-The bridge between the two is `/tmp/teammate-<repo>.sid`, which stores the
-current `<sid>` for `<repo>`. `tm` reads it to translate a repo name into
+The bridge between the two is `/tmp/teammate-<slug>.sid`, which stores the
+current `<sid>` for the teammate. `tm` reads it to translate a repo name into
 the sid-keyed marker paths the hooks maintain. The `SessionStart` hook
 rewrites it when the session_id rotates — without that, `tm states` /
 `last` / `wait` would all consult a dead sid.
 
 ## The protocol files
 
-### Repo-keyed — `/tmp/teammate-<repo>.*`
+### Repo-keyed — `/tmp/teammate-<slug>.*`
 
 | File | Builder (`tm`) | Contents | Writer | Reader |
 |---|---|---|---|---|
@@ -36,6 +40,12 @@ rewrites it when the session_id rotates — without that, `tm states` /
 | `.cwd` | `cwd_file` | Physical cwd of the repo at spawn time | `tm spawn` | `on-session-start.sh` (the cwd-match identity gate) |
 | `.ready` | `ready_file` | Empty marker — REPL is up | `on-session-start.sh` | `tm spawn` (poll loop) |
 | `.send-at` | `send_at_file` | Empty; the *mtime* is the timestamp of the last send | `tm` (`_send_keys`) | `tm` (`_wait_pane_quiet`) |
+| `.repo` | `repo_file` | The raw (possibly multi-segment) `<repo>` the teammate was spawned with | `tm spawn` | `tm` (`repo_raw_for_slug` — maps a slugged session name back to its path for `tm states` and the `--all` fan-out) |
+
+A teammate's `<slug>` is its only handle in `tmux ls` and on disk, so the
+`.repo` sidecar is what lets `tm` recover the raw path the dispatcher typed.
+`tm spawn` also rejects a `<repo>` that is absolute or contains a `..`
+segment, and guards against two distinct paths folding to the same slug.
 
 ### Sid-keyed — `/tmp/claude-idle/<sid>.*`
 
@@ -66,10 +76,13 @@ records the drift each one came from.
 
 1. **Path-builder discipline.** Every path above is constructed by a named
    builder function — `sid_file`, `idle_marker_for`, `encode_project_dir`,
-   … — never by raw string concatenation at a use site. This protocol is
-   *the* coupling layer; spreading its shape across many string literals
-   turns the next schema change into an un-atomic multi-file sweep. The
-   hooks cannot `source` `tm`, so they re-declare the builders inline — the
+   … — never by raw string concatenation at a use site. The repo-keyed
+   builders fold `<repo>` through `repo_slug` internally, so call sites
+   keep passing the raw `<repo>`. This protocol is *the* coupling layer;
+   spreading its shape across many string literals turns the next schema
+   change into an un-atomic multi-file sweep. The hooks cannot `source`
+   `tm`, so they re-declare the builders (`repo_slug`, `cwd_file`,
+   `sid_file`, `ready_file` in `on-session-start.sh`) inline — the
    discipline is "a named function at every site", not "one definition".
 2. **One source of truth for the project-dir encoding.** The map from a
    teammate cwd to `~/.claude/projects/<encoded>` replaces every `/` *and*

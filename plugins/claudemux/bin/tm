@@ -2,8 +2,13 @@
 # tm — the dispatcher's CLI: tmux teammate manager, plus task-ledger and
 # context-usage helpers for dispatcher bookkeeping.
 #
-# Each "teammate" is a tmux session named `teammate-<repo>` running an
-# interactive `claude` in `<dispatcher-dir>/<repo>`. The dispatcher
+# Each "teammate" is a tmux session running an interactive `claude` in
+# `<dispatcher-dir>/<repo>`, where `<repo>` is a path relative to the
+# dispatcher dir and may be multi-segment (a nested worktree like
+# `group/repo`). The session is named `teammate-<slug>` and its protocol
+# files are `/tmp/teammate-<slug>.*`, where `<slug>` folds every `/` in
+# `<repo>` to `-` (see `repo_slug`); for a single-segment repo the slug
+# equals the repo verbatim. The dispatcher
 # directory is resolved as `${TM_DISPATCHER_DIR:-$PWD}` once at script
 # start — set TM_DISPATCHER_DIR (typically via the dispatcher's
 # .claude/settings.json `env` block, which scripts/setup.sh writes on
@@ -31,10 +36,10 @@
 #   on-session-start  SessionStart → require $CLAUDEMUX_TEAMMATE_REPO (set
 #                     by `tm spawn` via `tmux new-session -e`); without
 #                     it, no-op. Then byte-match the firing claude's cwd
-#                     against /tmp/teammate-<repo>.cwd, AND require the
+#                     against /tmp/teammate-<slug>.cwd, AND require the
 #                     env's repo equal the matched repo. On hit: update
-#                     /tmp/teammate-<repo>.sid (handles /clear-induced
-#                     sid rotation) AND touch /tmp/teammate-<repo>.ready
+#                     /tmp/teammate-<slug>.sid (handles /clear-induced
+#                     sid rotation) AND touch /tmp/teammate-<slug>.ready
 #                     (the spawn-readiness signal — `tm spawn` polls for
 #                     this file instead of burning a fixed sleep). The
 #                     env gate is what prevents a dispatcher whose cwd
@@ -42,7 +47,7 @@
 #                     hijacking the teammate's sid file.
 # We avoid race-prone jsonl scanning by pre-generating a UUID at spawn time
 # and handing it to `claude --session-id` directly — the jsonl filename then
-# equals that UUID. The sid is stashed in /tmp/teammate-<repo>.sid so
+# equals that UUID. The sid is stashed in /tmp/teammate-<slug>.sid so
 # `tm wait` / `tm last` / `tm states` know which files to read. `tm send`
 # rm's the idle marker + .last + .busy first so a subsequent wait phase
 # reflects the NEW turn, not a stale one.
@@ -78,7 +83,7 @@ die_repo_not_found() {
     (Or set TM_DISPATCHER_DIR in your dispatcher's .claude/settings.json
     — run /claudemux:setup to wire it up automatically.)"
     fi
-    die "repo not found at $path — <repo> must be a direct subdirectory of the dispatcher dir ($DISPATCHER_DIR). Dispatcher dir is read from TM_DISPATCHER_DIR (env) or \$PWD; if it's wrong, set TM_DISPATCHER_DIR or run tm from the right place."
+    die "repo not found at $path — <repo> must resolve to a directory under the dispatcher dir ($DISPATCHER_DIR), either a direct subdirectory or a nested relative path like 'group/repo'. Dispatcher dir is read from TM_DISPATCHER_DIR (env) or \$PWD; if it's wrong, set TM_DISPATCHER_DIR or run tm from the right place."
 }
 
 # tmux `-t NAME` is a PREFIX match, so `has-session -t teammate-x` returns
@@ -97,16 +102,53 @@ die_repo_not_found() {
 # session by iterating list-sessions and matching the session name
 # EXACTLY (awk `$2 == name`). At spawn time, prefer the `-P -F` trick on
 # new-session so the id is returned without a second tmux call.
-session_name() { echo "${PREFIX}$1"; }
+# A teammate <repo> is a path relative to the dispatcher dir, and it may
+# be multi-segment (a nested worktree like `web-project/feature-x`). That
+# raw value names the teammate's working DIRECTORY: `$DISPATCHER_DIR/$repo`,
+# `cd`, and `pwd -P` all handle the multi-segment form unchanged.
+#
+# But the same handle is also stamped into a tmux session name and into
+# `/tmp/teammate-<...>` filenames, and a '/' is illegal there — a session
+# name cannot carry a path separator, and `/tmp/teammate-a/b.sid` would
+# need a `/tmp/teammate-a/` directory that does not exist. `repo_slug`
+# folds every '/' to '-' so the handle becomes one flat token.
+#
+# repo_slug is IDEMPOTENT and a no-op on single-segment repos (no '/' to
+# fold), so `repo_slug foo` == `foo` byte-for-byte — every name and file
+# for an un-nested teammate is identical to the pre-nesting scheme. The
+# five name/file builders below slugify internally, so call sites keep
+# passing the raw <repo>; repo_file records the raw value, and
+# repo_raw_for_slug maps a slug back to it for display.
+repo_slug() { printf '%s' "$1" | tr '/' '-'; }
+
+session_name() { echo "${PREFIX}$(repo_slug "$1")"; }
 resolve_pane_target() {
     local name; name=$(session_name "$1")
     tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null \
         | awk -v n="$name" '$2 == n {print $1; exit}'
 }
-sid_file() { echo "/tmp/teammate-$1.sid"; }
-send_at_file() { echo "/tmp/teammate-$1.send-at"; }
-ready_file() { echo "/tmp/teammate-$1.ready"; }
-cwd_file() { echo "/tmp/teammate-$1.cwd"; }
+sid_file()     { echo "/tmp/teammate-$(repo_slug "$1").sid"; }
+send_at_file() { echo "/tmp/teammate-$(repo_slug "$1").send-at"; }
+ready_file()   { echo "/tmp/teammate-$(repo_slug "$1").ready"; }
+cwd_file()     { echo "/tmp/teammate-$(repo_slug "$1").cwd"; }
+# Records the raw (possibly multi-segment) <repo> a teammate was spawned
+# with, so a slugged session name can be mapped back to its real path.
+# Written by cmd_spawn, removed by cmd_kill.
+repo_file()    { echo "/tmp/teammate-$(repo_slug "$1").repo"; }
+
+# Map a slugged session handle back to the raw <repo>, emitted as exactly
+# one newline-terminated line so `iter_repos` keeps its line-per-teammate
+# contract (its --all consumers `read` it line by line). The .repo sidecar
+# holds the raw value; absent it (teammate spawned by an older tm), fall
+# back to the slug — for a single-segment repo the two are equal anyway.
+# The command substitution strips any trailing newline from the file, so
+# the `printf` adds exactly one regardless of which branch produced the
+# value.
+repo_raw_for_slug() {
+    local rf raw; rf=$(repo_file "$1")
+    if [[ -s "$rf" ]]; then raw=$(cat "$rf"); else raw="$1"; fi
+    printf '%s\n' "$raw"
+}
 
 # Builders for the per-sid files under $IDLE_DIR. The three files form
 # one protocol with hooks/on-busy.sh and hooks/on-stop.sh:
@@ -314,12 +356,18 @@ require_session() {
     echo "$name"
 }
 
-# Enumerate every running teammate's short repo name. Used by --all
+# Enumerate every running teammate's <repo> handle. Used by --all
 # fan-out commands. Source of truth is tmux (a stale sid file without
-# a live session doesn't count).
+# a live session doesn't count). tmux only knows the slugged session
+# name, so each is mapped back to the raw (possibly multi-segment)
+# <repo> via the .repo sidecar — so a nested teammate fans out under
+# the same path the dispatcher spawned it with.
 iter_repos() {
-    { tmux ls 2>/dev/null || true; } \
-        | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print substr($1, length(p)+1)}'
+    local slug
+    while IFS= read -r slug; do
+        [[ -n "$slug" ]] && repo_raw_for_slug "$slug"
+    done < <( { tmux ls 2>/dev/null || true; } \
+        | awk -F: -v p="$PREFIX" '$1 ~ "^"p {print substr($1, length(p)+1)}')
 }
 
 # --- shared helpers used by send / wait / compact / spawn --prompt ---
@@ -566,8 +614,37 @@ cmd_spawn() {
         die "tm spawn: --no-wait is only valid with --prompt (a fresh spawn without a prompt already returns as soon as the REPL is ready)"
     fi
 
+    # <repo> is a path relative to the dispatcher dir; it may be nested
+    # (`group/repo`). Normalize and validate before it is used to build
+    # both a directory path and a slug: tolerate a single trailing slash,
+    # reject an absolute path (would escape the dispatcher dir) and any
+    # '..' segment (path traversal out of the dispatcher tree). A
+    # single-segment repo trips none of these — zero behavior change.
+    repo="${repo%/}"
+    [[ -n "$repo" ]] || die "tm spawn: <repo> is empty after trimming a trailing slash"
+    [[ "$repo" != /* ]] || die "tm spawn: <repo> must be RELATIVE to the dispatcher dir, not an absolute path: $repo"
+    case "/$repo/" in
+        */../*) die "tm spawn: <repo> must not contain a '..' path segment: $repo" ;;
+    esac
+
     local path="$DISPATCHER_DIR/$repo"
     [[ -d "$path" ]] || die_repo_not_found spawn "$repo" "$path"
+
+    # The teammate's flat handle for its tmux session name and
+    # /tmp/teammate-* files (see repo_slug). Equals $repo for an
+    # un-nested repo.
+    local rslug; rslug=$(repo_slug "$repo")
+
+    # Slug collision guard. Two different <repo> paths can fold to the
+    # same slug (e.g. `a/b` and `a-b` both -> `a-b`), which would make
+    # them silently share a tmux session and protocol files. The .repo
+    # sidecar records the raw repo behind a live slug; if one exists for
+    # a DIFFERENT repo, fail loudly instead of colliding.
+    local rfile; rfile=$(repo_file "$repo")
+    if [[ -s "$rfile" ]]; then
+        local prior; prior=$(cat "$rfile")
+        [[ "$prior" == "$repo" ]] || die "tm spawn: slug collision — '$repo' and the already-tracked '$prior' both map to the teammate handle '$rslug'. Rename one directory, or 'tm kill $prior' first."
+    fi
 
     # Normalize to the physical path. Claude Code emits cwd as the physical
     # path in hook payloads (macOS resolves /tmp → /private/tmp etc), so
@@ -591,17 +668,19 @@ cmd_spawn() {
     # so the prompt box / /resume picker / terminal title identify the teammate
     # at a glance instead of using claude's auto-generated label.
     #
-    #   --task <slug>          -> <repo>-<sanitized-slug>
-    #   fresh, no --task       -> <repo>-<rand4>
+    #   --task <slug>          -> <slug>-<sanitized-task-slug>
+    #   fresh, no --task       -> <slug>-<rand4>
     #   --resume + no --task   -> empty: keep the existing session's name as-is
-    #   --resume + --task      -> <repo>-<sanitized-slug> (explicit relabel)
+    #   --resume + --task      -> <slug>-<sanitized-task-slug> (explicit relabel)
+    # The repo half uses the slug (not the raw <repo>) so a nested repo
+    # does not put a '/' into the conversation name.
     local display_name=""
     if [[ -n "$task" ]]; then
         local slug; slug=$(sanitize_task_slug "$task")
         [[ -n "$slug" ]] || die "tm spawn: --task '$task' has no usable characters after sanitization (allowlist: ASCII letters/digits + CJK Unified Ideographs)"
-        display_name="${repo}-${slug}"
+        display_name="${rslug}-${slug}"
     elif [[ -z "$resume_sid" ]]; then
-        display_name="${repo}-$(rand_suffix)"
+        display_name="${rslug}-$(rand_suffix)"
     fi
     local name_arg=""
     [[ -n "$display_name" ]] && name_arg=" -n '$display_name'"
@@ -632,17 +711,23 @@ cmd_spawn() {
     # the moment the hook can possibly fire.
     echo "$cwd_phys" > "$(cwd_file "$repo")"
 
+    # Record the raw (possibly multi-segment) <repo> so `tm states` and
+    # the --all fan-out verbs can map the slugged session name back to
+    # the path the teammate was spawned with. cmd_kill removes it.
+    echo "$repo" > "$(repo_file "$repo")"
+
     # -P -F prints the new session's internal id (e.g. `$21`); we use it
     # as the pane-target for the subsequent send-keys so we don't rely on
     # name prefix-match resolution.
     #
     # -e CLAUDEMUX_TEAMMATE_REPO=<repo> stamps a tmux-session env var that
-    # claude (and the on-session-start hook it fires) inherit. The hook
-    # uses this as a positive identity gate: only sessions launched by
-    # `tm spawn` get the env var, so the dispatcher itself (or any ad-hoc
-    # `cd <repo> && claude`) can never hijack /tmp/teammate-<repo>.sid
-    # via cwd collision. The env survives /clear and /resume because
-    # those don't restart the claude process.
+    # claude (and the on-session-start hook it fires) inherit. It carries
+    # the raw <repo> (the hook slugifies it itself via its own repo_slug
+    # mirror). The hook uses this as a positive identity gate: only
+    # sessions launched by `tm spawn` get the env var, so the dispatcher
+    # itself (or any ad-hoc `cd <repo> && claude`) can never hijack
+    # /tmp/teammate-<slug>.sid via cwd collision. The env survives /clear
+    # and /resume because those don't restart the claude process.
     local pane; pane=$(tmux new-session -d -s "$name" -c "$cwd_phys" \
         -e "CLAUDEMUX_TEAMMATE_REPO=$repo" -P -F '#{session_id}')
     local sid sf; sf=$(sid_file "$repo")
@@ -906,7 +991,7 @@ cmd_kill() {
     if sid=$(resolve_sid "$repo"); then
         clear_idle "$sid" || true
     fi
-    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")"
+    rm -f "$(sid_file "$repo")" "$(send_at_file "$repo")" "$(ready_file "$repo")" "$(cwd_file "$repo")" "$(repo_file "$repo")"
     if tmux has-session -t "=$name" 2>/dev/null; then
         tmux kill-session -t "=$name"
         echo "killed: $repo (tmux=$name)"
@@ -1057,7 +1142,13 @@ cmd_states() {
     {
         printf 'REPO\tSID\tBUSY\tLAST\tPREVIEW\n'
         while IFS= read -r name; do
-            local repo="${name#"$PREFIX"}"
+            # The session name carries only the slug; map it back to the
+            # raw <repo> via the .repo sidecar so the REPO column shows a
+            # handle the user can pass straight back to any tm verb. The
+            # slug builders are idempotent, so resolve_sid / pane_busy work
+            # whether handed the raw repo or the slug.
+            local slug="${name#"$PREFIX"}"
+            local repo; repo=$(repo_raw_for_slug "$slug")
             local sid sid_short busy last preview
             if sid=$(resolve_sid "$repo"); then
                 sid_short="${sid:0:8}"
@@ -1829,17 +1920,20 @@ help_spawn() {
 tm spawn <repo> [--task <slug>] [--prompt "..."] [--no-wait]
 
       Launch a claude teammate in <dispatcher-dir>/<repo>, where the
-      dispatcher dir comes from TM_DISPATCHER_DIR (or $PWD fallback);
-      fails with "repo not found" if <repo> isn't a direct
-      subdirectory of it.
+      dispatcher dir comes from TM_DISPATCHER_DIR (or $PWD fallback).
+      <repo> is a path relative to the dispatcher dir and may be
+      multi-segment (a nested worktree like 'group/repo'); fails with
+      "repo not found" if it doesn't resolve to a directory under the
+      dispatcher dir. The tmux session and /tmp/teammate-* files use a
+      slug that folds every '/' in <repo> to '-'.
       Without --prompt, returns once the REPL signals SessionStart
       (typically 2-4s on a warm Mac). With --prompt "...", sleeps 3s
       after ready, sends the prompt, waits for Stop, and prints the
       teammate's first-turn reply on stdout — atomic bootstrap, one
       call. --no-wait combined with --prompt sends without waiting.
-      --task <slug> names the conversation <repo>-<slug>. Allowlist:
+      --task <slug> names the conversation <repo-slug>-<slug>. Allowlist:
       ASCII letters/digits + CJK Unified Ideographs (中日韩汉字).
-      Without --task a fresh spawn auto-names <repo>-<rand4>.
+      Without --task a fresh spawn auto-names <repo-slug>-<rand4>.
       Fresh spawns also write an empty /tmp/claude-idle/<sid>.last
       sentinel, so 'tm last' before any reply returns a clear "no
       reply yet" error instead of stale content from an earlier sid.
@@ -2000,7 +2094,7 @@ help_kill() {
 tm kill <repo>
 
       Kill the teammate's tmux session and clean up its state files
-      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}).
+      (/tmp/teammate-<slug>.{sid,send-at,ready,cwd,repo}).
 EOF
 }
 

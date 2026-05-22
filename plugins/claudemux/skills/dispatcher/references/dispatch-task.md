@@ -2,7 +2,7 @@
 
 Read this when you need to push work into a sibling repo — either bring up a new teammate to handle it, or hand a follow-up to an existing one. Skip when you only need to read teammate state (use `wait-and-readback.md`) or look up past sessions (`inspect-and-resume.md`).
 
-The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm overview`); `<repo>` below is the short name of a sibling subdirectory directly under it.
+The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm overview`); `<repo>` below is a path relative to it — a direct sibling subdirectory (`my-repo`) or a nested worktree (`web-project/feature-x`), passed verbatim to every `tm` verb.
 
 ## Three primitives
 

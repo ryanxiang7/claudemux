@@ -21,7 +21,7 @@ The script is one file, organized top to bottom:
 |---|---|
 | Header | `set -euo pipefail`, `PREFIX="teammate-"`, `IDLE_DIR`, dispatcher-dir resolution |
 | OS-detection helpers | `stat_size`, `stat_mtime`, `stat_mtime_human` — BSD/GNU split, detected once into `_STAT_FLAVOR` |
-| Path builders | `sid_file`, `cwd_file`, `ready_file`, `send_at_file`, `idle_marker_for`, `busy_marker_for`, `last_file_for`, `encode_project_dir`, `project_dir_for_repo`, `memory_dir` |
+| Path builders | `repo_slug`, `session_name`, `sid_file`, `cwd_file`, `ready_file`, `send_at_file`, `repo_file`, `repo_raw_for_slug`, `idle_marker_for`, `busy_marker_for`, `last_file_for`, `encode_project_dir`, `project_dir_for_repo`, `memory_dir` |
 | Internal helpers | `die`, `session_name`, `resolve_pane_target`, `resolve_sid`, `sanitize_task_slug`, `pane_busy`, `iter_repos`, `clear_idle`, `fmt_age`, `fmt_size`, … |
 | Shared atomic helpers | `_send_keys`, `_wait_idle_signal`, `_wait_pane_quiet`, `_print_last_or_empty`, `_echo_ctx_to_stderr` |
 | `cmd_*` functions | one per verb, each paired with a `help_*` function |
@@ -48,6 +48,10 @@ record — see [decision 0004](/.agents/decisions/0004-cross-process-cross-platf
 - **Never concatenate a protocol path by hand.** Every `/tmp/teammate-*`,
   `/tmp/claude-idle/*`, or `~/.claude/projects/<encoded>/...` path is built
   by a named builder function. Add a builder rather than inlining a string.
+  A `<repo>` may be a multi-segment nested path; the `/tmp/teammate-*`
+  builders fold it through `repo_slug` (`/` → `-`) so the filename and the
+  tmux session name stay flat. Call sites pass the raw `<repo>`; `repo_file`
+  records it and `repo_raw_for_slug` maps a slug back for display.
 - **Never call a flag that differs between BSD and GNU directly.** `stat`,
   `sed -i`, `date -d`, `tail -r`/`tac`, `find -printf`, `readlink -f` go
   through an OS-detected helper. CI runs on Ubuntu and macOS; a BSD-only
