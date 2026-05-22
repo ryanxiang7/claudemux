@@ -26,6 +26,7 @@ future agent reads these to avoid re-litigating a settled question.
 | [0015](/.agents/decisions/0015-feishu-channel-orphan-detection-by-stdin-eof.md) | The Feishu channel detects an exited parent by stdin EOF, not by polling `process.ppid` | Accepted |
 | [0016](/.agents/decisions/0016-feishu-doc-comment-fetch-via-batch-query.md) | Feishu doc-comment text is fetched with `fileComment.batchQuery`, since `get` does not serve local-selection comments | Accepted |
 | [0017](/.agents/decisions/0017-feishu-worker-scoped-subscription.md) | Feishu Worker-scoped subscription routes through a single-app co-hosted holder onto a pure-derived workspace identity | Accepted |
+| [0018](/.agents/decisions/0018-mcp-native-orchestration-core.md) | The `next` line replaces `tm` with an MCP-native orchestration core hosting multiple agent families | Accepted |
 
 ## When to add a record
 
