@@ -51,7 +51,7 @@ import {
   sendAtFile,
   sidFile,
 } from './paths'
-import type { TmResult, TmRunOptions, TmRunner } from './tm'
+import type { TmResult, TmRunOptions } from './tm'
 import type { ColumnRunner } from './column'
 import type { GrepRunner } from './grep'
 import type { TmuxRunner } from './tmux'
@@ -67,8 +67,6 @@ export interface NativeEnv {
   runColumn: ColumnRunner
   /** Matches input against a regex via `grep -qE` — for the `poll` verb. */
   runGrep: GrepRunner
-  /** Shells out to `tm` — for `reload`, which fans out over `tm send`. */
-  runTm: TmRunner
   /** The dispatcher directory — the parent of the sibling teammate repos. */
   dispatcherDir: string
   /** The `~/.claude/projects` directory that holds Claude Code transcripts. */
@@ -92,26 +90,6 @@ export type NativeVerb = (
  */
 function die(message: string): TmResult {
   return { code: 1, stdout: '', stderr: `tm: ${message}\n` }
-}
-
-/**
- * Whether `tm`'s `main` help pre-scan would intercept these verb arguments
- * and print per-verb help instead of dispatching to the verb. `main` scans
- * left to right: a `-h`/`--help` triggers help; a `--prompt` value or the
- * first non-flag positional stops the scan (help text must not swallow
- * prompt data that happens to contain `--help`).
- *
- * `core.ts` consults this so a `--help` invocation behaves as it did under
- * the Phase A shell-out — `tm` prints the help text — rather than reaching a
- * native handler, which has no help text of its own.
- */
-export function triggersTmHelp(args: readonly string[]): boolean {
-  for (const arg of args) {
-    if (arg === '-h' || arg === '--help') return true
-    if (arg === '--prompt' || arg.startsWith('--prompt=')) return false
-    if (!arg.startsWith('-')) return false
-  }
-  return false
 }
 
 /**
@@ -1771,12 +1749,16 @@ const doctor: NativeVerb = async (args, _options, env) => {
   let out = ''
 
   // --- tm executable ---
-  // This module lives at `core/src/native.ts`; the Node CLI wrapper sits at
-  // `core/bin/tm`, and the plugin manifest at `<plugin-root>/.claude-plugin/
-  // plugin.json`. Resolve both relative to this file so the answer survives
-  // a renamed plugin directory.
+  // This module lives at `core/src/native.ts` (source) or, in the production
+  // bundle, at `core/dist/cli.mjs` — both are one directory below `core/`.
+  // The user-facing PATH entry is the launcher at
+  // `<plugin-root>/bin/tm`, two `..` segments above either of those. The
+  // plugin manifest lives at `<plugin-root>/.claude-plugin/plugin.json`,
+  // also two `..` up. Resolving both relative to this file means the answer
+  // survives a renamed plugin directory and reaches the same path whether
+  // the bundle or the source file is the entry.
   const moduleDir = dirname(fileURLToPath(import.meta.url))
-  const tmWrapper = join(moduleDir, '..', 'bin', 'tm')
+  const tmWrapper = join(moduleDir, '..', '..', 'bin', 'tm')
   const pluginJson = join(moduleDir, '..', '..', '.claude-plugin', 'plugin.json')
   let version = 'unknown'
   let pluginJsonPresent = false
