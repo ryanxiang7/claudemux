@@ -33,6 +33,48 @@ import {
   codexSocketPath,
   codexTeammateDir,
 } from '../src/paths'
+import { spawnCapture } from '../src/proc'
+
+/**
+ * Return every pid in the process group whose leader is `pgid`. `pgrep
+ * -g <pgid>` is available on both macOS (BSD pgrep) and Linux (procps
+ * pgrep). Returns the empty array if the group has no members — the
+ * exit code is 1 in that case, which spawnCapture surfaces as `code:1`
+ * with empty stdout.
+ */
+async function pgidMembers(pgid: number): Promise<number[]> {
+  const result = await spawnCapture(['pgrep', '-g', String(pgid)])
+  return result.stdout
+    .split('\n')
+    .map((line) => Number.parseInt(line.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0)
+}
+
+/**
+ * Poll `produce` every 25ms until `predicate` returns true or `timeoutMs`
+ * elapses. Returns the last produced value; throws if the predicate is
+ * never satisfied within the budget. Replaces single hard-coded sleeps
+ * in tests that wait for an asynchronous side effect (a spawned child
+ * appearing in a process group, a pid file being written, etc).
+ */
+async function pollFor<T>(
+  produce: () => Promise<T> | T,
+  predicate: (value: T) => boolean,
+  timeoutMs: number,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  let value = await produce()
+  while (!predicate(value)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `pollFor: predicate not satisfied within ${timeoutMs}ms (last value: ${JSON.stringify(value)})`,
+      )
+    }
+    await new Promise((res) => setTimeout(res, 25))
+    value = await produce()
+  }
+  return value
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FAKE_CODEX = resolve(HERE, 'fixtures', 'codex-fake', 'codex')
@@ -153,6 +195,50 @@ describe('codex-supervisor — reap', () => {
     expect(daemonAlive(name)).toBe(false)
     // Reap should still tear down the directory.
     await reapDaemon(name)
+    expect(existsSync(codexTeammateDir(name))).toBe(false)
+  })
+
+  test('reapDaemon group-kills a child that survived a SIGKILL of the leader', async () => {
+    // The real codex CLI is a node wrapper that spawns a rust child in
+    // the same process group. A historical leader-only kill orphaned
+    // the child; the dispatcher hit 11 of those during stage 4
+    // dogfooding. This test fixes that mode at the supervisor layer:
+    // ask the fake to spawn a same-group child, SIGKILL only the
+    // leader (mimicking an external `kill -9` or a wrapper crash),
+    // then call reapDaemon and assert the in-group child is gone too.
+    const name = nameUnder()
+    const state = await spawnDaemon({
+      name,
+      binPath: FAKE_CODEX,
+      readyTimeoutMs: 5000,
+      env: { ...process.env, CODEX_FAKE_SPAWN_CHILD: '1' },
+    })
+    // Poll for the fake's child to appear in the group. A fixed sleep
+    // would flake on a slow CI runner where the spawn round-trip
+    // occasionally takes longer than the wait; polling stays cheap on
+    // the common path and only stretches when needed.
+    const childrenBefore = await pollFor(
+      () => pgidMembers(state.pid),
+      (members) => members.length >= 2,
+      3000,
+    )
+    expect(childrenBefore.length).toBeGreaterThanOrEqual(2)
+    expect(childrenBefore).toContain(state.pid)
+
+    // SIGKILL only the leader. This is the failure mode the historical
+    // single-pid `process.kill(state.pid, 'SIGKILL')` would have stopped at.
+    process.kill(state.pid, 'SIGKILL')
+    await new Promise((res) => setTimeout(res, 150))
+    expect(isProcessAlive(state.pid)).toBe(false)
+    const childrenAfterCrash = await pgidMembers(state.pid)
+    // The leader is gone but a same-group child should still be running.
+    expect(childrenAfterCrash.length).toBeGreaterThanOrEqual(1)
+
+    // The fix: reapDaemon walks the process group, not just the leader.
+    await reapDaemon(name)
+    await new Promise((res) => setTimeout(res, 150))
+    const childrenAfterReap = await pgidMembers(state.pid)
+    expect(childrenAfterReap).toEqual([])
     expect(existsSync(codexTeammateDir(name))).toBe(false)
   })
 })
