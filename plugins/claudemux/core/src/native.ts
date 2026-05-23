@@ -55,6 +55,20 @@ import type { TmResult, TmRunOptions } from './tm'
 import type { ColumnRunner } from './column'
 import type { GrepRunner } from './grep'
 import type { TmuxRunner } from './tmux'
+import {
+  codexAsk,
+  codexKill,
+  codexSend,
+  codexSpawn,
+  codexWait,
+  isCodexTarget,
+} from './codex-verbs'
+import {
+  isProcessAlive as codexProcessAlive,
+  listDaemons as listCodexDaemons,
+  readDaemonState as readCodexState,
+  reapDaemon as reapCodexDaemon,
+} from './codex-supervisor'
 
 /** The teammate session-name prefix — `tm`'s `PREFIX`, mirrored here. */
 const SESSION_PREFIX = 'teammate-'
@@ -1132,6 +1146,7 @@ function clearIdle(sid: string): void {
 const kill: NativeVerb = async (args, _options, env) => {
   const repo = args[0] ?? ''
   if (repo.length === 0) return die('usage: tm kill <repo>')
+  if (isCodexTarget(repo)) return codexKill(repo)
   const name = `${SESSION_PREFIX}${repo}`
 
   // A recorded sid means there are hook artifacts to clear first.
@@ -1874,6 +1889,44 @@ const doctor: NativeVerb = async (args, _options, env) => {
     out += kv('count', String(sessionRows.length))
     for (const name of sessionRows) out += `  ${name}\n`
   }
+  out += '\n'
+
+  // --- codex teammates ---
+  // The codex driver does not run inside tmux, so its teammates are
+  // enumerated from the FS registry under `codexRegistryRoot()`. A live
+  // entry (pid still answering signal 0) is reported as such; a dead-pid
+  // entry is an orphan from a crashed daemon or an unclean reboot — those
+  // are reaped here as part of the report, because a dead pid file
+  // misleads every subsequent `daemonAlive` check.
+  out += 'codex teammates:\n'
+  const codexNames = listCodexDaemons()
+  if (codexNames.length === 0) {
+    out += "  (none — use 'tm spawn codex-<n>' to launch one)\n"
+  } else {
+    const reaped: string[] = []
+    const live: { name: string; pid: number; startedAt: number }[] = []
+    for (const name of codexNames) {
+      const state = readCodexState(name)
+      if (state === null) {
+        // No usable state — treat as orphan.
+        reaped.push(name)
+        await reapCodexDaemon(name)
+      } else if (!codexProcessAlive(state.pid)) {
+        reaped.push(name)
+        await reapCodexDaemon(name)
+      } else {
+        live.push({ name, pid: state.pid, startedAt: state.startedAt })
+      }
+    }
+    out += kv('count', String(live.length))
+    for (const t of live) {
+      out += `  ${t.name} (pid=${t.pid}, started ${fmtLocalDateTime(t.startedAt)})\n`
+    }
+    if (reaped.length > 0) {
+      out += kv('reaped orphans', String(reaped.length))
+      for (const name of reaped) out += `  ${name}\n`
+    }
+  }
 
   return { code: 0, stdout: out, stderr: '' }
 }
@@ -1990,6 +2043,19 @@ const spawn: NativeVerb = async (args, _options, env) => {
   const repo = args[0] ?? ''
   if (repo.length === 0) {
     return die('usage: tm spawn <repo> [--task <slug>] [--prompt "..."] [--no-wait]')
+  }
+  // A `codex-<n>` target spawns a codex `app-server` daemon instead of a
+  // Claude REPL inside tmux. The codex driver has its own argument
+  // surface (no `--task`, no `--resume` yet); the dispatcher gets a
+  // uniform `TmResult` back either way. See `codex-verbs.ts`.
+  if (isCodexTarget(repo)) {
+    if (args.length > 1) {
+      return die(
+        `tm spawn: codex teammate '${repo}' takes no additional arguments yet ` +
+          `(stage 4 surface is just 'tm spawn ${repo}'; --prompt etc. land later)`,
+      )
+    }
+    return codexSpawn(repo)
   }
   const parsed = parseSpawnArgs(args.slice(1))
   if ('error' in parsed) return parsed.error
@@ -2240,6 +2306,37 @@ function parseSendArgs(args: readonly string[]): SendArgs | { error: TmResult } 
  * to ..." preamble, the post-turn ctx echo) ride stderr exclusively.
  */
 const send: NativeVerb = async (args, _options, env) => {
+  const firstArg = args[0] ?? ''
+  if (isCodexTarget(firstArg)) {
+    // Codex teammates speak over WebSocket, not tmux + hooks. The codex
+    // `send` understands `--prompt` and `--no-wait`; tmux-bound flags
+    // (`--pane-quiet`, `--timeout`) are rejected explicitly rather than
+    // silently ignored. `--no-wait` here means "fire turn/start and
+    // return without blocking on turn/completed" — the matching
+    // `tm wait codex-<n>` picks up the completion later, so the verb
+    // pair behaves like the Claude-side `tm send --no-wait` / `tm wait`
+    // composition.
+    const rest = args.slice(1)
+    let prompt: string | null = null
+    let noWait = false
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i]
+      if (a === '--prompt') {
+        if (i + 1 >= rest.length) return die('tm send: --prompt requires a value')
+        prompt = rest[i + 1] ?? ''
+        i += 1
+      } else if (a === '--no-wait') {
+        noWait = true
+      } else {
+        return die(
+          `tm send: codex teammate '${firstArg}' does not yet accept '${a}' ` +
+            `(stage 4 surface is '--prompt' and '--no-wait')`,
+        )
+      }
+    }
+    if (prompt === null) return die('tm send: missing --prompt')
+    return codexSend(firstArg, prompt, { noWait })
+  }
   const parsed = parseSendArgs(args)
   if ('error' in parsed) return parsed.error
   const { repo, prompt, hasPrompt, noWait, paneQuiet, timeout } = parsed
@@ -2344,6 +2441,21 @@ function parseWaitArgs(args: readonly string[]): WaitArgs | { error: TmResult } 
  * Stop that wakes the wait, not a prior one.
  */
 const wait: NativeVerb = async (args, _options, env) => {
+  const firstArg = args[0] ?? ''
+  if (isCodexTarget(firstArg)) {
+    // Codex `wait`: block on the next `turn/completed` notification from
+    // the daemon. The tmux-bound flags (timeout, --fresh, --pane-quiet)
+    // are not applicable yet — they encode signal-detection knobs for
+    // the hooks-based driver.
+    const rest = args.slice(1)
+    if (rest.length > 0) {
+      return die(
+        `tm wait: codex teammate '${firstArg}' takes no additional arguments yet ` +
+          `(stage 4 surface is just 'tm wait ${firstArg}')`,
+      )
+    }
+    return codexWait(firstArg)
+  }
   const parsed = parseWaitArgs(args)
   if ('error' in parsed) return parsed.error
   const { repo, timeout, fresh, paneQuiet } = parsed
@@ -2672,6 +2784,24 @@ const resume: NativeVerb = async (args, _options, env) => {
 }
 
 /** Every natively-migrated verb, keyed by verb name. */
+/**
+ * `tm ask "<prompt>"` — borrow an idle named codex teammate, run one turn
+ * on a fresh thread, return the teammate. The "pool" is the spawned
+ * `codex-<n>` set; this verb does not name a teammate. Always routes
+ * into the codex driver, never into the tmux path.
+ */
+const ask: NativeVerb = async (args, _options, _env) => {
+  if (args.length === 0) {
+    return die('usage: tm ask "<prompt>"')
+  }
+  if (args.length > 1) {
+    return die(
+      `tm ask: takes exactly one positional argument (the prompt) — got ${args.length}`,
+    )
+  }
+  return codexAsk(args[0] ?? '')
+}
+
 export const NATIVE_VERBS: Readonly<Record<string, NativeVerb>> = {
   ls,
   last,
@@ -2690,6 +2820,7 @@ export const NATIVE_VERBS: Readonly<Record<string, NativeVerb>> = {
   wait,
   compact,
   resume,
+  ask,
 }
 
 /** Whether `core.ts` should run this verb natively rather than shelling out. */

@@ -8,13 +8,17 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/cli.mjs --banner:js=\"#!/usr/bin/env node\""
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/cli.mjs --banner:js=\"#!/usr/bin/env node\nimport{createRequire as __cmxCR}from'node:module';const require=__cmxCR(import.meta.url);\""
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.24.2",
     "tsx": "^4.22.3",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
   }
 }
