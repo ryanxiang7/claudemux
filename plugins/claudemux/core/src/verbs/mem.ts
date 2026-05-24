@@ -24,6 +24,8 @@ function formatMem(engineKind: string, result: TextResult): TmResult {
             ? `${result.reason}\n`
             : `  not supported: ${result.reason}\n`,
       }
+    case 'not-found':
+      return { code: 1, stdout: '', stderr: `tm: mem: ${result.reason}\n` }
     case 'failed':
       return { code: 1, stdout: '', stderr: `tm: ${result.message}\n` }
   }

@@ -43,6 +43,7 @@ import type {
 } from '../types'
 import type { ClientInfo, InitializeResponse } from '../../codex-protocol/index.js'
 import type { ThreadItem } from '../../codex-protocol/v2/ThreadItem.js'
+import type { ThreadReadResponse } from '../../codex-protocol/v2/ThreadReadResponse.js'
 import type { ThreadResumeResponse } from '../../codex-protocol/v2/ThreadResumeResponse.js'
 import type { ThreadStartResponse } from '../../codex-protocol/v2/ThreadStartResponse.js'
 import type { TmResult } from '../../tm'
@@ -72,6 +73,12 @@ import {
   removeBaseRecord,
   reserveBaseRecord,
 } from './persistence.js'
+import {
+  type CodexRolloutSnapshot,
+  CODEX_ROLLOUT_BUSY_WINDOW_MS,
+  readCodexRolloutSnapshot,
+  rolloutRecentlyActive,
+} from './rollout.js'
 import { validateTeammateName } from '../../identity/name.js'
 
 export const CODEX_CLIENT_INFO: ClientInfo = {
@@ -82,6 +89,7 @@ export const CODEX_CLIENT_INFO: ClientInfo = {
 
 const COMPACT_REASON =
   'codex compacts its own context automatically when the 252k window fills'
+const CODEX_STATUS_RPC_TIMEOUT_MS = 250
 
 export interface CodexEngineOptions {
   readonly binPath?: string
@@ -167,6 +175,13 @@ function isTimedOut<T>(value: T | { timedOut: true }): value is { timedOut: true
   )
 }
 
+function closeClientWhenSettled(clientPromise: Promise<CodexWsClient>): void {
+  clientPromise.then(
+    (lateClient) => lateClient.close(),
+    () => {},
+  )
+}
+
 function codexNameFailure(name: string): string | null {
   const validation = validateTeammateName(name)
   return validation.kind === 'ok'
@@ -204,28 +219,58 @@ function fmtAge(age: number): string {
   return `${Math.floor(age / 86400)}d`
 }
 
+interface CodexRuntimeProbe {
+  readonly socketReachable: 'yes' | 'no' | 'unknown'
+  readonly threadStatus: string | null
+  readonly threadState: 'idle' | 'busy' | 'unknown' | null
+}
+
+function statusState(statusType: string | null): CodexRuntimeProbe['threadState'] {
+  switch (statusType) {
+    case 'active':
+      return 'busy'
+    case 'idle':
+    case 'notLoaded':
+      return 'idle'
+    case 'systemError':
+      return 'unknown'
+    default:
+      return null
+  }
+}
+
 function codexDaemonState(
   name: string,
   state: ReturnType<typeof readDaemonState> = readDaemonState(name),
+  runtime: CodexRuntimeProbe | null = null,
+  rollout: CodexRolloutSnapshot | null = null,
+  nowMs = Date.now(),
 ): 'idle' | 'busy' | 'unknown' {
   if (state === null || !isProcessAlive(state.pid)) return 'unknown'
-  return daemonBorrowed(name) ? 'busy' : 'idle'
+  if (runtime?.threadState === 'busy') return 'busy'
+  if (daemonBorrowed(name)) return 'busy'
+  if (rolloutRecentlyActive(rollout, nowMs)) return 'busy'
+  if (runtime?.threadState === 'idle') return 'idle'
+  if (runtime?.threadState === 'unknown' || runtime?.socketReachable === 'no') return 'unknown'
+  return 'idle'
 }
 
 function codexListExtras(
   name: string,
   nowSec: number,
   state: ReturnType<typeof readDaemonState>,
+  daemonState: 'idle' | 'busy' | 'unknown',
+  rollout: CodexRolloutSnapshot | null,
+  runtime: CodexRuntimeProbe | null,
 ): Readonly<Record<string, string>> {
   const pid = state?.pid === undefined ? '' : String(state.pid)
   const thread = state?.threadId ?? ''
-  const daemonState = codexDaemonState(name, state)
-  const lastSeen =
-    state?.lastSeen === null || state?.lastSeen === undefined ? '' : String(state.lastSeen)
-  const lastSeenAge =
-    state?.lastSeen === null || state?.lastSeen === undefined
-      ? '-'
-      : fmtAge(Math.max(0, nowSec - state.lastSeen))
+  const rolloutSeen = rollout === null ? null : Math.floor(rollout.mtimeMs / 1000)
+  const recordedSeen = state?.lastSeen ?? null
+  const activitySeen =
+    recordedSeen === null ? rolloutSeen : rolloutSeen === null ? recordedSeen : Math.max(recordedSeen, rolloutSeen)
+  const lastSeen = activitySeen === null ? '' : String(activitySeen)
+  const lastSeenAge = activitySeen === null ? '-' : fmtAge(Math.max(0, nowSec - activitySeen))
   return {
     sidShort: thread.length === 0 ? 'codex' : thread.slice(0, 8),
     busy: daemonState === 'busy' ? 'yes' : daemonState === 'idle' ? 'no' : '?',
@@ -233,9 +278,42 @@ function codexListExtras(
     preview: pid.length === 0 ? 'codex daemon' : `pid=${pid}`,
     pid,
     socket: state?.socketPath ?? '',
+    socketReachable: runtime?.socketReachable ?? 'unknown',
     thread,
     lastSeen,
+    rollout: rollout?.path ?? '',
+    threadStatus: runtime?.threadStatus ?? '',
   }
+}
+
+function statusPane(args: {
+  readonly name: string
+  readonly state: ReturnType<typeof readDaemonState>
+  readonly base: ReturnType<typeof readBaseRecord>
+  readonly meta: ReturnType<typeof readCodexMeta>
+  readonly daemonState: 'idle' | 'busy' | 'unknown'
+  readonly rollout: CodexRolloutSnapshot | null
+  readonly runtime: CodexRuntimeProbe | null
+  readonly nowSec: number
+}): string {
+  const activitySeen =
+    args.rollout === null
+      ? args.state?.lastSeen ?? null
+      : Math.max(args.state?.lastSeen ?? 0, Math.floor(args.rollout.mtimeMs / 1000))
+  const activityAge = activitySeen === null ? '-' : fmtAge(Math.max(0, args.nowSec - activitySeen))
+  return [
+    `codex: ${args.name}`,
+    `state: ${args.daemonState}`,
+    `cwd: ${args.base?.cwd ?? args.meta?.cwd ?? ''}`,
+    `pid: ${args.state?.pid === undefined ? '-' : String(args.state.pid)}`,
+    `socket: ${args.state?.socketPath ?? '-'}`,
+    `socket reachable: ${args.runtime?.socketReachable ?? 'unknown'}`,
+    `thread: ${args.state?.threadId ?? '-'}`,
+    `thread status: ${args.runtime?.threadStatus ?? '-'}`,
+    `started: ${args.state?.startedAt === undefined ? '-' : String(args.state.startedAt)}`,
+    `last activity: ${activitySeen === null ? '-' : `${activitySeen} (${activityAge} ago)`}`,
+    `rollout: ${args.rollout?.path ?? '-'}`,
+  ].join('\n') + '\n'
 }
 
 export class CodexEngine implements Engine {
@@ -244,7 +322,7 @@ export class CodexEngine implements Engine {
     atomicSend: true,
     atomicSpawnPrompt: true,
     compaction: 'auto',
-    contextUsage: 'rpc-token-usage',
+    contextUsage: 'transcript-jsonl',
     history: 'unsupported',
     memory: 'unsupported',
     reload: 'unsupported',
@@ -477,39 +555,64 @@ export class CodexEngine implements Engine {
 
   async list(ctx: EngineContext): Promise<readonly TeammateListing[]> {
     const nowSec = Math.floor(ctx.now() / 1000)
-    return listDaemons().map((name) => {
+    const nowMs = ctx.now()
+    return Promise.all(listDaemons().map(async (name) => {
       const state = readDaemonState(name)
       const base = readBaseRecord(name)
       const meta = readCodexMeta(name)
+      const rollout = state?.threadId === null || state?.threadId === undefined
+        ? null
+        : readCodexRolloutSnapshot(state.threadId, ctx.env)
+      const runtime = await this.probeRuntime(name, state)
+      const daemonState = codexDaemonState(name, state, runtime, rollout, nowMs)
       return {
         name,
         engine: 'codex',
-        state: codexDaemonState(name, state),
+        state: daemonState,
         cwd: base?.cwd ?? meta?.cwd ?? '',
         displayName: base?.displayName ?? meta?.displayName ?? null,
-        extras: codexListExtras(name, nowSec, state),
+        extras: codexListExtras(name, nowSec, state, daemonState, rollout, runtime),
       }
-    })
+    }))
   }
 
-  async status(req: StatusRequest, _ctx: EngineContext): Promise<TeammateStatus> {
+  async status(req: StatusRequest, ctx: EngineContext): Promise<TeammateStatus> {
     const state = readDaemonState(req.name)
     const base = readBaseRecord(req.name)
     const meta = readCodexMeta(req.name)
     if (state === null && base === null && meta === null) return { kind: 'not-found' }
+    const rollout = state?.threadId === null || state?.threadId === undefined
+      ? null
+      : readCodexRolloutSnapshot(state.threadId, ctx.env)
+    const runtime = await this.probeRuntime(req.name, state)
+    const daemonState = codexDaemonState(req.name, state, runtime, rollout, ctx.now())
     return {
       kind: 'present',
       name: req.name,
       engine: 'codex',
-      state: codexDaemonState(req.name, state),
+      state: daemonState,
       cwd: base?.cwd ?? meta?.cwd ?? '',
-      pane: null,
+      pane: statusPane({
+        name: req.name,
+        state,
+        base,
+        meta,
+        daemonState,
+        rollout,
+        runtime,
+        nowSec: Math.floor(ctx.now() / 1000),
+      }),
       diagnostics: {
         pid: state?.pid === undefined ? '' : String(state.pid),
         socket: state?.socketPath ?? '',
+        socketReachable: runtime?.socketReachable ?? 'unknown',
         thread: state?.threadId ?? '',
+        threadStatus: runtime?.threadStatus ?? '',
         startedAt: state?.startedAt === undefined ? '' : String(state.startedAt),
         lastSeen: state?.lastSeen === null || state?.lastSeen === undefined ? '' : String(state.lastSeen),
+        rollout: rollout?.path ?? '',
+        rolloutMtime: rollout === null ? '' : String(Math.floor(rollout.mtimeMs / 1000)),
+        busyWindowMs: String(CODEX_ROLLOUT_BUSY_WINDOW_MS),
       },
     }
   }
@@ -522,12 +625,40 @@ export class CodexEngine implements Engine {
     return { kind: 'not-supported', reason: 'codex thread resume is internal to send/wait in Phase 2b' }
   }
 
-  async last(_req: LastRequest, _ctx: EngineContext): Promise<TextResult> {
-    return notSupported('codex app-server does not expose last-turn text as a standalone read')
+  async last(req: LastRequest, ctx: EngineContext): Promise<TextResult> {
+    const threadId = readDaemonState(req.name)?.threadId ?? null
+    if (threadId === null) return { kind: 'not-found', reason: `codex teammate '${req.name}' has no thread id` }
+    const rollout = readCodexRolloutSnapshot(threadId, ctx.env)
+    if (rollout === null) return { kind: 'not-found', reason: `codex rollout for thread '${threadId}' not found` }
+    if (rollout.lastAssistantText === null) {
+      return { kind: 'not-found', reason: `no assistant text in codex rollout ${rollout.path}` }
+    }
+    return {
+      kind: 'text',
+      text: rollout.lastAssistantText.endsWith('\n')
+        ? rollout.lastAssistantText
+        : `${rollout.lastAssistantText}\n`,
+    }
   }
 
-  async ctx(_req: ContextRequest, _ctx: EngineContext): Promise<ContextResult> {
-    return { kind: 'not-supported', reason: 'codex context usage is not exposed through the Phase 2b engine yet' }
+  async ctx(req: ContextRequest, ctx: EngineContext): Promise<ContextResult> {
+    const threadId = readDaemonState(req.name)?.threadId ?? null
+    if (threadId === null) {
+      return { kind: 'not-supported', reason: `codex teammate '${req.name}' has no thread id` }
+    }
+    const rollout = readCodexRolloutSnapshot(threadId, ctx.env)
+    if (rollout === null) {
+      return { kind: 'not-supported', reason: `codex rollout for thread '${threadId}' not found` }
+    }
+    if (rollout.tokenUsage === null) {
+      return { kind: 'not-supported', reason: `no token usage in codex rollout ${rollout.path}` }
+    }
+    return {
+      kind: 'usage',
+      tokensUsed: rollout.tokenUsage.tokensUsed,
+      tokensTotal: rollout.tokenUsage.tokensTotal,
+      pct: rollout.tokenUsage.pct,
+    }
   }
 
   async history(_req: HistoryRequest, _ctx: EngineContext): Promise<HistoryResult> {
@@ -568,15 +699,59 @@ export class CodexEngine implements Engine {
   }
 
   private async healthCheck(name: string): Promise<void> {
-    const initialized = await withTimeout(
-      openInitializedCodexClient(name),
-      this.options.readyTimeoutMs ?? 10000,
-    )
+    const clientPromise = openInitializedCodexClient(name)
+    const initialized = await withTimeout(clientPromise, this.options.readyTimeoutMs ?? 10000)
     if (isTimedOut(initialized)) {
+      closeClientWhenSettled(clientPromise)
       throw new Error(`codex daemon '${name}' did not answer initialize within health-check timeout`)
     }
     const client = initialized
     client.close()
+  }
+
+  private async probeRuntime(
+    name: string,
+    state: ReturnType<typeof readDaemonState>,
+  ): Promise<CodexRuntimeProbe | null> {
+    if (state === null || !isProcessAlive(state.pid)) return null
+    let client: CodexWsClient | null = null
+    try {
+      const clientPromise = openInitializedCodexClient(name)
+      const initialized = await withTimeout(clientPromise, CODEX_STATUS_RPC_TIMEOUT_MS)
+      if (isTimedOut(initialized)) {
+        closeClientWhenSettled(clientPromise)
+        return { socketReachable: 'no', threadStatus: null, threadState: null }
+      }
+      client = initialized
+      if (state.threadId === null) {
+        return { socketReachable: 'yes', threadStatus: null, threadState: null }
+      }
+      try {
+        const readPromise = client.request<'thread/read', ThreadReadResponse>('thread/read', {
+          threadId: state.threadId,
+          includeTurns: false,
+        })
+        const read = await withTimeout(readPromise, CODEX_STATUS_RPC_TIMEOUT_MS)
+        if (isTimedOut(read)) {
+          readPromise.catch(() => {})
+          client.close()
+          client = null
+          return { socketReachable: 'yes', threadStatus: null, threadState: null }
+        }
+        const statusType = read.thread.status.type
+        return {
+          socketReachable: 'yes',
+          threadStatus: statusType,
+          threadState: statusState(statusType),
+        }
+      } catch {
+        return { socketReachable: 'yes', threadStatus: null, threadState: null }
+      }
+    } catch {
+      return { socketReachable: 'no', threadStatus: null, threadState: null }
+    } finally {
+      if (client !== null) client.close()
+    }
   }
 }
 

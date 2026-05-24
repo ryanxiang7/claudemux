@@ -10,6 +10,14 @@
 // Optional behavior knobs via environment, for the negative-path tests:
 //   CODEX_FAKE_BIND_DELAY_MS=<n>   wait <n>ms before binding the socket
 //   CODEX_FAKE_EXIT_BEFORE_BIND=1  exit 7 before ever binding (spawn-fail test)
+//   CODEX_FAKE_INITIALIZE_DELAY_MS=<n>
+//                                  wait <n>ms before answering initialize
+//   CODEX_FAKE_THREAD_READ_STATUS=<status>
+//                                  answer thread/read with this status
+//   CODEX_FAKE_THREAD_READ_DELAY_MS=<n>
+//                                  wait <n>ms before answering thread/read
+//   CODEX_FAKE_CONNECTION_LOG=<path>
+//                                  append "open"/"close" connection events
 //   CODEX_FAKE_TURN_COMPLETE_DELAY_MS=<n>
 //                                  wait <n>ms before sending turn notifications
 //   CODEX_FAKE_TURN_STATUS=failed  complete the turn as failed
@@ -23,6 +31,7 @@
 
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
+import { appendFileSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 
 const argv = process.argv.slice(2)
@@ -50,13 +59,23 @@ if (process.env.CODEX_FAKE_EXIT_BEFORE_BIND === '1') {
 
 const delay = Number.parseInt(process.env.CODEX_FAKE_BIND_DELAY_MS ?? '0', 10) || 0
 
+function envInt(name) {
+  return Number.parseInt(process.env[name] ?? '0', 10) || 0
+}
+
+function logConnection(event) {
+  const file = process.env.CODEX_FAKE_CONNECTION_LOG
+  if (file === undefined || file.length === 0) return
+  appendFileSync(file, `${event}\n`)
+}
+
 function bind() {
   const server = createServer()
   const wss = new WebSocketServer({ server })
   let threadCounter = 0
   let turnCounter = 0
 
-  function makeThread(id, cwd = process.cwd(), ephemeral = false) {
+  function makeThread(id, cwd = process.cwd(), ephemeral = false, status = 'idle') {
     const now = Math.floor(Date.now() / 1000)
     return {
       id,
@@ -67,7 +86,7 @@ function bind() {
       modelProvider: 'fake',
       createdAt: now,
       updatedAt: now,
-      status: { type: 'idle' },
+      status: { type: status },
       path: null,
       cwd,
       cliVersion: 'fake-codex/0.0',
@@ -99,12 +118,23 @@ function bind() {
   }
 
   wss.on('connection', (socket) => {
+    logConnection('open')
+    socket.on('close', () => logConnection('close'))
+
+    function sendJson(payload, delayMs = 0) {
+      const send = () => {
+        if (socket.readyState === 1) socket.send(JSON.stringify(payload))
+      }
+      if (delayMs > 0) setTimeout(send, delayMs)
+      else send()
+    }
+
     socket.on('message', (data) => {
       const env = JSON.parse(data.toString())
       const id = env.id
       const params = env.params ?? {}
       if (env.method === 'initialize') {
-        socket.send(JSON.stringify({
+        sendJson({
           id,
           result: {
             userAgent: 'fake-codex/0.0',
@@ -112,17 +142,25 @@ function bind() {
             platformFamily: 'unix',
             platformOs: process.platform,
           },
-        }))
+        }, envInt('CODEX_FAKE_INITIALIZE_DELAY_MS'))
       } else if (env.method === 'thread/start') {
         const thread = makeThread(
           `thread-${++threadCounter}`,
           params.cwd ?? process.cwd(),
           params.ephemeral === true,
         )
-        socket.send(JSON.stringify({ id, result: makeThreadResponse(thread) }))
+        sendJson({ id, result: makeThreadResponse(thread) })
       } else if (env.method === 'thread/resume') {
         const thread = makeThread(params.threadId ?? `thread-${++threadCounter}`)
-        socket.send(JSON.stringify({ id, result: makeThreadResponse(thread) }))
+        sendJson({ id, result: makeThreadResponse(thread) })
+      } else if (env.method === 'thread/read' && process.env.CODEX_FAKE_THREAD_READ_STATUS !== undefined) {
+        const thread = makeThread(
+          params.threadId ?? `thread-${++threadCounter}`,
+          params.cwd ?? process.cwd(),
+          false,
+          process.env.CODEX_FAKE_THREAD_READ_STATUS,
+        )
+        sendJson({ id, result: makeThreadResponse(thread) }, envInt('CODEX_FAKE_THREAD_READ_DELAY_MS'))
       } else if (env.method === 'turn/start') {
         const turnId = `turn-${++turnCounter}`
         const textInput = Array.isArray(params.input)
@@ -141,11 +179,11 @@ function bind() {
         }
         const completeDelay =
           Number.parseInt(process.env.CODEX_FAKE_TURN_COMPLETE_DELAY_MS ?? '0', 10) || 0
-        socket.send(JSON.stringify({ id, result: { turn } }))
+        sendJson({ id, result: { turn } })
         setTimeout(() => {
           if (socket.readyState !== 1) return
           if (turnStatus === 'completed') {
-            socket.send(JSON.stringify({
+            sendJson({
               method: 'item/completed',
               params: {
                 threadId: params.threadId,
@@ -159,15 +197,15 @@ function bind() {
                   memoryCitation: null,
                 },
               },
-            }))
+            })
           }
-          socket.send(JSON.stringify({
+          sendJson({
             method: 'turn/completed',
             params: { threadId: params.threadId, turn },
-          }))
+          })
         }, completeDelay)
       } else {
-        socket.send(JSON.stringify({ id, error: { message: `unknown method: ${env.method}` } }))
+        sendJson({ id, error: { message: `unknown method: ${env.method}` } })
       }
     })
   })

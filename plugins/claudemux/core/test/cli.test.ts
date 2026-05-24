@@ -456,8 +456,6 @@ describe('native dispatch', () => {
   test.each([
     ['compact', (name: string) => ['compact', name], 'codex compacts its own context automatically'],
     ['resume', (name: string) => ['resume', name], 'codex thread resume is internal'],
-    ['last', (name: string) => ['last', name], 'codex app-server does not expose last-turn text'],
-    ['ctx', (name: string) => ['ctx', name], 'codex context usage is not exposed'],
     ['history', (name: string) => ['history', name], 'codex thread history enumeration is not exposed'],
     ['mem', (name: string) => ['mem', name], 'codex does not use Claude project memory files'],
     ['reload', (name: string) => ['reload', name], 'codex has no reload prompt command'],
@@ -477,6 +475,52 @@ describe('native dispatch', () => {
       expect(result.code).toBe(0)
       expect(result.stdout).toBe('')
       expect(result.stderr).toContain(reason)
+    } finally {
+      removeBaseRecord(name)
+    }
+  })
+
+  test('last routes an existing codex teammate through CodexEngine rollout lookup', async () => {
+    const name = `codex-dispatch-last-${Date.now()}`
+    writeBaseRecord(new CodexTeammateRecord({
+      name,
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
+    }))
+    const registry = new EngineRegistry()
+    registry.register(new CodexEngine())
+
+    try {
+      const result = await runCli(['last', name], fakeEnv({ engines: registry }))
+      expect(result).toEqual({
+        code: 1,
+        stdout: '',
+        stderr: `tm: last: codex teammate '${name}' has no thread id\n`,
+      })
+    } finally {
+      removeBaseRecord(name)
+    }
+  })
+
+  test('ctx routes an existing codex teammate through CodexEngine rollout lookup', async () => {
+    const name = `codex-dispatch-ctx-${Date.now()}`
+    writeBaseRecord(new CodexTeammateRecord({
+      name,
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
+    }))
+    const registry = new EngineRegistry()
+    registry.register(new CodexEngine())
+
+    try {
+      const result = await runCli(['ctx', name], fakeEnv({ engines: registry }))
+      expect(result).toEqual({
+        code: 0,
+        stdout: '',
+        stderr: `  not supported: codex teammate '${name}' has no thread id\n`,
+      })
     } finally {
       removeBaseRecord(name)
     }

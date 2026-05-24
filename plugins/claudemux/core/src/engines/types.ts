@@ -233,6 +233,7 @@ export interface MemoryRequest {
  */
 export type TextResult =
   | ({ kind: 'text'; text: string } & RawTmResult)
+  | ({ kind: 'not-found'; reason: string } & RawTmResult)
   | ({ kind: 'not-supported'; reason: string } & RawTmResult)
   | ({ kind: 'failed'; message: string } & RawTmResult)
 

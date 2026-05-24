@@ -145,6 +145,8 @@ export function formatText(label: string, result: TextResult): TmResult {
   switch (result.kind) {
     case 'text':
       return { code: 0, stdout: result.text.endsWith('\n') ? result.text : `${result.text}\n`, stderr: '' }
+    case 'not-found':
+      return { code: 1, stdout: '', stderr: `tm: ${label}: ${result.reason}\n` }
     case 'not-supported':
       return { code: 0, stdout: '', stderr: `  not supported: ${result.reason}\n` }
     case 'failed':

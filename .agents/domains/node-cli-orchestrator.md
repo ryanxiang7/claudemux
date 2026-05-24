@@ -66,6 +66,7 @@ those stores; it is never their owner and never their cache.
 | **`~/.claude/projects/<encoded>/`** | each teammate's transcripts and auto-memory | Claude Code |
 | **the Codex `app-server` daemon** | each Codex teammate's persisted thread(s) | a `codex app-server` process claudemux spawns (§5) |
 | **the Codex-daemon process registry** | each spawned `app-server`'s socket path, pid, and last-seen liveness | `tm` (§5) |
+| **`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`** | each Codex thread's append-only rollout log, including assistant text, token counts, and recent activity mtime | Codex CLI |
 
 A `tm` invocation reconstructs everything it needs from these stores on every
 call. There is no in-memory teammate registry — 0018's `registry.ts` is removed
@@ -121,6 +122,17 @@ persistence). A Codex teammate uses it directly — no tmux, no screen-scraping.
   that targets a Codex teammate reads the registry, checks the daemon is alive,
   spawns or restarts it if not, connects, runs its verb, and exits. The daemon
   persists; the `tm` process is ephemeral.
+- **Liveness surfaces.** `tm status`, `tm ls`, and `tm states` combine the
+  registry's pid/socket record, a short socket reachability probe, the Codex
+  `thread/read` status when available, and the current thread's rollout mtime.
+  BUSY is true when the thread is active, a `tm` process has borrowed the
+  daemon for an in-flight turn, or the rollout file was modified inside the
+  short activity window; otherwise an alive daemon is idle, and an unreachable
+  daemon is unknown.
+- **Durable inspection.** `tm last` reads the latest assistant final answer or
+  commentary from the current thread's rollout JSONL. `tm ctx` reads the latest
+  token-count event from the same rollout file and reports used tokens,
+  context-window tokens, and percentage.
 - **Schema pinning.** `codex app-server` is marked `[experimental]` end to end,
   and its JSON-RPC messages omit the `jsonrpc` version field — they are not
   strict JSON-RPC 2.0. The WebSocket client pins the message schema explicitly

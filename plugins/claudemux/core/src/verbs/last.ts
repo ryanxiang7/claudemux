@@ -12,6 +12,8 @@ function formatLast(result: TextResult): TmResult {
   switch (result.kind) {
     case 'text':
       return { code: 0, stdout: result.text, stderr: '' }
+    case 'not-found':
+      return { code: 1, stdout: '', stderr: `tm: last: ${result.reason}\n` }
     case 'not-supported':
       return { code: 0, stdout: '', stderr: `  not supported: ${result.reason}\n` }
     case 'failed':

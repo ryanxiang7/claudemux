@@ -3712,9 +3712,9 @@ var require_websocket_server = __commonJS({
 });
 
 // src/cli.ts
-import { realpathSync as realpathSync4, statSync as statSync14 } from "node:fs";
-import { homedir } from "node:os";
-import { join as join12 } from "node:path";
+import { realpathSync as realpathSync4, statSync as statSync15 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join13 } from "node:path";
 
 // src/proc.ts
 import { spawn } from "node:child_process";
@@ -6893,6 +6893,175 @@ async function runTurn(client, threadId, prompt, options) {
   return collector.awaitTurn();
 }
 
+// src/engines/codex/rollout.ts
+import { homedir } from "node:os";
+import { join as join11 } from "node:path";
+import { readdirSync as readdirSync5, readFileSync as readFileSync12, statSync as statSync13 } from "node:fs";
+var CODEX_ROLLOUT_BUSY_WINDOW_MS = 2e4;
+function isPlainObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringProp(obj, key) {
+  const value = obj[key];
+  return typeof value === "string" ? value : null;
+}
+function numberProp(obj, key) {
+  const value = obj[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function codexHome(env) {
+  return env["CLAUDEMUX_CODEX_HOME"] || env["CODEX_HOME"] || join11(homedir(), ".codex");
+}
+function codexSessionsRoot(env) {
+  return env["CLAUDEMUX_CODEX_SESSIONS_ROOT"] || join11(codexHome(env), "sessions");
+}
+function sortedNumericDirs(root) {
+  let entries;
+  try {
+    entries = readdirSync5(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map((entry) => entry.name).sort((a, b) => Number(b) - Number(a));
+}
+function findInDay(dayDir, suffix) {
+  let entries;
+  try {
+    entries = readdirSync5(dayDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let newest = null;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    if (!name.startsWith("rollout-") || !name.endsWith(suffix)) continue;
+    const path = join11(dayDir, name);
+    let mtimeMs;
+    try {
+      mtimeMs = statSync13(path).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (newest === null || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
+  }
+  return newest;
+}
+function findCodexRolloutFile(threadId, env) {
+  const suffix = `-${threadId}.jsonl`;
+  const root = codexSessionsRoot(env);
+  for (const year of sortedNumericDirs(root)) {
+    const yearDir = join11(root, year);
+    for (const month of sortedNumericDirs(yearDir)) {
+      const monthDir = join11(yearDir, month);
+      for (const day of sortedNumericDirs(monthDir)) {
+        const found = findInDay(join11(monthDir, day), suffix);
+        if (found !== null) return found;
+      }
+    }
+  }
+  return null;
+}
+function phaseAllowed(phase) {
+  return phase === "final_answer" || phase === "commentary";
+}
+function textFromContent(content) {
+  if (!Array.isArray(content)) return null;
+  const parts = [];
+  for (const item of content) {
+    if (!isPlainObject3(item)) continue;
+    if (item["type"] !== "output_text") continue;
+    const text = stringProp(item, "text");
+    if (text !== null) parts.push(text);
+  }
+  return parts.length === 0 ? null : parts.join("");
+}
+function assistantTextFromEntry(entry) {
+  if (!isPlainObject3(entry)) return null;
+  const payload = entry["payload"];
+  if (!isPlainObject3(payload)) return null;
+  if (payload["type"] === "agent_message" && phaseAllowed(payload["phase"])) {
+    return stringProp(payload, "message");
+  }
+  if (payload["type"] === "agentMessage" && phaseAllowed(payload["phase"])) {
+    return stringProp(payload, "text");
+  }
+  if (payload["type"] === "message" && payload["role"] === "assistant" && phaseAllowed(payload["phase"])) {
+    return textFromContent(payload["content"]);
+  }
+  const item = payload["item"];
+  if (isPlainObject3(item) && item["type"] === "agentMessage" && phaseAllowed(item["phase"])) {
+    return stringProp(item, "text");
+  }
+  return null;
+}
+function tokenCountFromSnake(info) {
+  const last = info["last_token_usage"];
+  if (!isPlainObject3(last)) return null;
+  const window = numberProp(info, "model_context_window");
+  if (window === null || window <= 0) return null;
+  const input = numberProp(last, "input_tokens");
+  const total = numberProp(last, "total_tokens");
+  const used = total ?? input;
+  if (used === null) return null;
+  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
+}
+function tokenCountFromCamel(tokenUsage) {
+  const last = tokenUsage["last"];
+  if (!isPlainObject3(last)) return null;
+  const window = numberProp(tokenUsage, "modelContextWindow");
+  if (window === null || window <= 0) return null;
+  const input = numberProp(last, "inputTokens");
+  const total = numberProp(last, "totalTokens");
+  const used = total ?? input;
+  if (used === null) return null;
+  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
+}
+function tokenUsageFromEntry(entry) {
+  if (!isPlainObject3(entry)) return null;
+  const payload = entry["payload"];
+  if (isPlainObject3(payload)) {
+    if (payload["type"] === "token_count" && isPlainObject3(payload["info"])) {
+      return tokenCountFromSnake(payload["info"]);
+    }
+    if (payload["method"] === "thread/tokenUsage/updated" && isPlainObject3(payload["params"]) && isPlainObject3(payload["params"]["tokenUsage"])) {
+      return tokenCountFromCamel(payload["params"]["tokenUsage"]);
+    }
+  }
+  if (entry["type"] === "thread/tokenUsage/updated" && isPlainObject3(entry["params"]) && isPlainObject3(entry["params"]["tokenUsage"])) {
+    return tokenCountFromCamel(entry["params"]["tokenUsage"]);
+  }
+  return null;
+}
+function readCodexRolloutSnapshot(threadId, env) {
+  const rollout = findCodexRolloutFile(threadId, env);
+  if (rollout === null) return null;
+  let content;
+  try {
+    content = readFileSync12(rollout.path, "utf8");
+  } catch {
+    return null;
+  }
+  let lastAssistantText = null;
+  let tokenUsage = null;
+  for (const line of content.split("\n")) {
+    if (line.trim() === "") continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    lastAssistantText = assistantTextFromEntry(entry) ?? lastAssistantText;
+    tokenUsage = tokenUsageFromEntry(entry) ?? tokenUsage;
+  }
+  return { ...rollout, lastAssistantText, tokenUsage };
+}
+function rolloutRecentlyActive(snapshot, nowMs) {
+  if (snapshot === null) return false;
+  return nowMs - snapshot.mtimeMs <= CODEX_ROLLOUT_BUSY_WINDOW_MS;
+}
+
 // src/engines/codex/engine.ts
 var CODEX_CLIENT_INFO = {
   name: "claudemux",
@@ -6900,6 +7069,7 @@ var CODEX_CLIENT_INFO = {
   version: "1.0.0"
 };
 var COMPACT_REASON = "codex compacts its own context automatically when the 252k window fills";
+var CODEX_STATUS_RPC_TIMEOUT_MS = 250;
 function notSupported(reason) {
   return { kind: "not-supported", reason };
 }
@@ -6968,6 +7138,13 @@ async function withTimeout(promise, timeoutMs) {
 function isTimedOut(value) {
   return typeof value === "object" && value !== null && value.timedOut === true;
 }
+function closeClientWhenSettled(clientPromise) {
+  clientPromise.then(
+    (lateClient) => lateClient.close(),
+    () => {
+    }
+  );
+}
 function codexNameFailure(name) {
   const validation = validateTeammateName(name);
   return validation.kind === "ok" ? null : `invalid codex teammate name '${name}': ${validation.reason}`;
@@ -7004,16 +7181,36 @@ function fmtAge3(age) {
   if (age < 86400) return `${Math.floor(age / 3600)}h`;
   return `${Math.floor(age / 86400)}d`;
 }
-function codexDaemonState(name, state = readDaemonState(name)) {
-  if (state === null || !isProcessAlive(state.pid)) return "unknown";
-  return daemonBorrowed(name) ? "busy" : "idle";
+function statusState(statusType) {
+  switch (statusType) {
+    case "active":
+      return "busy";
+    case "idle":
+    case "notLoaded":
+      return "idle";
+    case "systemError":
+      return "unknown";
+    default:
+      return null;
+  }
 }
-function codexListExtras(name, nowSec3, state) {
+function codexDaemonState(name, state = readDaemonState(name), runtime = null, rollout = null, nowMs = Date.now()) {
+  if (state === null || !isProcessAlive(state.pid)) return "unknown";
+  if (runtime?.threadState === "busy") return "busy";
+  if (daemonBorrowed(name)) return "busy";
+  if (rolloutRecentlyActive(rollout, nowMs)) return "busy";
+  if (runtime?.threadState === "idle") return "idle";
+  if (runtime?.threadState === "unknown" || runtime?.socketReachable === "no") return "unknown";
+  return "idle";
+}
+function codexListExtras(name, nowSec3, state, daemonState, rollout, runtime) {
   const pid = state?.pid === void 0 ? "" : String(state.pid);
   const thread = state?.threadId ?? "";
-  const daemonState = codexDaemonState(name, state);
-  const lastSeen = state?.lastSeen === null || state?.lastSeen === void 0 ? "" : String(state.lastSeen);
-  const lastSeenAge = state?.lastSeen === null || state?.lastSeen === void 0 ? "-" : fmtAge3(Math.max(0, nowSec3 - state.lastSeen));
+  const rolloutSeen = rollout === null ? null : Math.floor(rollout.mtimeMs / 1e3);
+  const recordedSeen = state?.lastSeen ?? null;
+  const activitySeen = recordedSeen === null ? rolloutSeen : rolloutSeen === null ? recordedSeen : Math.max(recordedSeen, rolloutSeen);
+  const lastSeen = activitySeen === null ? "" : String(activitySeen);
+  const lastSeenAge = activitySeen === null ? "-" : fmtAge3(Math.max(0, nowSec3 - activitySeen));
   return {
     sidShort: thread.length === 0 ? "codex" : thread.slice(0, 8),
     busy: daemonState === "busy" ? "yes" : daemonState === "idle" ? "no" : "?",
@@ -7021,9 +7218,29 @@ function codexListExtras(name, nowSec3, state) {
     preview: pid.length === 0 ? "codex daemon" : `pid=${pid}`,
     pid,
     socket: state?.socketPath ?? "",
+    socketReachable: runtime?.socketReachable ?? "unknown",
     thread,
-    lastSeen
+    lastSeen,
+    rollout: rollout?.path ?? "",
+    threadStatus: runtime?.threadStatus ?? ""
   };
+}
+function statusPane(args) {
+  const activitySeen = args.rollout === null ? args.state?.lastSeen ?? null : Math.max(args.state?.lastSeen ?? 0, Math.floor(args.rollout.mtimeMs / 1e3));
+  const activityAge = activitySeen === null ? "-" : fmtAge3(Math.max(0, args.nowSec - activitySeen));
+  return [
+    `codex: ${args.name}`,
+    `state: ${args.daemonState}`,
+    `cwd: ${args.base?.cwd ?? args.meta?.cwd ?? ""}`,
+    `pid: ${args.state?.pid === void 0 ? "-" : String(args.state.pid)}`,
+    `socket: ${args.state?.socketPath ?? "-"}`,
+    `socket reachable: ${args.runtime?.socketReachable ?? "unknown"}`,
+    `thread: ${args.state?.threadId ?? "-"}`,
+    `thread status: ${args.runtime?.threadStatus ?? "-"}`,
+    `started: ${args.state?.startedAt === void 0 ? "-" : String(args.state.startedAt)}`,
+    `last activity: ${activitySeen === null ? "-" : `${activitySeen} (${activityAge} ago)`}`,
+    `rollout: ${args.rollout?.path ?? "-"}`
+  ].join("\n") + "\n";
 }
 var CodexEngine = class {
   constructor(options = {}) {
@@ -7034,7 +7251,7 @@ var CodexEngine = class {
     atomicSend: true,
     atomicSpawnPrompt: true,
     compaction: "auto",
-    contextUsage: "rpc-token-usage",
+    contextUsage: "transcript-jsonl",
     history: "unsupported",
     memory: "unsupported",
     reload: "unsupported",
@@ -7252,38 +7469,59 @@ var CodexEngine = class {
   }
   async list(ctx) {
     const nowSec3 = Math.floor(ctx.now() / 1e3);
-    return listDaemons().map((name) => {
+    const nowMs = ctx.now();
+    return Promise.all(listDaemons().map(async (name) => {
       const state = readDaemonState(name);
       const base = readBaseRecord(name);
       const meta = readCodexMeta(name);
+      const rollout = state?.threadId === null || state?.threadId === void 0 ? null : readCodexRolloutSnapshot(state.threadId, ctx.env);
+      const runtime = await this.probeRuntime(name, state);
+      const daemonState = codexDaemonState(name, state, runtime, rollout, nowMs);
       return {
         name,
         engine: "codex",
-        state: codexDaemonState(name, state),
+        state: daemonState,
         cwd: base?.cwd ?? meta?.cwd ?? "",
         displayName: base?.displayName ?? meta?.displayName ?? null,
-        extras: codexListExtras(name, nowSec3, state)
+        extras: codexListExtras(name, nowSec3, state, daemonState, rollout, runtime)
       };
-    });
+    }));
   }
-  async status(req, _ctx) {
+  async status(req, ctx) {
     const state = readDaemonState(req.name);
     const base = readBaseRecord(req.name);
     const meta = readCodexMeta(req.name);
     if (state === null && base === null && meta === null) return { kind: "not-found" };
+    const rollout = state?.threadId === null || state?.threadId === void 0 ? null : readCodexRolloutSnapshot(state.threadId, ctx.env);
+    const runtime = await this.probeRuntime(req.name, state);
+    const daemonState = codexDaemonState(req.name, state, runtime, rollout, ctx.now());
     return {
       kind: "present",
       name: req.name,
       engine: "codex",
-      state: codexDaemonState(req.name, state),
+      state: daemonState,
       cwd: base?.cwd ?? meta?.cwd ?? "",
-      pane: null,
+      pane: statusPane({
+        name: req.name,
+        state,
+        base,
+        meta,
+        daemonState,
+        rollout,
+        runtime,
+        nowSec: Math.floor(ctx.now() / 1e3)
+      }),
       diagnostics: {
         pid: state?.pid === void 0 ? "" : String(state.pid),
         socket: state?.socketPath ?? "",
+        socketReachable: runtime?.socketReachable ?? "unknown",
         thread: state?.threadId ?? "",
+        threadStatus: runtime?.threadStatus ?? "",
         startedAt: state?.startedAt === void 0 ? "" : String(state.startedAt),
-        lastSeen: state?.lastSeen === null || state?.lastSeen === void 0 ? "" : String(state.lastSeen)
+        lastSeen: state?.lastSeen === null || state?.lastSeen === void 0 ? "" : String(state.lastSeen),
+        rollout: rollout?.path ?? "",
+        rolloutMtime: rollout === null ? "" : String(Math.floor(rollout.mtimeMs / 1e3)),
+        busyWindowMs: String(CODEX_ROLLOUT_BUSY_WINDOW_MS)
       }
     };
   }
@@ -7293,11 +7531,38 @@ var CodexEngine = class {
   async resume(_req, _ctx) {
     return { kind: "not-supported", reason: "codex thread resume is internal to send/wait in Phase 2b" };
   }
-  async last(_req, _ctx) {
-    return notSupported("codex app-server does not expose last-turn text as a standalone read");
+  async last(req, ctx) {
+    const threadId = readDaemonState(req.name)?.threadId ?? null;
+    if (threadId === null) return { kind: "not-found", reason: `codex teammate '${req.name}' has no thread id` };
+    const rollout = readCodexRolloutSnapshot(threadId, ctx.env);
+    if (rollout === null) return { kind: "not-found", reason: `codex rollout for thread '${threadId}' not found` };
+    if (rollout.lastAssistantText === null) {
+      return { kind: "not-found", reason: `no assistant text in codex rollout ${rollout.path}` };
+    }
+    return {
+      kind: "text",
+      text: rollout.lastAssistantText.endsWith("\n") ? rollout.lastAssistantText : `${rollout.lastAssistantText}
+`
+    };
   }
-  async ctx(_req, _ctx) {
-    return { kind: "not-supported", reason: "codex context usage is not exposed through the Phase 2b engine yet" };
+  async ctx(req, ctx) {
+    const threadId = readDaemonState(req.name)?.threadId ?? null;
+    if (threadId === null) {
+      return { kind: "not-supported", reason: `codex teammate '${req.name}' has no thread id` };
+    }
+    const rollout = readCodexRolloutSnapshot(threadId, ctx.env);
+    if (rollout === null) {
+      return { kind: "not-supported", reason: `codex rollout for thread '${threadId}' not found` };
+    }
+    if (rollout.tokenUsage === null) {
+      return { kind: "not-supported", reason: `no token usage in codex rollout ${rollout.path}` };
+    }
+    return {
+      kind: "usage",
+      tokensUsed: rollout.tokenUsage.tokensUsed,
+      tokensTotal: rollout.tokenUsage.tokensTotal,
+      pct: rollout.tokenUsage.pct
+    };
   }
   async history(_req, _ctx) {
     return { kind: "not-supported", reason: "codex thread history enumeration is not exposed through the Phase 2b engine yet" };
@@ -7332,15 +7597,56 @@ var CodexEngine = class {
     return { engine: "codex", findings };
   }
   async healthCheck(name) {
-    const initialized = await withTimeout(
-      openInitializedCodexClient(name),
-      this.options.readyTimeoutMs ?? 1e4
-    );
+    const clientPromise = openInitializedCodexClient(name);
+    const initialized = await withTimeout(clientPromise, this.options.readyTimeoutMs ?? 1e4);
     if (isTimedOut(initialized)) {
+      closeClientWhenSettled(clientPromise);
       throw new Error(`codex daemon '${name}' did not answer initialize within health-check timeout`);
     }
     const client = initialized;
     client.close();
+  }
+  async probeRuntime(name, state) {
+    if (state === null || !isProcessAlive(state.pid)) return null;
+    let client = null;
+    try {
+      const clientPromise = openInitializedCodexClient(name);
+      const initialized = await withTimeout(clientPromise, CODEX_STATUS_RPC_TIMEOUT_MS);
+      if (isTimedOut(initialized)) {
+        closeClientWhenSettled(clientPromise);
+        return { socketReachable: "no", threadStatus: null, threadState: null };
+      }
+      client = initialized;
+      if (state.threadId === null) {
+        return { socketReachable: "yes", threadStatus: null, threadState: null };
+      }
+      try {
+        const readPromise = client.request("thread/read", {
+          threadId: state.threadId,
+          includeTurns: false
+        });
+        const read2 = await withTimeout(readPromise, CODEX_STATUS_RPC_TIMEOUT_MS);
+        if (isTimedOut(read2)) {
+          readPromise.catch(() => {
+          });
+          client.close();
+          client = null;
+          return { socketReachable: "yes", threadStatus: null, threadState: null };
+        }
+        const statusType = read2.thread.status.type;
+        return {
+          socketReachable: "yes",
+          threadStatus: statusType,
+          threadState: statusState(statusType)
+        };
+      } catch {
+        return { socketReachable: "yes", threadStatus: null, threadState: null };
+      }
+    } catch {
+      return { socketReachable: "no", threadStatus: null, threadState: null };
+    } finally {
+      if (client !== null) client.close();
+    }
   }
 };
 async function openInitializedCodexClient(name) {
@@ -7395,8 +7701,8 @@ function productionRegistry(env) {
 }
 
 // src/verbs/archive.ts
-import { readFileSync as readFileSync12, statSync as statSync13, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join11 } from "node:path";
+import { readFileSync as readFileSync13, statSync as statSync14, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join12 } from "node:path";
 
 // src/persistence/project-dir.ts
 function encodeProjectDir2(cwd) {
@@ -7428,7 +7734,7 @@ function die2(message) {
 }
 function isRegularFile5(path) {
   try {
-    return statSync13(path).isFile();
+    return statSync14(path).isFile();
   } catch {
     return false;
   }
@@ -7471,15 +7777,15 @@ async function archiveVerb(args, stdin, env) {
   if (id === "") {
     return die2("usage: tm archive <id> [--status '<tag>']   (outcome text on stdin)");
   }
-  const memoryDir = join11(env.projectsDir, encodeProjectDir2(env.dispatcherDir), "memory");
-  const activePath = join11(memoryDir, "active-dispatcher-tasks.md");
-  const archivePath = join11(memoryDir, "dispatcher-tasks-archive.md");
+  const memoryDir = join12(env.projectsDir, encodeProjectDir2(env.dispatcherDir), "memory");
+  const activePath = join12(memoryDir, "active-dispatcher-tasks.md");
+  const archivePath = join12(memoryDir, "dispatcher-tasks-archive.md");
   if (!isRegularFile5(activePath)) return die2(`no active ledger at ${activePath}`);
   const outcome = (stdin ?? "").replace(/\n+$/, "");
   if (outcome.replace(/\s/g, "") === "") {
     return die2(`outcome text required on stdin, e.g.:  echo '...' | tm archive ${id}`);
   }
-  const activeContent = readFileSync12(activePath, "utf8");
+  const activeContent = readFileSync13(activePath, "utf8");
   const activeLines = ledgerLines(activeContent);
   let headerRe;
   try {
@@ -7522,7 +7828,7 @@ async function archiveVerb(args, stdin, env) {
 - intent: ${field("intent")}
 - outcome: ${outcome}
 - closed: ${fmtLocalDate()}`;
-  const archiveContent = isRegularFile5(archivePath) ? readFileSync12(archivePath, "utf8") : ARCHIVE_TEMPLATE;
+  const archiveContent = isRegularFile5(archivePath) ? readFileSync13(archivePath, "utf8") : ARCHIVE_TEMPLATE;
   const archiveLines = ledgerLines(archiveContent);
   let firstEntry = 0;
   for (let index = 0; index < archiveLines.length; index++) {
@@ -8060,6 +8366,9 @@ function formatLast(result) {
   switch (result.kind) {
     case "text":
       return { code: 0, stdout: result.text, stderr: "" };
+    case "not-found":
+      return { code: 1, stdout: "", stderr: `tm: last: ${result.reason}
+` };
     case "not-supported":
       return { code: 0, stdout: "", stderr: `  not supported: ${result.reason}
 ` };
@@ -8105,6 +8414,9 @@ function formatMem(engineKind, result) {
 ` : `  not supported: ${result.reason}
 `
       };
+    case "not-found":
+      return { code: 1, stdout: "", stderr: `tm: mem: ${result.reason}
+` };
     case "failed":
       return { code: 1, stdout: "", stderr: `tm: ${result.message}
 ` };
@@ -8184,7 +8496,7 @@ function runHelpVerb(rest) {
 }
 function isDirectory3(path) {
   try {
-    return statSync14(path).isDirectory();
+    return statSync15(path).isDirectory();
   } catch {
     return false;
   }
@@ -8214,10 +8526,10 @@ async function inferSpawnEngine(name, requested, ctx) {
 }
 function spawnCwd(name, engine, env) {
   if (engine === "codex") {
-    const repoPath = join12(env.dispatcherDir, name);
+    const repoPath = join13(env.dispatcherDir, name);
     return isDirectory3(repoPath) ? realpathSync4(repoPath) : realpathSync4(env.dispatcherDir);
   }
-  return join12(env.dispatcherDir, name);
+  return join13(env.dispatcherDir, name);
 }
 async function combineResults(results) {
   let code = 0;
@@ -8506,7 +8818,7 @@ function productionEnv() {
     //     `TM_DISPATCHER_DIR` through and resolve `<repo>` paths against
     //     `""`.
     dispatcherDir: process.env.TM_DISPATCHER_DIR || process.env.PWD || process.cwd(),
-    projectsDir: join12(process.env.HOME ?? homedir(), ".claude", "projects")
+    projectsDir: join13(process.env.HOME ?? homedir2(), ".claude", "projects")
   };
   return { ...env, engines: productionRegistry(env) };
 }
