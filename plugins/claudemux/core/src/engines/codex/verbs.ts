@@ -76,8 +76,8 @@ export interface CodexSpawnOptions {
 }
 
 /**
- * `tm spawn <codex-name>` — start a per-teammate codex daemon and optionally
- * run the first prompt through the Engine contract.
+ * `tm spawn <name> --engine codex` — start a per-teammate codex daemon and
+ * optionally run the first prompt through the Engine contract.
  */
 export async function codexSpawn(
   name: string,
@@ -246,7 +246,7 @@ export async function codexAsk(prompt: string): Promise<TmResult> {
 
   const candidates = listDaemons()
   if (candidates.length === 0) {
-    return die("no codex teammates available — run 'tm spawn codex-1' (or similar) first")
+    return die("no codex teammates available — run 'tm spawn <name> --engine codex' first")
   }
 
   let borrowed: string | null = null

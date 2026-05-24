@@ -101,6 +101,7 @@ const captureFile = join(scratchDir, 'tmux-capture')
 const dispatcherDir = join(scratchDir, 'dispatcher')
 const sandboxHome = join(scratchDir, 'home')
 const projectsDir = join(sandboxHome, '.claude', 'projects')
+const identityRoot = join(scratchDir, 'identity')
 
 /** `/tmp` marker files a scenario wrote — removed after that scenario. */
 const tmpFiles: string[] = []
@@ -110,6 +111,7 @@ let savedSessions: string | undefined
 let savedCapture: string | undefined
 let savedCodexRegistryRoot: string | undefined
 let savedCodexSessionsRoot: string | undefined
+let savedIdentityRoot: string | undefined
 let savedTz: string | undefined
 
 /**
@@ -174,6 +176,7 @@ beforeAll(() => {
   savedCapture = process.env.FAKE_TMUX_CAPTURE
   savedCodexRegistryRoot = process.env.CLAUDEMUX_CODEX_REGISTRY_ROOT
   savedCodexSessionsRoot = process.env.CLAUDEMUX_CODEX_SESSIONS_ROOT
+  savedIdentityRoot = process.env.CLAUDEMUX_IDENTITY_ROOT
 
   // Pin Date for the whole file — see FIXED_NOW above.
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -182,6 +185,7 @@ beforeAll(() => {
   // Fixed scratch — wipe and recreate so every run starts clean.
   rmSync(scratchDir, { recursive: true, force: true })
   mkdirSync(projectsDir, { recursive: true })
+  mkdirSync(identityRoot, { recursive: true })
   mkdirSync(dispatcherDir, { recursive: true })
   mkdirSync(idleDir(), { recursive: true })
   writeFileSync(sessionsFile, '')
@@ -199,6 +203,7 @@ beforeAll(() => {
   process.env.FAKE_TMUX_CAPTURE = captureFile
   process.env.CLAUDEMUX_CODEX_REGISTRY_ROOT = join(scratchDir, 'codex-registry')
   process.env.CLAUDEMUX_CODEX_SESSIONS_ROOT = join(scratchDir, 'codex-sessions')
+  process.env.CLAUDEMUX_IDENTITY_ROOT = identityRoot
 })
 
 afterAll(() => {
@@ -213,6 +218,8 @@ afterAll(() => {
   else process.env.CLAUDEMUX_CODEX_REGISTRY_ROOT = savedCodexRegistryRoot
   if (savedCodexSessionsRoot === undefined) delete process.env.CLAUDEMUX_CODEX_SESSIONS_ROOT
   else process.env.CLAUDEMUX_CODEX_SESSIONS_ROOT = savedCodexSessionsRoot
+  if (savedIdentityRoot === undefined) delete process.env.CLAUDEMUX_IDENTITY_ROOT
+  else process.env.CLAUDEMUX_IDENTITY_ROOT = savedIdentityRoot
   if (savedTz === undefined) delete process.env.TZ
   else process.env.TZ = savedTz
   if (existsSync(scratchDir)) rmSync(scratchDir, { recursive: true, force: true })
@@ -224,6 +231,8 @@ afterEach(() => {
   }
   resetCodexRegistry()
   resetCodexSessions()
+  rmSync(identityRoot, { recursive: true, force: true })
+  mkdirSync(identityRoot, { recursive: true })
 })
 
 /**

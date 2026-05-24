@@ -10,10 +10,10 @@
  * is the "no such teammate" case the verb formats. The router never
  * throws on a missing teammate — that is data, not an error.
  *
- * Phase 2a lands `ProductionTeammateRouter`, which consults
- * `persistence/identity-store.ts` and the `EngineRegistry` to map a
- * name → engine. `EmptyTeammateRouter` stays as the test-friendly
- * empty-fleet implementation.
+ * The production wiring may pass an identity migrator for already-running
+ * teammates that predate the base JSON. That migrator is allowed to
+ * materialise `/tmp/teammate-<name>.json`; the router still routes only by
+ * re-reading the JSON afterwards.
  */
 
 import { read as readIdentity } from '../persistence/identity-store'
@@ -34,6 +34,9 @@ export interface TeammateRouter {
   resolve(name: TeammateName): Promise<ResolvedTeammate | null>
 }
 
+/** Optional one-shot materialisation for pre-identity running teammates. */
+export type IdentityMigrator = (name: TeammateName) => Promise<void>
+
 /**
  * Production router. Reads the base TeammateRecord JSON via the identity
  * store; looks up the engine for the recorded kind through the registry.
@@ -46,11 +49,18 @@ export interface TeammateRouter {
  * such teammate" rather than crashing on `engines.get(undefined)`.
  */
 export class ProductionTeammateRouter implements TeammateRouter {
-  constructor(private readonly engines: EngineRegistryView) {}
+  constructor(
+    private readonly engines: EngineRegistryView,
+    private readonly migrateMissingIdentity: IdentityMigrator | null = null,
+  ) {}
 
   async resolve(name: TeammateName): Promise<ResolvedTeammate | null> {
     if (validateTeammateName(name).kind !== 'ok') return null
-    const record = readIdentity(name)
+    let record = readIdentity(name)
+    if (record === null && this.migrateMissingIdentity !== null) {
+      await this.migrateMissingIdentity(name)
+      record = readIdentity(name)
+    }
     if (record === null) return null
     const engine = this.engines.get(record.engine)
     if (engine === undefined) return null
@@ -65,56 +75,6 @@ export class ProductionTeammateRouter implements TeammateRouter {
  */
 export class EmptyTeammateRouter implements TeammateRouter {
   async resolve(_name: TeammateName): Promise<ResolvedTeammate | null> {
-    return null
-  }
-}
-
-/**
- * Phase 2a-1 transitional router — Claude teammates may not have their
- * base TeammateRecord JSON yet (Phase 2a-2 writes that). Falls back to
- * a tmux session probe: if `teammate-<encoded-name>` is a live tmux
- * session and the registry has a Claude engine, route there.
- *
- * Phase 2a-2 retires this fallback in favour of the identity-store
- * lookup that `ProductionTeammateRouter` performs. The legacy probe is
- * Claude-only because Codex teammates have no tmux session anyway —
- * they will be served by the identity-store lookup as soon as the
- * Codex engine starts writing the JSON.
- */
-export class LegacyClaudeTmuxRouter implements TeammateRouter {
-  constructor(
-    private readonly engines: EngineRegistryView,
-    private readonly tmuxProbe: (sessionName: string) => Promise<boolean>,
-  ) {}
-
-  async resolve(name: TeammateName): Promise<ResolvedTeammate | null> {
-    if (validateTeammateName(name).kind !== 'ok') return null
-    const claude = this.engines.get('claude')
-    if (claude === undefined) return null
-    // `replace(/\//g, '__')` is a no-op on a flat raw name like
-    // `flow__1`, so a legacy single-segment session `teammate-flow__1`
-    // still resolves to itself; only names actually containing `/` go
-    // through the nested-name encoding.
-    const sessionName = `teammate-${name.replace(/\//g, '__')}`
-    if (!(await this.tmuxProbe(sessionName))) return null
-    return { name, engine: claude }
-  }
-}
-
-/**
- * Try each router in order; the first non-null result wins. Used to
- * compose `ProductionTeammateRouter` with `LegacyClaudeTmuxRouter`
- * during Phase 2a-1 so a teammate without an identity JSON yet still
- * resolves through the tmux probe.
- */
-export class CompositeTeammateRouter implements TeammateRouter {
-  constructor(private readonly routers: readonly TeammateRouter[]) {}
-
-  async resolve(name: TeammateName): Promise<ResolvedTeammate | null> {
-    for (const r of this.routers) {
-      const out = await r.resolve(name)
-      if (out !== null) return out
-    }
     return null
   }
 }

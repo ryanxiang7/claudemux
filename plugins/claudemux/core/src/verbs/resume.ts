@@ -11,8 +11,8 @@
  *      hold history for the teammate's cwd; single candidate auto-routes,
  *      double candidate is an ambiguity error, no candidate is "no resumable
  *      session" — see decision context in the PR.
- *   5. legacy fallback                — when probing cannot run (cwd unknown),
- *      the original name-prefix resolver is consulted.
+ *   5. not-found                      — when probing cannot run (cwd unknown)
+ *      and the identity router cannot resolve the name.
  */
 
 import { hasClaudeHistoryForCwd } from '../engines/claude/history'
@@ -111,8 +111,9 @@ export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<Tm
     )
   }
 
-  // 5. Legacy fallback — cwd is unknown (or checkpoint passed but unmatched);
-  // delegate to the name-prefix resolver as before.
+  // 5. Not found — cwd is unknown (or checkpoint passed but unmatched). The
+  // production router may have migrated a live pre-identity teammate above;
+  // if resolution is still empty, there is no engine-safe target.
   const engine = await resolveTargetEngine(args.name, ctx)
   if ('code' in engine) return engine
   return dispatchResume(engine, args, ctx)

@@ -32,11 +32,7 @@ import { archiveVerb } from './verbs/archive'
 import { askVerb } from './verbs/ask'
 import { pollVerb } from './verbs/poll'
 import type { EngineContext } from './engines/types'
-import {
-  CompositeTeammateRouter,
-  LegacyClaudeTmuxRouter,
-  ProductionTeammateRouter,
-} from './identity/router'
+import { ProductionTeammateRouter } from './identity/router'
 import { ProductionIdentityStore } from './persistence/identity-writer'
 import type { VerbContext } from './verbs/context'
 import { lsVerb } from './verbs/ls'
@@ -60,30 +56,27 @@ import { parseResumeArgs } from './engines/claude/resume'
 import { parseSendArgs } from './engines/claude/send'
 import { parseSpawnArgs } from './engines/claude/spawn'
 import { parseWaitArgs } from './engines/claude/wait'
+import { createClaudeIdentityMigrator } from './engines/claude/identity-migration'
 import { readBaseRecord, readCodexMeta } from './engines/codex/persistence'
+import { createCodexIdentityMigrator } from './engines/codex/identity-migration'
 import type { EngineKind } from './engines/types'
 import { validateTeammateName } from './identity/name'
 import { formatContext, formatReload, noEngineRegistered } from './verbs/format'
 
 /**
- * The verb-side context the engine-routed verbs (`ls`, `states`,
- * `status`, `kill`) consume. The router falls back to the Claude tmux
- * probe so a name registered by a legacy `tm spawn` (no JSON marker)
- * still resolves to its engine.
+ * The verb-side context the engine-routed verbs consume. The router reads
+ * the identity JSON; the migrators only materialise that JSON for live
+ * teammates spawned before the identity store existed.
  */
 function productionVerbContext(env: NativeEnv): VerbContext {
   const registry = env.engines ?? productionRegistry(env)
 
-  const router = new CompositeTeammateRouter([
-    new ProductionTeammateRouter(registry),
-    new LegacyClaudeTmuxRouter(registry, async (session) => {
-      try {
-        return (await env.runTmux(['has-session', '-t', `=${session}`])).code === 0
-      } catch {
-        return false
-      }
-    }),
-  ])
+  const migrateCodexIdentity = createCodexIdentityMigrator(env)
+  const migrateClaudeIdentity = createClaudeIdentityMigrator(env)
+  const router = new ProductionTeammateRouter(registry, async (name) => {
+    await migrateCodexIdentity(name)
+    await migrateClaudeIdentity(name)
+  })
 
   const engineContext: EngineContext = { now: () => Date.now(), env: process.env }
   return {
@@ -179,10 +172,6 @@ function parseTimeoutMs(label: string, value: string | null): number | null | { 
   return secondsToMs(value)
 }
 
-function isCodexPrefixName(name: string): boolean {
-  return name.startsWith('codex-') || name.startsWith('codex/')
-}
-
 function codexNameFailure(name: string): string | null {
   const validation = validateTeammateName(name)
   return validation.kind === 'ok'
@@ -198,7 +187,7 @@ async function inferSpawnEngine(
   if (requested !== null) return requested
   const resolved = await ctx.router.resolve(name)
   if (resolved !== null) return resolved.engine.kind
-  return isCodexPrefixName(name) ? 'codex' : 'claude'
+  return 'claude'
 }
 
 function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
@@ -430,8 +419,8 @@ async function dispatchEngineVerb(
       // reads `cwd` if `checkpoint` matches a rollout — but it would make
       // the Claude-side probe match the dispatcher's own transcripts and
       // false-route. Flag whether the cwd is trustworthy so the probing
-      // branch can skip itself in the dispatcher-fallback case and let the
-      // legacy resolver surface the standard "repo not found" error.
+      // branch can skip itself in the dispatcher-fallback case and avoid
+      // guessing an engine from the dispatcher's own transcripts.
       const repoPath = join(env.dispatcherDir, parsed.repo)
       const cwdProbeable =
         readBaseRecord(parsed.repo) !== null ||

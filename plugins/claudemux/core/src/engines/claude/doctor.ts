@@ -171,7 +171,7 @@ export async function claudeDoctor(
   out += 'codex teammates:\n'
   const codexNames = listCodexDaemons()
   if (codexNames.length === 0) {
-    out += "  (none — use 'tm spawn codex-<n>' to launch one)\n"
+    out += "  (none — use 'tm spawn <name> --engine codex' to launch one)\n"
   } else {
     const reaped: string[] = []
     const live: { name: string; pid: number; startedAt: number }[] = []

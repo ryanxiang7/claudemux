@@ -554,7 +554,7 @@ export class CodexEngine implements Engine {
     if (!daemonAlive(req.name)) {
       return {
         kind: 'failed',
-        message: `codex teammate '${req.name}' is not alive — try 'tm spawn ${req.name}' first`,
+        message: `codex teammate '${req.name}' is not alive — try 'tm spawn ${req.name} --engine codex' first`,
         recoverable: false,
       }
     }

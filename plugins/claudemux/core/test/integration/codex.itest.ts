@@ -13,7 +13,7 @@
  *   - **Smoke** — spawn the daemon, observe `tm doctor` reports it,
  *     kill it, observe the registry directory torn down. No turns.
  *     Costs ~half a second of process startup; no model usage.
- *   - **Turn-spending** — `tm send codex-N --prompt "..."` against the
+ *   - **Turn-spending** — `tm send <codex-name> --prompt "..."` against the
  *     real model and `tm ask "..."` against the pool. Each turn costs
  *     a small amount of OpenAI credits, so the gate
  *     `CLAUDEMUX_CODEX_SPEND_TOKENS=1` keeps them opt-in even within
@@ -87,12 +87,17 @@ const tmBin = resolveTmBinary()
 // short `/tmp/cmxlive-*` prefix keeps the unix socket path under macOS's
 // ~104-char limit.
 let registryRoot: string
+let identityRoot: string
 let savedRegistryRoot: string | undefined
+let savedIdentityRoot: string | undefined
 
 beforeAll(() => {
   registryRoot = mkdtempSync('/tmp/cmxlive-')
+  identityRoot = mkdtempSync('/tmp/cmxlive-id-')
   savedRegistryRoot = process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT']
+  savedIdentityRoot = process.env['CLAUDEMUX_IDENTITY_ROOT']
   process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT'] = registryRoot
+  process.env['CLAUDEMUX_IDENTITY_ROOT'] = identityRoot
 })
 
 afterAll(() => {
@@ -129,7 +134,10 @@ afterAll(() => {
   } finally {
     if (savedRegistryRoot === undefined) delete process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT']
     else process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT'] = savedRegistryRoot
+    if (savedIdentityRoot === undefined) delete process.env['CLAUDEMUX_IDENTITY_ROOT']
+    else process.env['CLAUDEMUX_IDENTITY_ROOT'] = savedIdentityRoot
     rmSync(registryRoot, { recursive: true, force: true })
+    rmSync(identityRoot, { recursive: true, force: true })
   }
 })
 
@@ -145,7 +153,7 @@ describe.skipIf(!probe.ok)('live codex driver — smoke (no turn spend)', () => 
   const name = 'codex-itest-smoke'
 
   test('tm spawn brings up a real codex daemon under the test registry root', async () => {
-    const result = await tm(['spawn', name])
+    const result = await tm(['spawn', name, '--engine', 'codex'])
     expect(result.code, result.stderr).toBe(0)
     expect(result.stderr).toMatch(new RegExp(`^spawned: ${name} \\(pid=\\d+, socket=${registryRoot}/${name}/socket\\)\\n$`))
     expect(existsSync(`${registryRoot}/${name}/socket`)).toBe(true)
@@ -175,10 +183,10 @@ describe.skipIf(!probe.ok)('live codex driver — smoke (no turn spend)', () => 
     expect(existsSync(`${registryRoot}/${name}`)).toBe(false)
   })
 
-  test('tm kill on an already-gone teammate is a no-op with a clear stderr line', async () => {
+  test('tm kill on an already-gone teammate reports not running', async () => {
     const result = await tm(['kill', name])
     expect(result.code, result.stderr).toBe(0)
-    expect(result.stderr).toMatch(/no codex teammate '.*' to kill \(already gone\)/)
+    expect(result.stdout).toBe(`not running: ${name}\n`)
   })
 })
 
@@ -194,7 +202,7 @@ describe.skipIf(!probe.ok || !spendsTokens)('live codex driver — turn-spending
   const name = 'codex-itest-turns'
 
   beforeAll(async () => {
-    const spawned = await tm(['spawn', name])
+    const spawned = await tm(['spawn', name, '--engine', 'codex'])
     expect(spawned.code, spawned.stderr).toBe(0)
   })
 

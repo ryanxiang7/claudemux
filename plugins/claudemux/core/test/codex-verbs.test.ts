@@ -76,9 +76,8 @@ beforeEach(() => {
   identityDir = mkdtempSync('/tmp/cmxv-id-')
   process.env['CLAUDEMUX_IDENTITY_ROOT'] = identityDir
   let counter = 0
-  // The `codex-` prefix is part of the codex teammate contract — keep
-  // it so the verb-side messages ("tm spawn codex-…") match what a
-  // production caller would see.
+  // Keep codex-looking names in this low-level wrapper suite so failure
+  // messages stay easy to distinguish from Claude teammate cases.
   nameUnder = () => `codex-${counter++}`
   toReap = []
   savedBin = process.env['CLAUDEMUX_CODEX_BIN']
@@ -180,7 +179,7 @@ describe('codex verbs — daemon-not-alive guards', () => {
   test('codexSend rejects with a hint to spawn first when the daemon is gone', async () => {
     const result = await codexSend(nameUnder(), 'hello')
     expect(result.code).toBe(1)
-    expect(result.stderr).toMatch(/is not alive — try 'tm spawn codex-/)
+    expect(result.stderr).toMatch(/is not alive — try 'tm spawn .* --engine codex'/)
   })
 
   test('codexWait rejects when the daemon is gone', async () => {
@@ -231,6 +230,7 @@ describe('codexAsk — pool borrow semantics', () => {
     const result = await codexAsk('hello?')
     expect(result.code).toBe(1)
     expect(result.stderr).toMatch(/no codex teammates available/)
+    expect(result.stderr).toContain("tm spawn <name> --engine codex")
   })
 
   test('reports "all busy" when every alive teammate is already borrowed', async () => {

@@ -24,8 +24,8 @@ Two facts shifted what [node-cli-committed-bundle](./node-cli-committed-bundle.m
 
 - **Node 22.7+ ships `--experimental-transform-types`.** Unlike the
   strip-only mode the prior decision evaluated, transform mode supports
-  parameter properties — which our `LegacyClaudeTmuxRouter` /
-  `CompositeTeammateRouter` / `ProductionTeammateRouter` constructors use.
+  parameter properties — which our TypeScript classes such as
+  `ProductionTeammateRouter` use.
 - **The orchestration core has one runtime npm dependency: `ws`.** Every
   other import in [`core/src/`](/plugins/claudemux/core/src/) is either
   a `node:` built-in or a relative path. Vendoring one package is a

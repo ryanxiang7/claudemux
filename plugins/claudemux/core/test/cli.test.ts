@@ -388,8 +388,6 @@ describe('native dispatch', () => {
   test.each([
     ['spawn parent segment', ['spawn', '../escape', '--engine', 'codex']],
     ['spawn dot segment', ['spawn', './bad', '--engine', 'codex']],
-    ['send nested traversal', ['send', 'codex/../../x', '--prompt', 'hello']],
-    ['wait nested traversal', ['wait', 'codex/../../x']],
   ])('%s rejects invalid codex teammate names before filesystem routing', async (_label, argv) => {
     const result = await runCli(argv, fakeEnv({ dispatcherDir: '/tmp/cmxcli-missing-dispatcher' }))
     expect(result.code).toBe(1)
@@ -407,7 +405,7 @@ describe('native dispatch', () => {
     try {
       await reapDaemon(name)
       removeBaseRecord(name)
-      const result = await runCli(['spawn', name, '--prompt', 'hi'], env)
+      const result = await runCli(['spawn', name, '--engine', 'codex', '--prompt', 'hi'], env)
       expect(result.code).toBe(0)
       expect(result.stderr).toMatch(/^spawned: codex-x \(pid=\d+, socket=.*\)\n$/)
       expect(result.stdout).toContain('fake reply: hi')
@@ -509,6 +507,85 @@ describe('native dispatch', () => {
     }
   })
 
+  test('claude spawn writes the base identity record for identity-router follow-up verbs', async () => {
+    const repo = `claude-router-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const liveSessions = new Set<string>()
+    const runTmux: TmuxRunner = async (args) => {
+      if (args[0] === 'has-session') {
+        const target = args[2]?.replace(/^=/, '') ?? ''
+        return { code: liveSessions.has(target) ? 0 : 1, stdout: '', stderr: '' }
+      }
+      if (args[0] === 'new-session') {
+        const session = args[args.indexOf('-s') + 1] ?? ''
+        liveSessions.add(session)
+        mkdirSync(dirname(readyFile(repo)), { recursive: true })
+        writeFileSync(readyFile(repo), '')
+        return { code: 0, stdout: '%1\n', stderr: '' }
+      }
+      if (args[0] === 'send-keys') return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+
+    try {
+      const result = await runCli(['spawn', repo], fakeEnv({ dispatcherDir, runTmux }))
+      expect(result.code).toBe(0)
+      expect(readIdentity(repo)).toMatchObject({
+        name: repo,
+        engine: 'claude',
+        cwd: realpathSync(join(dispatcherDir, repo)),
+      })
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(cwdFile(repo), { force: true })
+      rmSync(sidFile(repo), { force: true })
+      rmSync(readyFile(repo), { force: true })
+      rmSync(sendAtFile(repo), { force: true })
+      removeBaseRecord(repo)
+    }
+  })
+
+  test('a live pre-identity claude tmux teammate is migrated before routing', async () => {
+    const name = `legacy-claude-${Date.now()}`
+    const cwd = mkdtempSync('/tmp/cmxcli-legacy-cwd-')
+    mkdirSync(dirname(cwdFile(name)), { recursive: true })
+    writeFileSync(cwdFile(name), `${cwd}\n`)
+    const registry = new EngineRegistry()
+    registry.register({
+      kind: 'claude',
+      send: async (req: { name: string }) => ({
+        kind: 'completed',
+        text: `sent to ${req.name}\n`,
+        items: [],
+        context: null,
+      }),
+    } as unknown as Engine)
+    const runTmux: TmuxRunner = async (args) => {
+      if (args[0] === 'has-session' && args[2] === `=teammate-${name}`) {
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      return { code: 1, stdout: '', stderr: '' }
+    }
+
+    try {
+      const result = await runCli(
+        ['send', name, '--prompt', 'hi'],
+        fakeEnv({ engines: registry, runTmux }),
+      )
+      expect(result).toEqual({ code: 0, stdout: `sent to ${name}\n`, stderr: '' })
+      expect(readIdentity(name)).toMatchObject({
+        name,
+        engine: 'claude',
+        cwd: realpathSync(cwd),
+      })
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(cwdFile(name), { force: true })
+      removeBaseRecord(name)
+    }
+  })
+
   test('codex send and wait keep omitted timeouts unbounded and preserve explicit timeouts', async () => {
     const seenSend: Array<number | null> = []
     const seenWait: Array<number | null> = []
@@ -527,13 +604,23 @@ describe('native dispatch', () => {
     registry.register(fakeCodex)
     const env = fakeEnv({ engines: registry })
 
-    expect((await runCli(['send', 'codex-timeout', '--prompt', 'hi'], env)).code).toBe(0)
-    expect((await runCli(['send', 'codex-timeout', '--prompt', 'hi', '--timeout', '7'], env)).code).toBe(0)
-    expect((await runCli(['wait', 'codex-timeout'], env)).code).toBe(0)
-    expect((await runCli(['wait', 'codex-timeout', '--timeout', '7'], env)).code).toBe(0)
+    writeBaseRecord(new CodexTeammateRecord({
+      name: 'codex-timeout',
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
+    }))
+    try {
+      expect((await runCli(['send', 'codex-timeout', '--prompt', 'hi'], env)).code).toBe(0)
+      expect((await runCli(['send', 'codex-timeout', '--prompt', 'hi', '--timeout', '7'], env)).code).toBe(0)
+      expect((await runCli(['wait', 'codex-timeout'], env)).code).toBe(0)
+      expect((await runCli(['wait', 'codex-timeout', '--timeout', '7'], env)).code).toBe(0)
 
-    expect(seenSend).toEqual([null, 7000])
-    expect(seenWait).toEqual([null, 7000])
+      expect(seenSend).toEqual([null, 7000])
+      expect(seenWait).toEqual([null, 7000])
+    } finally {
+      removeBaseRecord('codex-timeout')
+    }
   })
 
   test('ctx --all fans out through engine listings, including codex teammates', async () => {
@@ -899,10 +986,10 @@ describe('resume engine-probing — no checkpoint + no base record', () => {
   type ResumeCall = { engine: 'claude' | 'codex'; name: string; cwd: string | null; checkpoint: string | null }
 
   // The default `fakeTmux` returns code 0 for everything, which would make
-  // `LegacyClaudeTmuxRouter`'s `has-session` probe always succeed and the
-  // router would short-circuit probing to the Claude engine. Probing
-  // exists for the "no session, no record" case, so these tests must
-  // stub `has-session` as missing (code 1).
+  // the live-teammate identity migrator materialise a Claude record and
+  // short-circuit probing to the Claude engine. Probing exists for the
+  // "no session, no record" case, so these tests must stub `has-session`
+  // as missing (code 1).
   const noTmuxSession: TmuxRunner = async (args) =>
     args[0] === 'has-session'
       ? { code: 1, stdout: '', stderr: '' }
@@ -1209,13 +1296,12 @@ describe('resume engine-probing — no checkpoint + no base record', () => {
     expect(result.stderr).toContain("--engine must be 'claude' or 'codex'")
   })
 
-  test('non-probeable cwd skips probing and falls through to legacy resolver', async () => {
+  test('non-probeable cwd skips probing and falls through to Claude default routing', async () => {
     // No base record, no codex meta, no repo dir → `codexCwd` falls back
     // to the dispatcher dir's realpath. cli.ts flags cwdProbeable=false
     // for that case so the probing branch cannot match the dispatcher's
-    // own transcripts. With no router resolution either, the legacy
-    // name-prefix resolver routes to the Claude engine (since the name
-    // is not codex-prefixed).
+    // own transcripts. With no router resolution either, the compatibility
+    // default routes to Claude without consulting transcript probes.
     const repo = `noproberepo-${Date.now()}`
     const dispatcherDir = mkdtempSync('/tmp/cmx-probe-noprobe-')
     // Seed Claude transcripts UNDER the dispatcher's encoded path so the
@@ -1237,10 +1323,6 @@ describe('resume engine-probing — no checkpoint + no base record', () => {
         ['resume', repo],
         fakeEnv({ dispatcherDir, projectsDir, engines: registry, runTmux: noTmuxSession }),
       )
-      // Falls into the legacy resolver → Claude engine (non-codex name).
-      // The Claude engine is faked here, so it accepts the request — what
-      // matters is that probing did NOT match the dispatcher's stray
-      // transcript and false-route on cwd=dispatcher.
       expect(result.code).toBe(0)
       expect(sink).toEqual([
         { engine: 'claude', name: repo, cwd: dispatcherRealpath, checkpoint: null },
@@ -1347,7 +1429,7 @@ describe('doctor — sections fire top-down, never raising', () => {
     // file can land entries here, so the "none" body is stable.
     const result = await runCli(['doctor'], fakeEnv())
     expect(result.code).toBe(0)
-    expect(result.stdout).toMatch(/codex teammates:\s*\n  \(none — use 'tm spawn codex-<n>' to launch one\)/)
+    expect(result.stdout).toMatch(/codex teammates:\s*\n  \(none — use 'tm spawn <name> --engine codex' to launch one\)/)
   })
 
   test('reaping a dead codex daemon also removes its base identity record', async () => {

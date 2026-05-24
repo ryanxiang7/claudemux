@@ -15,7 +15,8 @@
  * holds on the Claude side without further work.
  */
 
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type {
   CompactRequest,
@@ -42,6 +43,7 @@ import type {
   SpawnRequest,
   SpawnResult,
   StatusRequest,
+  TeammateName,
   TeammateListing,
   TeammateStatus,
   TextResult,
@@ -57,13 +59,14 @@ import { claudeHistory, claudeHistoryListEntries } from './history'
 import { claudeLast } from './last'
 import { claudeMem } from './mem'
 import { claudeReload } from './reload'
-import { projectDirForRepo } from './repo-fs'
+import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
 import { claudeResume } from './resume'
 import { claudeSend } from './send'
 import { claudeSpawn } from './spawn'
 import { claudeWait } from './wait'
 import {
   busyMarkerFor,
+  ClaudeTeammateRecord,
   cwdFile,
   idleMarkerFor,
   lastFileFor,
@@ -71,9 +74,16 @@ import {
   sendAtFile,
   sidFile,
   TMUX_SESSION_PREFIX,
+  tmuxSessionName,
 } from './persistence'
 import { listingExtras } from './state'
 import { pluginJsonPath, tmWrapperPath } from '../../plugin-root'
+import type { TmResult } from '../../tm'
+import {
+  read as readIdentity,
+  remove as removeIdentity,
+  reserve as reserveIdentity,
+} from '../../persistence/identity-store'
 
 /** The Claude engine's capability report. */
 export const CLAUDE_CAPABILITIES: EngineCapabilities = {
@@ -122,6 +132,59 @@ async function hasTmuxSession(env: NativeEnv, sessionName: string): Promise<bool
     return (await env.runTmux(['has-session', '-t', `=${sessionName}`])).code === 0
   } catch {
     return false
+  }
+}
+
+type ClaudeIdentityReservation =
+  | { kind: 'reserved' }
+  | { kind: 'preexisting' }
+  | { kind: 'already-exists'; existingEngine: EngineKind }
+  | { kind: 'failed'; result: TmResult }
+
+function reserveClaudeIdentityForLaunch(args: {
+  readonly name: TeammateName
+  readonly cwd: string | null
+  readonly displayName: string | null
+  readonly env: NativeEnv
+  readonly nowMs: number
+  readonly verb: 'spawn' | 'resume'
+}): ClaudeIdentityReservation {
+  const existing = readIdentity(args.name)
+  if (existing !== null) {
+    return existing.engine === 'claude'
+      ? { kind: 'preexisting' }
+      : { kind: 'already-exists', existingEngine: existing.engine }
+  }
+
+  const launchCwd = args.cwd ?? join(args.env.dispatcherDir, args.name)
+  try {
+    if (!statSync(launchCwd).isDirectory()) {
+      return {
+        kind: 'failed',
+        result: dieRepoNotFound(args.verb, args.name, launchCwd, args.env.dispatcherDir),
+      }
+    }
+  } catch {
+    return {
+      kind: 'failed',
+      result: dieRepoNotFound(args.verb, args.name, launchCwd, args.env.dispatcherDir),
+    }
+  }
+
+  const record = new ClaudeTeammateRecord({
+    name: args.name,
+    cwd: realpathSync(launchCwd),
+    createdAt: Math.floor(args.nowMs / 1000),
+    displayName: args.displayName,
+  })
+  const reserved = reserveIdentity(record.toJson())
+  if (reserved.kind === 'reserved') return { kind: 'reserved' }
+  if (reserved.kind === 'taken') {
+    return { kind: 'already-exists', existingEngine: reserved.existing.engine }
+  }
+  return {
+    kind: 'failed',
+    result: { code: 1, stdout: '', stderr: `tm: ${reserved.message}\n` },
   }
 }
 
@@ -269,6 +332,25 @@ export class ClaudeEngine implements Engine {
   // ─── Hot path / session-shape — real bodies in engines/claude/<verb>.ts
 
   async spawn(req: SpawnRequest, _ctx: EngineContext): Promise<SpawnResult> {
+    const identity = reserveClaudeIdentityForLaunch({
+      name: req.name,
+      cwd: req.cwd,
+      displayName: req.displayName,
+      env: this.env,
+      nowMs: _ctx.now(),
+      verb: 'spawn',
+    })
+    if (identity.kind === 'already-exists') {
+      return { kind: 'already-exists', existingEngine: identity.existingEngine }
+    }
+    if (identity.kind === 'failed') {
+      return {
+        kind: 'failed',
+        message: rstrip(identity.result.stderr) || rstrip(identity.result.stdout),
+        tmResult: identity.result,
+      }
+    }
+
     const argv: string[] = [req.name]
     if (req.resumeCheckpoint !== null) argv.push('--resume', req.resumeCheckpoint)
     if (req.displayName !== null) argv.push('--task', req.displayName)
@@ -282,6 +364,12 @@ export class ClaudeEngine implements Engine {
     if (req.timeoutMs !== null) argv.push('--timeout', String(Math.round(req.timeoutMs / 1000)))
     const result = await claudeSpawn(argv, this.env)
     if (result.code !== 0) {
+      if (
+        identity.kind === 'reserved' &&
+        !(await hasTmuxSession(this.env, tmuxSessionName(req.name)))
+      ) {
+        removeIdentity(req.name)
+      }
       return { kind: 'failed', message: rstrip(result.stderr) || rstrip(result.stdout), tmResult: result }
     }
     return {
@@ -327,12 +415,40 @@ export class ClaudeEngine implements Engine {
   }
 
   async resume(req: ResumeRequest, _ctx: EngineContext): Promise<ResumeResult> {
+    const identity = reserveClaudeIdentityForLaunch({
+      name: req.name,
+      cwd: req.cwd,
+      displayName: req.displayName,
+      env: this.env,
+      nowMs: _ctx.now(),
+      verb: 'resume',
+    })
+    if (identity.kind === 'already-exists') {
+      return {
+        kind: 'failed',
+        message: `'${req.name}' already exists as a ${identity.existingEngine} teammate`,
+      }
+    }
+    if (identity.kind === 'failed') {
+      return {
+        kind: 'failed',
+        message: rstrip(identity.result.stderr) || rstrip(identity.result.stdout),
+        tmResult: identity.result,
+      }
+    }
+
     const argv = [req.name]
     if (req.checkpoint !== null) argv.push(req.checkpoint)
     if (req.displayName !== null) argv.push('--task', req.displayName)
     if (req.prompt !== null) argv.push('--prompt', req.prompt)
     const result = await claudeResume(argv, this.env)
     if (result.code === 0) return { kind: 'resumed', checkpoint: req.checkpoint, tmResult: result }
+    if (
+      identity.kind === 'reserved' &&
+      !(await hasTmuxSession(this.env, tmuxSessionName(req.name)))
+    ) {
+      removeIdentity(req.name)
+    }
     return { kind: 'failed', message: rstrip(result.stderr) || rstrip(result.stdout), tmResult: result }
   }
 

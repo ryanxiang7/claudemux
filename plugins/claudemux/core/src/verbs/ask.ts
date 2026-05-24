@@ -1,7 +1,7 @@
 /**
  * `tm ask "<prompt>"` — borrow an idle named codex teammate, run one
  * turn on a fresh thread, return the teammate. The "pool" is the
- * spawned `codex-<n>` set; this verb does not name a teammate. Always
+ * spawned Codex-engine set; this verb does not name a teammate. Always
  * routes into the codex driver, never into the tmux path.
  *
  * Codex-only by definition (decision multi-engine-tui-architecture): a claude teammate is named,

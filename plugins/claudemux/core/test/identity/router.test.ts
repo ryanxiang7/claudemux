@@ -1,18 +1,14 @@
 /**
- * Coverage for `LegacyClaudeTmuxRouter` — the Phase 2a-1 transitional
- * router that resolves a teammate by tmux session probe when the base
- * TeammateRecord JSON does not exist yet.
- *
- * The regression case is the legacy single-segment name `flow__1`:
- * Phase 2a-1's first cut rejected `__` in raw names and then encoded
- * `/` → `__` for tmux, which made `tm status flow__1` unreachable
- * even when the session `teammate-flow__1` was alive. The fix keeps
- * `__` legal in flat names and lets the legacy probe succeed.
+ * Coverage for the identity router: it may ask a migrator to materialise
+ * a missing base record, but it only resolves after reading
+ * `/tmp/teammate-<name>.json`.
  */
 
-import { describe, expect, test } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
 
-import { LegacyClaudeTmuxRouter } from '../../src/identity/router'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+
+import { ProductionTeammateRouter } from '../../src/identity/router'
 import { EngineRegistry } from '../../src/engines/registry'
 import type { Engine } from '../../src/engines/engine'
 import type {
@@ -46,6 +42,8 @@ import type {
   TurnResult,
   WaitRequest,
 } from '../../src/engines/types'
+import { TEAMMATE_RECORD_SCHEMA } from '../../src/engines/teammate-record'
+import { read, write } from '../../src/persistence/identity-store'
 
 const capabilities: EngineCapabilities = {
   atomicSend: true,
@@ -60,9 +58,10 @@ const capabilities: EngineCapabilities = {
   events: 'synthesized',
 }
 
-class StubClaudeEngine implements Engine {
-  readonly kind: EngineKind = 'claude'
+class StubEngine implements Engine {
   readonly capabilities = capabilities
+
+  constructor(readonly kind: EngineKind) {}
 
   async spawn(req: SpawnRequest, _ctx: EngineContext): Promise<SpawnResult> {
     return { kind: 'spawned', name: req.name, firstTurn: null }
@@ -111,48 +110,82 @@ class StubClaudeEngine implements Engine {
   }
 }
 
-function registryWithClaude(): EngineRegistry {
+let savedIdentityRoot: string | undefined
+let identityRoot: string
+
+beforeEach(() => {
+  savedIdentityRoot = process.env['CLAUDEMUX_IDENTITY_ROOT']
+  identityRoot = mkdtempSync('/tmp/cmx-router-id-')
+  process.env['CLAUDEMUX_IDENTITY_ROOT'] = identityRoot
+})
+
+afterEach(() => {
+  if (savedIdentityRoot === undefined) delete process.env['CLAUDEMUX_IDENTITY_ROOT']
+  else process.env['CLAUDEMUX_IDENTITY_ROOT'] = savedIdentityRoot
+  rmSync(identityRoot, { recursive: true, force: true })
+})
+
+function registryWithEngines(): EngineRegistry {
   const registry = new EngineRegistry()
-  registry.register(new StubClaudeEngine())
+  registry.register(new StubEngine('claude'))
+  registry.register(new StubEngine('codex'))
   return registry
 }
 
-describe('LegacyClaudeTmuxRouter', () => {
-  test('resolves a flat legacy name containing __ when the raw tmux session exists', async () => {
-    const probed: string[] = []
-    const router = new LegacyClaudeTmuxRouter(registryWithClaude(), async (session) => {
-      probed.push(session)
-      return session === 'teammate-flow__1'
+describe('ProductionTeammateRouter', () => {
+  test('resolves by reading the recorded engine identity', async () => {
+    write({
+      schema: TEAMMATE_RECORD_SCHEMA,
+      name: 'worker',
+      engine: 'codex',
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
     })
-    const resolved = await router.resolve('flow__1')
-    expect(probed).toEqual(['teammate-flow__1'])
-    expect(resolved?.name).toBe('flow__1')
+
+    const resolved = await new ProductionTeammateRouter(registryWithEngines()).resolve('worker')
+
+    expect(resolved?.name).toBe('worker')
+    expect(resolved?.engine.kind).toBe('codex')
+  })
+
+  test('runs a missing-identity migrator and then resolves through the JSON', async () => {
+    const migrated: string[] = []
+    const router = new ProductionTeammateRouter(registryWithEngines(), async (name) => {
+      migrated.push(name)
+      write({
+        schema: TEAMMATE_RECORD_SCHEMA,
+        name,
+        engine: 'claude',
+        cwd: '/tmp',
+        createdAt: 1,
+        displayName: null,
+      })
+    })
+
+    const resolved = await router.resolve('legacy')
+
+    expect(migrated).toEqual(['legacy'])
+    expect(read('legacy')).toMatchObject({ name: 'legacy', engine: 'claude' })
     expect(resolved?.engine.kind).toBe('claude')
   })
 
-  test('resolves a nested name by encoding / → __ in the probe', async () => {
-    const probed: string[] = []
-    const router = new LegacyClaudeTmuxRouter(registryWithClaude(), async (session) => {
-      probed.push(session)
-      return session === 'teammate-flow__flow-1'
-    })
-    const resolved = await router.resolve('flow/flow-1')
-    expect(probed).toEqual(['teammate-flow__flow-1'])
-    expect(resolved?.name).toBe('flow/flow-1')
+  test('returns null when no identity exists after migration', async () => {
+    const resolved = await new ProductionTeammateRouter(
+      registryWithEngines(),
+      async () => {},
+    ).resolve('missing')
+
+    expect(resolved).toBeNull()
   })
 
-  test('returns null when the probed session does not exist', async () => {
-    const router = new LegacyClaudeTmuxRouter(registryWithClaude(), async () => false)
-    expect(await router.resolve('missing')).toBeNull()
-  })
+  test('returns null on an invalid name without migrating', async () => {
+    let migrated = false
+    const resolved = await new ProductionTeammateRouter(registryWithEngines(), async () => {
+      migrated = true
+    }).resolve('a//b')
 
-  test('returns null on an invalid name without probing', async () => {
-    let probed = false
-    const router = new LegacyClaudeTmuxRouter(registryWithClaude(), async () => {
-      probed = true
-      return true
-    })
-    expect(await router.resolve('a//b')).toBeNull()
-    expect(probed).toBe(false)
+    expect(resolved).toBeNull()
+    expect(migrated).toBe(false)
   })
 })

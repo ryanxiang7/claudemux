@@ -44,9 +44,9 @@ contracts they hold.
 > diagnostic verbs (`archive`, `poll`, `doctor`, `ask`) stay local to the CLI
 > or their dedicated helper modules.
 >
-> Codex teammates are driven by `CodexEngine`. `tm spawn codex-<n>`,
-> `tm send codex-<n>`, `tm wait codex-<n>`, `tm resume codex-<n> [<thread-id>]`,
-> `tm kill codex-<n>`, and Codex liveness verbs route through the generic verb layer and
+> Codex teammates are driven by `CodexEngine`. `tm spawn <name> --engine codex`,
+> `tm send <name>`, `tm wait <name>`, `tm resume <name> [<thread-id>]`,
+> `tm kill <name>`, and Codex liveness verbs route through the generic verb layer and
 > [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts).
 > `tm status`, `tm ls`, and `tm states` combine daemon registry health,
 > socket reachability, `thread/read` status when available, and recent
@@ -102,7 +102,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `persistence/project-dir.ts` | `encodeProjectDir` — Claude Code's on-disk projects-dir encoding ([decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md) one-source-of-truth). |
 | `persistence/identity-writer.ts` | `ProductionIdentityStore` — the verb-layer-facing `IdentityStore.remove()` seam (`killVerb` uses it after a successful kill). |
 | `identity/name.ts` | `validateTeammateName` — single-segment + nested-name (`flow/flow-1`) validator. Rejects `__` only when the name also contains `/` (the one case where the `/` → `__` tmux encoding would round-trip ambiguously); legacy flat names like `flow__1` remain reachable. |
-| `identity/router.ts` | `ProductionTeammateRouter` reads the identity JSON; `LegacyClaudeTmuxRouter` falls back to a tmux session probe for Claude teammates that predate the base JSON record; `CompositeTeammateRouter` chains them. |
+| `identity/router.ts` | `ProductionTeammateRouter` reads the identity JSON. Production wiring may run per-engine identity migrators for live pre-JSON teammates, but routing still happens only after `/tmp/teammate-<name>.json` exists and records an engine. |
 | `proc.ts` | `spawnCapture` — the `node:child_process` spawn primitive every shell-out backend is built on. |
 | `tm.ts` | `TmResult` / `TmRunOptions` types, the `EXIT_SYNC_WAIT_EXPIRED` constant (`124`, GNU `timeout(1)` convention) every wait-bearing verb returns when its `--timeout` elapses without the teammate dying, and `resolveTmBinary` — the live-teammate harness's seam for locating the user-installed `tm` PATH entry (honors `CLAUDEMUX_TM`). |
 | `tmux.ts` | The `tmux` backend — `runTmux`, used by every verb that queries tmux. |
@@ -143,9 +143,10 @@ that routes one CLI invocation. The order:
    `tm kill`, `tm spawn`, `tm send`, `tm wait`, `tm compact`, `tm resume`,
    `tm last`, `tm ctx`, `tm history`, `tm mem`, and `tm reload` build a
    `productionVerbContext` (`EngineRegistry` registered with `ClaudeEngine`
-   and `CodexEngine`, `CompositeTeammateRouter` composing the identity-store
-   lookup with the legacy tmux-session probe, and `ProductionIdentityStore`
-   for identity removal) and hand off through `verbs/<v>.ts`.
+   and `CodexEngine`, `ProductionTeammateRouter` reading the identity JSON
+   after any live pre-JSON teammate is migrated, and
+   `ProductionIdentityStore` for identity removal) and hand off through
+   `verbs/<v>.ts`.
 5b. **Dispatcher-only / diagnostic verbs** — `tm archive` lives in
    `verbs/archive.ts` and touches only the dispatcher's own ledger files under
    `~/.claude/projects/<encoded>/memory/`; `tm poll` remains a Claude/tmux

@@ -71,7 +71,7 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       rollout JSONL. Use to see what every teammate is doing at a
       glance.
 `,
-  spawn: `tm spawn <repo> [--task <slug>] [--prompt "..."]
+  spawn: `tm spawn <repo> [--engine claude|codex] [--task <slug>] [--prompt "..."]
 
       Launch a claude teammate in <dispatcher-dir>/<repo>, where the
       dispatcher dir comes from TM_DISPATCHER_DIR (or $PWD fallback);
@@ -90,10 +90,12 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       reply yet" error instead of stale content from an earlier sid.
       The --prompt sync path inherits 'tm send''s stderr ctx echo
       after the first-turn Stop.
-      Codex teammates can be spawned with the legacy codex-<n> /
-      codex/<name> target shape or by passing --engine codex. Their
-      daemon is not a tmux session; --task and --resume are rejected
-      on that path.
+      --engine selects the teammate engine at spawn time. Default is
+      claude; pass --engine codex for a Codex daemon teammate. The name
+      itself has no engine meaning, so codex-reviewer is a Claude
+      teammate unless --engine codex is present.
+      Codex teammates are not tmux sessions; --task and --resume are
+      rejected on that path.
       Every teammate launches with the AskUserQuestion tool disabled
       (this applies to 'tm resume' too). A teammate runs with no
       human at its terminal, and that tool's modal holds the turn
@@ -141,8 +143,8 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
         1   real failure (no such tmux session, sid marker missing,
             sendKeys broke). The teammate is gone or never started.
 
-      When <repo> is a codex teammate (name starts with 'codex-'),
-      this verb routes into the codex driver instead: --prompt is
+      When <repo> is a codex teammate (recorded in the identity JSON),
+      this verb routes into the codex driver: --prompt is
       required, --timeout is accepted, the reply on stdout is the raw
       Turn JSON, and --pane-quiet is rejected explicitly rather than
       silently ignored.
@@ -250,18 +252,18 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
   kill: `tm kill <repo>
 
       Kill the teammate's tmux session and clean up its state files
-      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}). A codex-<n>
-      target reaps the codex daemon and its registry directory instead.
+      (/tmp/teammate-<repo>.{sid,send-at,ready,cwd}). A codex teammate
+      reaps the codex daemon and its registry directory instead.
 `,
   ask: `tm ask "<prompt>"
 
       Drive a one-shot turn on an idle codex teammate from the
-      \`codex-<n>\` pool, on a fresh thread (so the borrowed teammate's
+      Codex pool, on a fresh thread (so the borrowed teammate's
       persistent conversation thread is not polluted). Prints the
       turn's JSON to stdout.
 
       Pool semantics (decision node-cli-orchestrator §6, pool decision A): the named
-      \`codex-<n>\` teammates are the pool. ask picks any idle one,
+      Codex-engine teammates are the pool. ask picks any idle one,
       borrows it for one turn, and returns it. "Idle" means it has no
       active borrow lock; the lock is a file under
       /tmp/teammate-codex/<name>/lock.
@@ -359,7 +361,7 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
  */
 export const REMOVED_VERB_MESSAGES: Readonly<Record<string, string>> = {
   // `tm ask` was removed in 0.3.0 and re-introduced in stage 4 with new
-  // semantics (codex-mode borrow/return on a `codex-<n>` teammate). The
+  // semantics (codex-mode borrow/return on a Codex-engine teammate). The
   // entry is therefore intentionally absent here — `cli.ts` routes the
   // verb into the native dispatch table instead.
   'wait-idle': `tm wait-idle was renamed to 'tm wait' in 0.3.0. Same semantics; the new verb also prints .last on stdout by default.
