@@ -445,7 +445,7 @@ function historyDetail(repo: string, projectDir: string, prefix: string): TmResu
  * "has candidate" means (any file present; depth-read is intentionally
  * absent, since `claude --continue` will itself pick the latest).
  *
- * `projectsDir` is plumbed in by the caller (cli.ts owns env wiring
+ * `projectsDir` is plumbed in by the caller (cli/context.ts owns env wiring
  * via `NativeEnv.projectsDir`); deriving from `$HOME` here would
  * diverge from tests that inject a tmpdir `projectsDir`.
  */

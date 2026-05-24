@@ -1,7 +1,7 @@
 /**
  * One-shot migration for Claude teammates that were spawned before the
  * base identity JSON existed. It materialises `/tmp/teammate-<name>.json`
- * from the live tmux session plus the legacy `.cwd` marker, then the
+ * from a live tmux session or legacy `.cwd` / `.sid` markers, then the
  * production router re-reads the JSON and routes normally.
  */
 

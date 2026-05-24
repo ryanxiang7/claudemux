@@ -371,7 +371,7 @@ async function spawnDaemonUnlocked(
   //
   // `||` not `??` for the env step: an empty string in the env is treated
   // as "unset" (matching the bash `${VAR:-default}` convention this
-  // codebase chose elsewhere — see cli.ts:160-170). `opts.binPath` keeps
+  // codebase chose elsewhere — see cli/context.ts). `opts.binPath` keeps
   // `??` because an empty explicit option from a test would be a real
   // intent to disable the binary, not a default-trigger.
   const binPath =

@@ -7,8 +7,8 @@
  * with a newline, matching `cat <<'EOF'` semantics) so the conformance harness
  * can golden it without surprises and `tests/help` users see no UX drift.
  *
- * The CLI front end (`cli.ts`) does the routing — this module just owns the
- * strings.
+ * The CLI dispatch layer (`cli/dispatch.ts`) does the routing — this module
+ * just owns the strings.
  */
 
 /** Top-level synopsis — printed by `tm`, `tm help`, `tm --help`, `tm -h`. */
@@ -355,14 +355,14 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
  * gets a specific migration hint and exit 2, instead of the generic
  * "unknown subcommand" path — these are part of the user-facing contract.
  *
- * The `--help` pre-scan in `cli.ts` runs first, so e.g. `tm ask --help`
+ * The `--help` pre-scan in `cli/parse.ts` runs first, so e.g. `tm ask --help`
  * still reaches the overview (no per-verb help exists for a removed verb) —
  * matching the bash behaviour that this layer preserves.
  */
 export const REMOVED_VERB_MESSAGES: Readonly<Record<string, string>> = {
   // `tm ask` was removed in 0.3.0 and re-introduced in stage 4 with new
   // semantics (codex-mode borrow/return on a Codex-engine teammate). The
-  // entry is therefore intentionally absent here — `cli.ts` routes the
+  // entry is therefore intentionally absent here — `cli/dispatch.ts` routes the
   // verb into the native dispatch table instead.
   'wait-idle': `tm wait-idle was renamed to 'tm wait' in 0.3.0. Same semantics; the new verb also prints .last on stdout by default.
 `,

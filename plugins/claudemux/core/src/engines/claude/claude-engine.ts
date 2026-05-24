@@ -5,7 +5,7 @@
  *
  * The fleet-visibility methods (`list`, `status`, `kill`) and every
  * teammate-targeted hot path are implemented here or in
- * `engines/claude/<verb>.ts`; `cli.ts` reaches them only through
+ * `engines/claude/<verb>.ts`; `cli/dispatch.ts` reaches them only through
  * `verbs/<verb>.ts` and the Engine registry.
  *
  * The capabilities record below is what verbs branch on. `atomicSend`

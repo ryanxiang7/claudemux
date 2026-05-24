@@ -16,7 +16,7 @@ contracts they hold.
 
 > **Status — Phase 2a-3 routes teammate verbs through the Engine layer.**
 > All 18 `tm` verbs are implemented in TypeScript and dispatched by
-> [`cli.ts`](/plugins/claudemux/core/src/cli.ts); help text lives in
+> [`cli/dispatch.ts`](/plugins/claudemux/core/src/cli/dispatch.ts); help text lives in
 > [`help.ts`](/plugins/claudemux/core/src/help.ts). The user-installed
 > [`bin/tm`](/plugins/claudemux/bin/tm) is a small bash launcher that
 > `exec`s `node` directly against
@@ -90,7 +90,11 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | Module | Role |
 |---|---|
 | `main.ts` | The process entrypoint — read `process.argv` / `process.stdin`, hand to `runCli`, write the result's streams to `process`, set `process.exitCode`. The `bin/tm` launcher execs Node against this file under `--experimental-transform-types`. |
-| `cli.ts` | `runCli` and `productionEnv` — the per-invocation router (help pre-scan, `help <verb>` form, removed-verb migration messages, engine-routed dispatch for teammate-targeted verbs, dispatcher-only / diagnostic dispatch for `archive` / `poll` / `doctor` / `ask`, unknown-verb error) and the production backend wiring. |
+| `cli.ts` | Stable public import surface for `runCli`, `productionEnv`, and `triggersHelp`; implementation lives in `cli/`. |
+| `cli/dispatch.ts` | `runCli` and the verb table dispatch order: help forms, removed verbs, engine-routed teammate verbs, dispatcher-only diagnostics, and unknown-verb handling. |
+| `cli/parse.ts` | Shared CLI parsing and request derivation: help pre-scan, timeout validation, `ctx` / `reload` target parsing, spawn engine inference, and Codex cwd derivation for resume/history. |
+| `cli/errors.ts` | Shared `{code, stdout, stderr}` error/help result constructors for `tm:` errors, removed verbs, unknown verbs, and `tm help`. |
+| `cli/context.ts` | Production per-invocation wiring: `NativeEnv`, `EngineRegistry`, `ProductionTeammateRouter`, live identity migrators, and `ProductionIdentityStore`. |
 | `help.ts` | `HELP_TEXTS`, `OVERVIEW_HELP`, `REMOVED_VERB_MESSAGES` — the user-facing help strings, the single source of truth that `tm <verb> --help` and `tm help <verb>` print. |
 | `verbs.ts` | `TM_VERBS` — the catalog of the 18 `tm` verbs. |
 | `verbs/` | Verb-layer dispatch — `verbs/{ls,states,status,kill,spawn,send,wait,compact,resume,last,ctx,history,mem,reload}.ts` build engine requests, resolve teammate names through `identity/router.ts`, call engine methods, and format discriminated results through `verbs/format.ts`. `verbs/{ask,archive,poll}.ts` are local dispatcher / diagnostic helpers. |
@@ -127,8 +131,9 @@ marker protocol, and `~/.claude/projects`. See
 
 ## Verb dispatch
 
-`runCli` ([`cli.ts`](/plugins/claudemux/core/src/cli.ts)) is the one place
-that routes one CLI invocation. The order:
+`runCli` ([`cli/dispatch.ts`](/plugins/claudemux/core/src/cli/dispatch.ts),
+re-exported by [`cli.ts`](/plugins/claudemux/core/src/cli.ts)) is the one
+place that routes one CLI invocation. The order:
 
 1. Bare `tm` → `OVERVIEW_HELP`, exit 0.
 2. `tm help` / `tm -h` / `tm --help` / `tm help <verb>` → the matching entry
