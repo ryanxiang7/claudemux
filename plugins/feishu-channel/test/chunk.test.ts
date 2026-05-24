@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import fc from 'fast-check'
 import { chunk, type ChunkMode } from '../src/chunk'
 
-const modeArb = fc.constantFrom<ChunkMode>('length', 'newline')
+const modeArb = fc.constantFrom<ChunkMode>('length', 'newline', 'markdown')
 
 describe('chunk', () => {
   test('text within the limit is a single chunk', () => {
@@ -79,6 +79,79 @@ describe('chunk', () => {
     fc.assert(
       fc.property(fc.string({ minLength: 1 }), fc.integer({ min: 1, max: 60 }), (text, limit) => {
         expect(chunk(text, limit, 'length').length).toBe(Math.ceil(text.length / limit))
+      }),
+    )
+  })
+})
+
+describe('chunk in markdown mode', () => {
+  test('text without fences cuts on a paragraph or line boundary', () => {
+    const out = chunk('para one\n\npara two', 12, 'markdown')
+    expect(out).toEqual(['para one', 'para two'])
+  })
+
+  test('a fenced code block that fits stays in one chunk', () => {
+    const text = ['intro', '```ts', 'const a = 1', '```'].join('\n')
+    expect(chunk(text, 100, 'markdown')).toEqual([text])
+  })
+
+  test('a fenced code block longer than the limit splits with repeated fences', () => {
+    const body = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n')
+    const text = ['```ts', body, '```'].join('\n')
+    const out = chunk(text, 40, 'markdown')
+
+    expect(out.length).toBeGreaterThan(1)
+    for (const part of out) {
+      expect(part.length).toBeLessThanOrEqual(40)
+      // Every emitted part is itself well-formed Markdown — the opening fence
+      // and its language tag at the top, the closing fence at the bottom, and
+      // therefore an even number of ``` markers overall.
+      expect(part.startsWith('```ts')).toBe(true)
+      expect(part.endsWith('```')).toBe(true)
+      expect(part.split(/^```/gm).length - 1).toBe(2)
+    }
+    // The concatenation of every body line is preserved across parts.
+    const restored = out
+      .map((p) => p.replace(/^```ts\n/, '').replace(/\n```$/, ''))
+      .join('\n')
+    expect(restored).toBe(body)
+  })
+
+  test('a fence-only body alternates around a long surrounding text', () => {
+    const text = [
+      'intro text first paragraph',
+      '',
+      '```sh',
+      'echo "step one"',
+      'echo "step two"',
+      '```',
+      '',
+      'closing paragraph after the code',
+    ].join('\n')
+    const out = chunk(text, 40, 'markdown')
+    // Every emitted part is balanced — even number of fence markers.
+    for (const part of out) {
+      const fenceCount = (part.match(/^```/gm) ?? []).length
+      expect(fenceCount % 2).toBe(0)
+    }
+  })
+
+  test('a tilde-fenced block uses the same fence character on the repeated open', () => {
+    const text = ['~~~md', 'one', 'two', 'three', 'four', 'five', '~~~'].join('\n')
+    const out = chunk(text, 16, 'markdown')
+    expect(out.length).toBeGreaterThan(1)
+    for (const part of out) {
+      expect(part.startsWith('~~~md')).toBe(true)
+      expect(part.endsWith('~~~')).toBe(true)
+    }
+  })
+
+  test('every markdown chunk is within the limit', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.integer({ min: 8, max: 80 }), (text, limit) => {
+        for (const c of chunk(text, limit, 'markdown')) {
+          expect(c.length).toBeLessThanOrEqual(limit)
+        }
       }),
     )
   })

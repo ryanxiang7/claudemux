@@ -73,6 +73,67 @@ export interface FeishuSendResult {
   messageId?: string
 }
 
+/**
+ * Build the `content` string Feishu's message API expects for an interactive
+ * card carrying a single markdown body. Used by both the initial send
+ * (`im.message.create` with `msg_type: 'interactive'`) and the later edit
+ * (`im.message.patch`, which only takes `content` and operates on cards).
+ *
+ * `update_multi: true` is required so the same message_id can be patched
+ * later — Feishu rejects a patch on a card sent without it.
+ *
+ * Exported so the assembly is unit-tested without a live Feishu connection,
+ * and a developer can call it from a one-off script to inspect the payload.
+ */
+export function markdownCardContent(text: string): string {
+  return JSON.stringify({
+    config: { wide_screen_mode: true, update_multi: true },
+    elements: [{ tag: 'markdown', content: text }],
+  })
+}
+
+/**
+ * Build the `content` string for a Feishu plain-text message — the legacy
+ * `msg_type: 'text'` payload, used by `editText`'s fallback path so an edit
+ * on a message that was sent before this channel switched to interactive
+ * cards still works.
+ */
+export function textMessageContent(text: string): string {
+  return JSON.stringify({ text })
+}
+
+/**
+ * Feishu's documented hard limit for a card / rich-text request body. Past
+ * this the API rejects the call outright; the channel checks against a
+ * slightly lower budget so headers and the JSON envelope do not push a
+ * borderline payload over.
+ */
+export const FEISHU_CARD_REQUEST_LIMIT_BYTES = 30 * 1024
+
+/**
+ * Safe ceiling for the serialised card `content` string. Stays a few hundred
+ * bytes below the documented 30 KB request-body limit so HTTP headers and the
+ * `{ params, data: { receive_id, msg_type, content } }` envelope still fit.
+ */
+export const FEISHU_CARD_CONTENT_SAFE_BYTES = 28 * 1024
+
+/**
+ * Throw a clear, model-actionable error when a card payload would exceed
+ * Feishu's request-body limit. The chunker in `server.ts` already keeps each
+ * send safely under the cap, but an `edit_message` call patches a single
+ * card and cannot split — so the size has to be enforced here, before the
+ * SDK round-trips and returns a low-level Feishu code with no fix path.
+ */
+function assertCardContentFits(content: string): void {
+  const bytes = Buffer.byteLength(content, 'utf8')
+  if (bytes > FEISHU_CARD_CONTENT_SAFE_BYTES) {
+    throw new Error(
+      `card content is ${bytes} bytes; Feishu rejects a card-message body over ${FEISHU_CARD_REQUEST_LIMIT_BYTES} bytes. ` +
+        'Send a fresh, shorter message (which the channel chunks automatically) instead of editing in place.',
+    )
+  }
+}
+
 /** One reply within a fetched document-comment thread. */
 export interface FeishuDocCommentReply {
   /** reply_id of this reply; `''` when Feishu omitted it. */
@@ -253,23 +314,40 @@ export interface FeishuCredentials {
 }
 
 /**
+ * Optional knobs for `createFeishuTransport`. The `client` seam lets unit
+ * tests inject a stub of just the SDK methods this module touches, so the
+ * outbound paths (`sendText`, `editText`, the doc-comment fetchers) are
+ * covered without a live Feishu app.
+ */
+export interface FeishuTransportOptions {
+  /**
+   * SDK client to use for outbound API calls. Default: a fresh `lark.Client`
+   * built from `creds`. Tests pass a stub; production never sets this.
+   */
+  client?: lark.Client
+}
+
+/**
  * The real Feishu transport, wrapping the official SDK.
  *
  * Inbound: a `WSClient` opens a long-lived WebSocket and an `EventDispatcher`
  * routes every subscribed event_type to its callback. Outbound: a `Client`
  * calls the `im` message API; it manages the `tenant_access_token` internally.
- * This implementation is not unit-tested — it needs a live Feishu app — so the
- * testable logic stays in the pure event handlers.
+ * The outbound paths are now unit-tested through the `client` seam in
+ * `FeishuTransportOptions`; inbound still needs a live Feishu connection.
  */
 export function createFeishuTransport(
   creds: FeishuCredentials,
   lockPath: string,
+  options: FeishuTransportOptions = {},
 ): FeishuTransport {
-  const client = new lark.Client({
-    appId: creds.appId,
-    appSecret: creds.appSecret,
-    logger: sdkLogger,
-  })
+  const client =
+    options.client ??
+    new lark.Client({
+      appId: creds.appId,
+      appSecret: creds.appSecret,
+      logger: sdkLogger,
+    })
   let wsClient: lark.WSClient | undefined
   let resolvedBotOpenId: string | undefined
   /** Poll handle while standing by for the lock; `undefined` once primary. */
@@ -375,9 +453,18 @@ export function createFeishuTransport(
     },
 
     async sendText(chatId: string, text: string): Promise<FeishuSendResult> {
+      // Wrap the text in an interactive card with a single markdown element,
+      // so Feishu renders bold, italics, lists, links, inline code, and
+      // fenced code blocks server-side. The MCP `reply` tool's `text`
+      // parameter is treated as markdown source; a plain-text reply still
+      // renders identically because plain text is a subset of markdown.
       const res = await client.im.message.create({
         params: { receive_id_type: 'chat_id' },
-        data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) },
+        data: {
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: markdownCardContent(text),
+        },
       })
       return { messageId: res.data?.message_id }
     },
@@ -397,10 +484,38 @@ export function createFeishuTransport(
     },
 
     async editText(messageId: string, text: string): Promise<void> {
-      await client.im.message.update({
-        path: { message_id: messageId },
-        data: { msg_type: 'text', content: JSON.stringify({ text }) },
-      })
+      // `im.message.patch` operates on cards and rejects a request body
+      // larger than Feishu's 30 KB cap — `assertCardContentFits` catches that
+      // early so the caller sees an actionable error instead of a raw
+      // Feishu code.
+      const cardContent = markdownCardContent(text)
+      assertCardContentFits(cardContent)
+      try {
+        // The send path now produces an interactive card, so the matching
+        // edit is `im.message.patch` (card-content update). The original card
+        // was sent with `update_multi: true`, which Feishu requires for a
+        // later patch on the same message_id to be accepted.
+        await client.im.message.patch({
+          path: { message_id: messageId },
+          data: { content: cardContent },
+        })
+      } catch (patchErr) {
+        // Legacy compatibility: a message_id Claude is still holding may
+        // belong to a `msg_type: 'text'` message that this channel sent
+        // before the upgrade to interactive cards. Feishu rejects `patch`
+        // on a non-card target, so fall back to `im.message.update` with
+        // the legacy text payload. If the update also fails — auth, rate
+        // limit, deleted message — surface the original patch error, which
+        // describes the path the channel actually intends to use.
+        try {
+          await client.im.message.update({
+            path: { message_id: messageId },
+            data: { msg_type: 'text', content: textMessageContent(text) },
+          })
+        } catch {
+          throw patchErr
+        }
+      }
     },
 
     async fetchDocComment(

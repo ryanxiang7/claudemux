@@ -40,11 +40,14 @@ const SERVER_VERSION = '0.1.0'
 const CHANNEL_NOTIFICATION_METHOD = 'notifications/claude/channel'
 
 /**
- * Characters per outbound text message. A conservative bound that stays well
- * under Feishu's text-message size limit; a longer reply is split into parts
- * so Feishu does not reject the whole send.
+ * Characters per outbound message. The channel sends each reply as an
+ * interactive card whose body is a single markdown element; Feishu caps a
+ * card request body at ~30 KB, and JSON-encoding plus UTF-8 expansion (a
+ * Chinese character is three bytes) eats into that budget — 8000 source
+ * characters fits with comfortable headroom. A longer reply is split into
+ * parts at a paragraph / line boundary so Feishu does not reject the send.
  */
-export const FEISHU_TEXT_LIMIT = 4000
+export const FEISHU_TEXT_LIMIT = 8000
 
 /**
  * The emoji the channel reacts with to mark an inbound chat message as
@@ -107,7 +110,7 @@ const CHANNEL_TOOLS: Tool[] = [
   {
     name: 'reply',
     description:
-      'Send a text message into a Feishu chat. Pass the chat_id from the <channel> tag of the message you are answering.',
+      'Send a message into a Feishu chat. The text is rendered as Markdown by Feishu — use **bold**, *italic*, `inline code`, fenced ``` code blocks, bulleted and numbered lists, and [links](https://example.com) where they help readability. Pass the chat_id from the <channel> tag of the message you are answering.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -115,7 +118,11 @@ const CHANNEL_TOOLS: Tool[] = [
           type: 'string',
           description: 'Target chat_id, copied verbatim from the inbound <channel> tag.',
         },
-        text: { type: 'string', description: 'Message text to send.' },
+        text: {
+          type: 'string',
+          description:
+            'Message body in Markdown. Supports bold, italic, links, ordered and unordered lists, inline code, and fenced code blocks; plain text renders unchanged.',
+        },
       },
       required: ['chat_id', 'text'],
     },
@@ -140,7 +147,8 @@ const CHANNEL_TOOLS: Tool[] = [
   },
   {
     name: 'edit_message',
-    description: 'Replace the text of a message this channel previously sent.',
+    description:
+      'Replace the content of a message this channel previously sent. The new text is rendered as Markdown, same as `reply`.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -148,7 +156,10 @@ const CHANNEL_TOOLS: Tool[] = [
           type: 'string',
           description: 'message_id of the bot message to edit.',
         },
-        text: { type: 'string', description: 'New message text.' },
+        text: {
+          type: 'string',
+          description: 'New message body in Markdown; same formatting rules as `reply`.',
+        },
       },
       required: ['message_id', 'text'],
     },
@@ -296,9 +307,13 @@ export function createChannelCore(deps: ChannelCoreDeps): ChannelCore {
         case 'reply': {
           const chatId = requireString(args, 'chat_id')
           const text = requireString(args, 'text')
-          // Feishu rejects an over-long text message, so a long reply is
-          // split into parts that each fit, broken on a natural boundary.
-          const parts = chunk(text, FEISHU_TEXT_LIMIT, 'newline')
+          // Feishu rejects an over-long card message, so a long reply is
+          // split into parts that each fit. The `markdown` chunker only cuts
+          // at block boundaries and closes / reopens a fenced code block when
+          // it would otherwise span two parts — without that, a long ```code
+          // block``` would render as half an open fence in one card and an
+          // orphan body in the next.
+          const parts = chunk(text, FEISHU_TEXT_LIMIT, 'markdown')
           const ids: string[] = []
           for (const part of parts) {
             const result = await deps.transport.sendText(chatId, part)
@@ -419,6 +434,9 @@ const CHANNEL_INSTRUCTIONS = [
   '- chat_type: "p2p" for a direct message, "group" for a group chat.',
   '- sender_id: the Feishu open_id of the sender.',
   'Answer a Feishu user by calling `reply` with the chat_id from the message you are answering.',
+  'The `text` you pass to `reply` and `edit_message` is rendered as Markdown by Feishu —',
+  'feel free to use **bold**, *italic*, `inline code`, fenced code blocks, lists, and links',
+  'when they make a message clearer.',
   'Use `react` to acknowledge a message with an emoji, and `edit_message` to revise a message',
   'you previously sent.',
   '',
