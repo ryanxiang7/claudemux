@@ -26,6 +26,7 @@ import type { TmResult } from './tm'
 import { runTmux } from './tmux'
 import { productionRegistry } from './engines/production'
 import type { NativeEnv } from './env'
+import type { Engine } from './engines/engine'
 
 import { archiveVerb } from './verbs/archive'
 import { askVerb } from './verbs/ask'
@@ -59,9 +60,10 @@ import { parseResumeArgs } from './engines/claude/resume'
 import { parseSendArgs } from './engines/claude/send'
 import { parseSpawnArgs } from './engines/claude/spawn'
 import { parseWaitArgs } from './engines/claude/wait'
-import { iterTeammates } from './engines/claude/tmux'
+import { readBaseRecord, readCodexMeta } from './engines/codex/persistence'
 import type { EngineKind } from './engines/types'
 import { validateTeammateName } from './identity/name'
+import { formatContext, formatReload, noEngineRegistered } from './verbs/format'
 
 /**
  * The verb-side context the engine-routed verbs (`ls`, `states`,
@@ -207,7 +209,19 @@ function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
   return join(env.dispatcherDir, name)
 }
 
+function normalizeExistingCwd(cwd: string): string {
+  try {
+    return realpathSync(cwd)
+  } catch {
+    return cwd
+  }
+}
+
 function codexCwd(name: string, env: NativeEnv): string {
+  const baseCwd = readBaseRecord(name)?.cwd
+  if (baseCwd !== undefined) return normalizeExistingCwd(baseCwd)
+  const metaCwd = readCodexMeta(name)?.cwd
+  if (metaCwd !== undefined) return normalizeExistingCwd(metaCwd)
   try {
     // Killed non-prefix Codex teammates have no base record; use the same cwd
     // inference as spawn/resume so rollout-history routing can still find them.
@@ -215,6 +229,30 @@ function codexCwd(name: string, env: NativeEnv): string {
   } catch {
     return process.cwd()
   }
+}
+
+interface FleetTarget {
+  readonly name: string
+  readonly engine: Engine
+}
+
+async function fleetTargets(ctx: VerbContext): Promise<TmResult | FleetTarget[]> {
+  const engines = ctx.engines.registered()
+  if (engines.length === 0) return noEngineRegistered()
+  const listings = (await Promise.all(
+    engines.map(async (engine) => ({
+      engine,
+      rows: await engine.list(ctx.engineContext),
+    })),
+  )).flatMap(({ engine, rows }) => rows.map((row) => ({ name: row.name, engine })))
+  const seen = new Set<string>()
+  const targets: FleetTarget[] = []
+  for (const target of listings) {
+    if (seen.has(target.name)) continue
+    seen.add(target.name)
+    targets.push(target)
+  }
+  return targets
 }
 
 async function combineResults(results: readonly Promise<TmResult>[]): Promise<TmResult> {
@@ -229,24 +267,28 @@ async function combineResults(results: readonly Promise<TmResult>[]): Promise<Tm
   return { code, stdout, stderr }
 }
 
-async function reloadTargets(rest: readonly string[], env: NativeEnv): Promise<TmResult | string[]> {
+type ReloadArgs = { readonly all: boolean; readonly repos: readonly string[] } | { readonly error: TmResult }
+
+function parseReloadTargets(rest: readonly string[]): ReloadArgs {
   let all = false
   const repos: string[] = []
   for (const arg of rest) {
     if (arg === '--all') all = true
-    else if (arg === '-h' || arg === '--help') return die('usage: tm reload <repo>... | --all')
-    else if (arg.startsWith('-')) return die(`tm reload: unknown flag: ${arg}`)
-    else repos.push(arg)
+    else if (arg === '-h' || arg === '--help') {
+      return { error: die('usage: tm reload <repo>... | --all') }
+    } else if (arg.startsWith('-')) {
+      return { error: die(`tm reload: unknown flag: ${arg}`) }
+    } else {
+      repos.push(arg)
+    }
   }
 
   if (all) {
-    if (repos.length > 0) return die('tm reload: --all conflicts with explicit repos')
-    repos.push(...(await iterTeammates(env.runTmux)))
-    if (repos.length === 0) return { code: 0, stdout: '(no teammate sessions to reload)\n', stderr: '' }
+    if (repos.length > 0) return { error: die('tm reload: --all conflicts with explicit repos') }
   } else if (repos.length === 0) {
-    return die('usage: tm reload <repo>... | --all')
+    return { error: die('usage: tm reload <repo>... | --all') }
   }
-  return repos
+  return { all, repos }
 }
 
 // ─── Engine-routed teammate verbs ─────────────────────────────────────────
@@ -399,14 +441,27 @@ async function dispatchEngineVerb(
     case 'ctx': {
       const parsed = parseCtxArgs(rest)
       if ('error' in parsed) return parsed.error
-      const repos = [...parsed.repos]
-      if (parsed.all) repos.push(...(await iterTeammates(env.runTmux)))
-      if (repos.length === 0) {
+      const results = parsed.repos.map((name) =>
+        ctxVerb(name, ctx, { windowOverride: parsed.windowOverride }),
+      )
+      if (parsed.all) {
+        const targets = await fleetTargets(ctx)
+        if (!Array.isArray(targets)) return targets
+        results.push(
+          ...targets.map(async (target) =>
+            formatContext(
+              await target.engine.ctx(
+                { name: target.name, windowOverride: parsed.windowOverride },
+                ctx.engineContext,
+              ),
+            ),
+          ),
+        )
+      }
+      if (results.length === 0) {
         return die('usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]')
       }
-      return combineResults(
-        repos.map((name) => ctxVerb(name, ctx, { windowOverride: parsed.windowOverride })),
-      )
+      return combineResults(results)
     }
     case 'history': {
       const name = rest[0] ?? ''
@@ -419,15 +474,31 @@ async function dispatchEngineVerb(
       return memVerb(name, ctx)
     }
     case 'reload': {
-      const targets = await reloadTargets(rest, env)
-      if (!Array.isArray(targets)) return targets
+      const parsed = parseReloadTargets(rest)
+      if ('error' in parsed) return parsed.error
       let stdout = ''
       let stderr = ''
-      for (const target of targets) {
-        const result = await reloadVerb(target, ctx)
-        stdout += result.stdout
-        stderr += result.stderr
-        if (result.code !== 0) return { code: result.code, stdout, stderr }
+      if (parsed.all) {
+        const targets = await fleetTargets(ctx)
+        if (!Array.isArray(targets)) return targets
+        if (targets.length === 0) {
+          return { code: 0, stdout: '(no teammate sessions to reload)\n', stderr: '' }
+        }
+        for (const target of targets) {
+          const result = formatReload(
+            await target.engine.reload({ name: target.name }, ctx.engineContext),
+          )
+          stdout += result.stdout
+          stderr += result.stderr
+          if (result.code !== 0) return { code: result.code, stdout, stderr }
+        }
+      } else {
+        for (const target of parsed.repos) {
+          const result = await reloadVerb(target, ctx)
+          stdout += result.stdout
+          stderr += result.stderr
+          if (result.code !== 0) return { code: result.code, stdout, stderr }
+        }
       }
       return { code: 0, stdout, stderr }
     }

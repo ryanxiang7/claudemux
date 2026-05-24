@@ -9039,12 +9039,41 @@ function spawnCwd(name, engine, env) {
   }
   return join13(env.dispatcherDir, name);
 }
+function normalizeExistingCwd(cwd) {
+  try {
+    return realpathSync5(cwd);
+  } catch {
+    return cwd;
+  }
+}
 function codexCwd(name, env) {
+  const baseCwd = readBaseRecord(name)?.cwd;
+  if (baseCwd !== void 0) return normalizeExistingCwd(baseCwd);
+  const metaCwd = readCodexMeta(name)?.cwd;
+  if (metaCwd !== void 0) return normalizeExistingCwd(metaCwd);
   try {
     return spawnCwd(name, "codex", env);
   } catch {
     return process.cwd();
   }
+}
+async function fleetTargets(ctx) {
+  const engines = ctx.engines.registered();
+  if (engines.length === 0) return noEngineRegistered();
+  const listings = (await Promise.all(
+    engines.map(async (engine) => ({
+      engine,
+      rows: await engine.list(ctx.engineContext)
+    }))
+  )).flatMap(({ engine, rows }) => rows.map((row) => ({ name: row.name, engine })));
+  const seen = /* @__PURE__ */ new Set();
+  const targets = [];
+  for (const target of listings) {
+    if (seen.has(target.name)) continue;
+    seen.add(target.name);
+    targets.push(target);
+  }
+  return targets;
 }
 async function combineResults(results) {
   let code = 0;
@@ -9057,23 +9086,25 @@ async function combineResults(results) {
   }
   return { code, stdout, stderr };
 }
-async function reloadTargets(rest, env) {
+function parseReloadTargets(rest) {
   let all = false;
   const repos = [];
   for (const arg of rest) {
     if (arg === "--all") all = true;
-    else if (arg === "-h" || arg === "--help") return die5("usage: tm reload <repo>... | --all");
-    else if (arg.startsWith("-")) return die5(`tm reload: unknown flag: ${arg}`);
-    else repos.push(arg);
+    else if (arg === "-h" || arg === "--help") {
+      return { error: die5("usage: tm reload <repo>... | --all") };
+    } else if (arg.startsWith("-")) {
+      return { error: die5(`tm reload: unknown flag: ${arg}`) };
+    } else {
+      repos.push(arg);
+    }
   }
   if (all) {
-    if (repos.length > 0) return die5("tm reload: --all conflicts with explicit repos");
-    repos.push(...await iterTeammates(env.runTmux));
-    if (repos.length === 0) return { code: 0, stdout: "(no teammate sessions to reload)\n", stderr: "" };
+    if (repos.length > 0) return { error: die5("tm reload: --all conflicts with explicit repos") };
   } else if (repos.length === 0) {
-    return die5("usage: tm reload <repo>... | --all");
+    return { error: die5("usage: tm reload <repo>... | --all") };
   }
-  return repos;
+  return { all, repos };
 }
 var ENGINE_VERBS = /* @__PURE__ */ new Set([
   "ls",
@@ -9214,14 +9245,27 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
     case "ctx": {
       const parsed = parseCtxArgs(rest);
       if ("error" in parsed) return parsed.error;
-      const repos = [...parsed.repos];
-      if (parsed.all) repos.push(...await iterTeammates(env.runTmux));
-      if (repos.length === 0) {
+      const results = parsed.repos.map(
+        (name) => ctxVerb(name, ctx, { windowOverride: parsed.windowOverride })
+      );
+      if (parsed.all) {
+        const targets = await fleetTargets(ctx);
+        if (!Array.isArray(targets)) return targets;
+        results.push(
+          ...targets.map(
+            async (target) => formatContext(
+              await target.engine.ctx(
+                { name: target.name, windowOverride: parsed.windowOverride },
+                ctx.engineContext
+              )
+            )
+          )
+        );
+      }
+      if (results.length === 0) {
         return die5("usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]");
       }
-      return combineResults(
-        repos.map((name) => ctxVerb(name, ctx, { windowOverride: parsed.windowOverride }))
-      );
+      return combineResults(results);
     }
     case "history": {
       const name = rest[0] ?? "";
@@ -9234,15 +9278,31 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       return memVerb(name, ctx);
     }
     case "reload": {
-      const targets = await reloadTargets(rest, env);
-      if (!Array.isArray(targets)) return targets;
+      const parsed = parseReloadTargets(rest);
+      if ("error" in parsed) return parsed.error;
       let stdout = "";
       let stderr = "";
-      for (const target of targets) {
-        const result = await reloadVerb(target, ctx);
-        stdout += result.stdout;
-        stderr += result.stderr;
-        if (result.code !== 0) return { code: result.code, stdout, stderr };
+      if (parsed.all) {
+        const targets = await fleetTargets(ctx);
+        if (!Array.isArray(targets)) return targets;
+        if (targets.length === 0) {
+          return { code: 0, stdout: "(no teammate sessions to reload)\n", stderr: "" };
+        }
+        for (const target of targets) {
+          const result = formatReload(
+            await target.engine.reload({ name: target.name }, ctx.engineContext)
+          );
+          stdout += result.stdout;
+          stderr += result.stderr;
+          if (result.code !== 0) return { code: result.code, stdout, stderr };
+        }
+      } else {
+        for (const target of parsed.repos) {
+          const result = await reloadVerb(target, ctx);
+          stdout += result.stdout;
+          stderr += result.stderr;
+          if (result.code !== 0) return { code: result.code, stdout, stderr };
+        }
       }
       return { code: 0, stdout, stderr };
     }

@@ -521,6 +521,113 @@ describe('native dispatch', () => {
     expect(seenWait).toEqual([null, 7000])
   })
 
+  test('ctx --all fans out through engine listings, including codex teammates', async () => {
+    const seen: string[] = []
+    const fakeClaude = {
+      kind: 'claude',
+      list: async () => [{
+        name: 'claude-fleet',
+        engine: 'claude',
+        state: 'idle',
+        cwd: '/tmp/claude-fleet',
+        displayName: null,
+        extras: {},
+      }],
+      ctx: async (req: { name: string }) => {
+        seen.push(`claude:${req.name}`)
+        return {
+          kind: 'usage',
+          tokensUsed: 10,
+          tokensTotal: 200000,
+          pct: 0,
+          tmResult: { code: 0, stdout: `${req.name}: claude ctx\n`, stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const fakeCodex = {
+      kind: 'codex',
+      list: async () => [{
+        name: 'codex-fleet',
+        engine: 'codex',
+        state: 'idle',
+        cwd: '/tmp/codex-fleet',
+        displayName: null,
+        extras: {},
+      }],
+      ctx: async (req: { name: string }) => {
+        seen.push(`codex:${req.name}`)
+        return {
+          kind: 'usage',
+          tokensUsed: 20,
+          tokensTotal: 200000,
+          pct: 0,
+          tmResult: { code: 0, stdout: `${req.name}: codex ctx\n`, stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeClaude)
+    registry.register(fakeCodex)
+
+    const result = await runCli(['ctx', '--all'], fakeEnv({ engines: registry }))
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: 'claude-fleet: claude ctx\ncodex-fleet: codex ctx\n',
+      stderr: '',
+    })
+    expect(seen).toEqual(['claude:claude-fleet', 'codex:codex-fleet'])
+  })
+
+  test('reload --all fans out through engine listings and reports codex not-supported', async () => {
+    const seen: string[] = []
+    const fakeClaude = {
+      kind: 'claude',
+      list: async () => [{
+        name: 'claude-reload',
+        engine: 'claude',
+        state: 'idle',
+        cwd: '/tmp/claude-reload',
+        displayName: null,
+        extras: {},
+      }],
+      reload: async (req: { name: string }) => {
+        seen.push(`claude:${req.name}`)
+        return {
+          kind: 'reloaded',
+          tmResult: { code: 0, stdout: `→ ${req.name}: /reload-plugins\n`, stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const fakeCodex = {
+      kind: 'codex',
+      list: async () => [{
+        name: 'codex-reload',
+        engine: 'codex',
+        state: 'idle',
+        cwd: '/tmp/codex-reload',
+        displayName: null,
+        extras: {},
+      }],
+      reload: async (req: { name: string }) => {
+        seen.push(`codex:${req.name}`)
+        return { kind: 'not-supported', reason: 'codex has no reload prompt command' }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeClaude)
+    registry.register(fakeCodex)
+
+    const result = await runCli(['reload', '--all'], fakeEnv({ engines: registry }))
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: '→ claude-reload: /reload-plugins\n',
+      stderr: '  not supported: codex has no reload prompt command\n',
+    })
+    expect(seen).toEqual(['claude:claude-reload', 'codex:codex-reload'])
+  })
+
   test.each([
     ['compact', (name: string) => ['compact', name], 'codex compacts its own context automatically'],
     ['mem', (name: string) => ['mem', name], 'codex does not use Claude project memory files'],
@@ -676,6 +783,45 @@ describe('native dispatch', () => {
       rmSync(dispatcherDir, { recursive: true, force: true })
       rmSync(realRepo, { recursive: true, force: true })
       rmSync(sessionsRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('history for an existing codex teammate uses the recorded cwd across dispatcher dirs', async () => {
+    const name = `history-cross-dispatcher-${Date.now()}`
+    const originalCwd = mkdtempSync('/tmp/cmxcli-codex-cwd-')
+    const otherDispatcher = mkdtempSync('/tmp/cmxcli-other-dispatcher-')
+    const seen: Array<{ name: string; cwd: string | null; index: string | null }> = []
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; cwd: string | null; index: string | null }) => {
+        seen.push({ name: req.name, cwd: req.cwd, index: req.index })
+        return {
+          kind: 'list',
+          turns: [],
+          tmResult: { code: 0, stdout: 'codex history from base cwd\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeCodex)
+    writeBaseRecord(new CodexTeammateRecord({
+      name,
+      cwd: originalCwd,
+      createdAt: 1,
+      displayName: null,
+    }))
+
+    try {
+      const result = await runCli(
+        ['history', name],
+        fakeEnv({ dispatcherDir: otherDispatcher, engines: registry }),
+      )
+      expect(result).toEqual({ code: 0, stdout: 'codex history from base cwd\n', stderr: '' })
+      expect(seen).toEqual([{ name, cwd: realpathSync(originalCwd), index: null }])
+    } finally {
+      removeBaseRecord(name)
+      rmSync(originalCwd, { recursive: true, force: true })
+      rmSync(otherDispatcher, { recursive: true, force: true })
     }
   })
 
