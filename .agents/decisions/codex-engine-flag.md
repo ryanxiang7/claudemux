@@ -75,16 +75,17 @@ The persistence does not need a new file:
   `/tmp/teammate-<name>.sid`, `/tmp/teammate-<name>.ready`. A claude
   teammate's presence is observable as "any of those three exists".
 - **Codex teammates** already write `/tmp/teammate-codex/<name>/`
-  (see [`paths.ts`](/plugins/claudemux/core/src/paths.ts)'s
-  `codexTeammateDir`). A codex teammate's presence is observable as "that
-  directory exists".
+  (see
+  [`engines/codex/persistence.ts`](/plugins/claudemux/core/src/engines/codex/persistence.ts)
+  for the registry-directory builders). A codex teammate's presence is
+  observable as "that directory exists".
 
 The two registries are already mutually exclusive — they live under disjoint
 roots. Engine identity falls out of "which registry holds the name", with
 no new state to add and no synchronisation between two stores to defend.
 
 To codify the mapping, a single resolver function in
-[`paths.ts`](/plugins/claudemux/core/src/paths.ts) replaces the four
+[`identity/router.ts`](/plugins/claudemux/core/src/identity/router.ts) replaces the four
 `isCodexTarget(name)` call sites:
 
 ```ts

@@ -37,7 +37,7 @@ import { readFileSync } from 'node:fs'
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
-import { sidFile } from '../../src/paths'
+import { sidFile } from '../../src/persistence/paths'
 import { createDispatcher, probeLiveTeammate, tmDetail, type Dispatcher } from './harness'
 
 // Decide up front whether a real teammate can run here. The probe spawns one

@@ -66,7 +66,7 @@ import {
   readyFile,
   sendAtFile,
   sidFile,
-} from '../src/paths'
+} from '../src/persistence/paths'
 import {
   codexBorrowLockFile,
   codexLastSeenFile,

@@ -17,7 +17,7 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { encodeProjectDir } from '../persistence/project-dir'
+import { encodeProjectDir } from '../persistence/paths'
 import type { TmResult } from '../tm'
 
 /** The seed `dispatcher-tasks-archive.md` written when the archive file does not exist yet. */

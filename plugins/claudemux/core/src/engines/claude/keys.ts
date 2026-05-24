@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 
 import { clearIdle, resolveSid } from './idle'
-import { sendAtFile, tmuxSessionName } from './persistence'
+import { sendAtFile, tmuxSessionName } from '../../persistence/paths'
 import { die, requireSession, resolvePaneTarget } from './tmux'
 import { sleepMs } from './clock'
 import type { TeammateName } from '../types'

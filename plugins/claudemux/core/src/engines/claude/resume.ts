@@ -12,7 +12,7 @@ import { isDirectory, isRegularFile } from './idle'
 import { UUID_RE } from './identifiers'
 import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
 import { die, sessionExists } from './tmux'
-import { tmuxSessionName } from './persistence'
+import { tmuxSessionName } from '../../persistence/paths'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
 

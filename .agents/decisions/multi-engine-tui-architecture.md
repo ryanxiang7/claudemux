@@ -531,8 +531,8 @@ that round-trips losslessly and stays inside POSIX-safe identifiers";
 the exact character is implementation-time choice). Path builders
 under `/tmp/teammate-<name>` already treat the name as opaque; the
 encoding lives behind a single `tmuxSessionName(name)` builder in
-`plugins/claudemux/core/src/engines/claude/persistence.ts` so the
-choice is changeable in one place.
+`plugins/claudemux/core/src/persistence/paths.ts` so the choice is changeable
+in one place.
 
 The Codex engine has no equivalent constraint — the registry
 directory is `/tmp/teammate-codex/<name>/` and `mkdir -p` handles
@@ -585,8 +585,7 @@ plugins/claudemux/core/src/
   persistence/
     atomic-file.ts                          atomic write / read-if-present / mkdir
     identity-store.ts                       /tmp/teammate-<name>.json read / write / list
-    paths.ts                                root path constants + shared validation
-    project-dir.ts                          encodeProjectDir (Claude Code on-disk convention)
+    paths.ts                                /tmp protocol paths + tmuxSessionName + encodeProjectDir
   identity/
     name.ts                                 teammate-name parser + nested-name encoding helpers
     engine-id.ts                            EngineKind union + KNOWN_KINDS
@@ -608,7 +607,7 @@ plugins/claudemux/core/src/
       claude-memory.ts                      ~/.claude project-memory reader
       claude-liveness.ts                    tmux + sid-marker inspection
       tmux-transport.ts                     tmux command adapter
-      persistence.ts                        ClaudeTeammateRecord builders (.cwd, .sid, .ready, .send-at) + tmuxSessionName encoding
+      persistence.ts                        ClaudeTeammateRecord extension; path builders live in persistence/paths.ts
     codex/
       codex-engine.ts                       CodexEngine implements Engine
       codex-supervisor.ts                   daemon spawn / liveness / reap
@@ -667,13 +666,13 @@ hand-edited.
 | **Fleet-visibility verbs** | `tm ls`, `tm states`, `tm status`, and `tm kill` stop talking to tmux directly. Their default implementations aggregate or route through the Engine API, so Codex daemon teammates with only `/tmp/teammate-codex/<name>/{pid,socket,thread}` state are visible. |
 | **`plugins/claudemux/core/src/native.ts` and `plugins/claudemux/core/src/codex-verbs.ts`** | Both disappear. Their content lands in `plugins/claudemux/core/src/verbs/` (CLI-shape) and `plugins/claudemux/core/src/engines/<kind>/` (engine-flavored). |
 | **`plugins/claudemux/core/src/verbs.ts` (stale mcp-native-orchestration-core MCP-tool catalog)** | Deleted. No current code reads it; it is from a superseded decision (mcp-native-orchestration-core). |
-| **`plugins/claudemux/core/src/paths.ts` (claude + codex mixed)** | Split. Engine-agnostic path builders move to `plugins/claudemux/core/src/persistence/`; engine-specific ones move to `plugins/claudemux/core/src/engines/<kind>/persistence.ts`. |
+| **`plugins/claudemux/core/src/paths.ts` (claude + codex mixed)** | Split. Claude `/tmp` protocol paths, `tmuxSessionName`, and `encodeProjectDir` move to `plugins/claudemux/core/src/persistence/paths.ts`; engine-specific record extensions stay under `plugins/claudemux/core/src/engines/<kind>/persistence.ts`. |
 | **`--no-wait` flag on `send` and `spawn`** | Removed. Atomic round-trip is the only path. |
 | **Codex 1800 s default timeout** | Removed. `--timeout` remains optional; default is unbounded; long-task timeout policy is a future Codex engine decision, not an architecture rule. |
 | **Cross-engine name reuse** | Continues to be forbidden (carried from codex-engine-flag §4); enforced by `plugins/claudemux/core/src/persistence/identity-store.ts`'s reserve step rejecting a name whose JSON already exists. |
 | **Hooks bundle** | Unchanged. `plugins/claudemux/hooks/on-session-start.sh`, `plugins/claudemux/hooks/on-busy.sh`, and `plugins/claudemux/hooks/on-stop.sh` continue to write the marker files they write today. They are upstream of the Node core, not part of it. |
 | **Shared Codex daemon** | Deferred. Triggers for reopening are listed in §"Codex daemon stays per-teammate". |
-| **Nested teammate names** | Enabled. `tm spawn flow/flow-1` works; the Claude engine's tmux-session-name builder encodes `/` losslessly inside `plugins/claudemux/core/src/engines/claude/persistence.ts`. |
+| **Nested teammate names** | Enabled. `tm spawn flow/flow-1` works; the Claude engine's tmux-session-name builder encodes `/` losslessly inside `plugins/claudemux/core/src/persistence/paths.ts`. |
 | **Integration tests** | Live-teammate harness ([live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md)) continues to exercise the binary surface; the engine contract gets a shared test file that every concrete engine passes (`spawn → send → wait → kill` round trip against an in-memory transport). |
 | **Build / bundle** | Committed esbuild bundle ([node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md)) continues. The bundler input is `plugins/claudemux/core/src/main.ts`; the layered tree above bundles into one `plugins/claudemux/core/dist/cli.mjs` exactly as today. |
 | **Versioning** | This reshape is a behaviour-visible breaking change (verb flags removed, identity scheme changed) and lands as a `claudemux` **minor** changeset on the 0.x line; the brief authorises backwards-incompatibility because 0.8.x is locally unreleased. |

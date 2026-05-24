@@ -23,7 +23,7 @@
 
 import { readFileSync, statSync, type Stats } from 'node:fs'
 
-import { busyMarkerFor, lastFileFor, sidFile } from './persistence'
+import { busyMarkerFor, lastFileFor, sidFile } from '../../persistence/paths'
 import type { TeammateName } from '../types'
 
 /** Trim trailing newlines without touching the rest of the string. */

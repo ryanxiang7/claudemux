@@ -7,7 +7,7 @@
 import { realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { encodeProjectDir } from '../../paths'
+import { encodeProjectDir } from '../../persistence/paths'
 import { isDirectory } from './idle'
 import { die } from './tmux'
 import type { TeammateName } from '../types'

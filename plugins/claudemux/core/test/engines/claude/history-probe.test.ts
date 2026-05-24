@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { hasClaudeHistoryForCwd } from '../../../src/engines/claude/history'
-import { encodeProjectDir } from '../../../src/paths'
+import { encodeProjectDir } from '../../../src/persistence/paths'
 
 let projectsDir: string
 let cwd: string

@@ -7,6 +7,6 @@
  * This file stays as the stable import path for `main.ts` and tests.
  */
 
-export { productionEnv, productionVerbContext } from './cli/context'
+export { productionEnv } from './cli/context'
 export { runCli } from './cli/dispatch'
 export { triggersHelp } from './cli/parse'

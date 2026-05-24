@@ -30,7 +30,7 @@ import {
   readyFile,
   sidFile,
   tmuxSessionName,
-} from './persistence'
+} from '../../persistence/paths'
 import { join } from 'node:path'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'

@@ -4,7 +4,7 @@
  * hot-path verbs need to clear or wait on those markers around a turn.
  *
  * Decision cross-process-cross-platform-invariants (path-builder discipline) keeps the marker paths in
- * `persistence.ts`; this module composes them into the runtime
+ * `persistence/paths.ts`; this module composes them into the runtime
  * operations the verb bodies use.
  */
 
@@ -15,7 +15,7 @@ import {
   idleMarkerFor,
   lastFileFor,
   sidFile,
-} from './persistence'
+} from '../../persistence/paths'
 import { die } from './tmux'
 import type { TeammateName } from '../types'
 import type { TmResult } from '../../tm'

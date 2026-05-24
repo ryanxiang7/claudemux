@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs'
 
 import { sendKeys } from './keys'
 import { resolveSidOrDie } from './idle'
-import { idleMarkerFor } from './persistence'
+import { idleMarkerFor } from '../../persistence/paths'
 import { die, requireSession, resolvePaneTarget } from './tmux'
 import { isNonNegativeInteger, nowSec, sleepMs } from './clock'
 import { probeStillAlive } from './wait-signals'

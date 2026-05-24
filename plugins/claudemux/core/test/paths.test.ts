@@ -15,7 +15,7 @@ import {
   idleMarkerFor,
   lastFileFor,
   sidFile,
-} from '../src/paths'
+} from '../src/persistence/paths'
 import {
   codexLastSeenFile,
   codexMetaFile,

@@ -50,11 +50,8 @@ import type {
   TurnResult,
   WaitRequest,
 } from '../../src/engines/types'
-import {
-  ClaudeTeammateRecord,
-  decodeTmuxSessionName,
-  tmuxSessionName,
-} from '../../src/engines/claude/persistence'
+import { ClaudeTeammateRecord } from '../../src/engines/claude/persistence'
+import { decodeTmuxSessionName, tmuxSessionName } from '../../src/persistence/paths'
 import { CodexTeammateRecord } from '../../src/engines/codex/persistence'
 import { EmptyTeammateRouter } from '../../src/identity/router'
 import { killVerb } from '../../src/verbs/kill'

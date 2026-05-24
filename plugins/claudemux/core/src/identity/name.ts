@@ -17,7 +17,7 @@
  *  - A name that contains `/` must not also contain the literal
  *    substring `__`. The Claude engine encodes `/` → `__` to land on a
  *    tmux-safe session name (`tmuxSessionName` in
- *    `engines/claude/persistence.ts`); a nested name like `flow__/1`
+ *    `persistence/paths.ts`); a nested name like `flow__/1`
  *    would encode to `teammate-flow____1`, which collides with the
  *    encoding of `flow/_/1` — the simplest way to keep the encoding
  *    unambiguous is to reject this single overlap rather than reserve

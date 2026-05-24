@@ -62,19 +62,19 @@ protocol. Each has its own decision record — see
 - **Never concatenate a protocol path by hand.** Every `/tmp/teammate-*`,
   `/tmp/claude-idle/*`, or `~/.claude/projects/<encoded>/...` path is built
   by a named builder in
-  [`core/src/paths.ts`](/plugins/claudemux/core/src/paths.ts) (the matching
-  bash hooks mirror the builder inline). Add a builder rather than inlining
-  a string.
+  [`core/src/persistence/paths.ts`](/plugins/claudemux/core/src/persistence/paths.ts)
+  (the matching bash hooks mirror the builder inline). Add a builder rather
+  than inlining a string.
 - **Cross-platform binaries.** The remaining bash surface (hooks, the launcher,
   the fake-tmux test fixture) still must guard BSD/GNU differences through
   helpers or be macOS-pinned. The native verbs pipe through the real `column`
   and `grep` rather than reimplementing them — those binaries' platform
   behavior is the contract the migration preserves.
 - **One source of truth for the project-dir encoding** —
-  `encodeProjectDir` in `paths.ts` folds every non-`[A-Za-z0-9-]` character
-  to `-`, matching Claude Code's real rule. The hooks reproduce the same
-  rule inline (a `tr` invocation); never extend either site without
-  updating the other.
+  `encodeProjectDir` in `core/src/persistence/paths.ts` folds every
+  non-`[A-Za-z0-9-]` character to `-`, matching Claude Code's real rule.
+  The hooks reproduce the same rule inline (a `tr` invocation); never extend
+  either site without updating the other.
 
 ## Foot-guns
 

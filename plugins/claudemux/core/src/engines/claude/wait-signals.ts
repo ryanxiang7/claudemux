@@ -8,7 +8,7 @@
 import { existsSync, statSync } from 'node:fs'
 
 import { clearIdle, resolveSidOrDie, resolveSid, isRegularFile } from './idle'
-import { busyMarkerFor, idleMarkerFor, sendAtFile } from './persistence'
+import { busyMarkerFor, idleMarkerFor, sendAtFile } from '../../persistence/paths'
 import { requireSession } from './tmux'
 import { nowSec, sleepMs } from './clock'
 import type { TeammateName } from '../types'

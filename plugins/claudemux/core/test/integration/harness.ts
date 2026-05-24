@@ -54,7 +54,7 @@ import {
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { encodeProjectDir } from '../../src/paths'
+import { encodeProjectDir } from '../../src/persistence/paths'
 import { spawnCapture } from '../../src/proc'
 import { resolveTmBinary } from '../../src/tm'
 

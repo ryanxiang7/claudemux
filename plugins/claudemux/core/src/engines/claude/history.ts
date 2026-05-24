@@ -10,7 +10,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { encodeProjectDir } from '../../paths'
+import { encodeProjectDir } from '../../persistence/paths'
 import { fmtAge, fmtLocalDateTime } from './clock'
 import { isDirectory, isRegularFile, resolveSid } from './idle'
 import { dieRepoNotFound, projectDirForRepo } from './repo-fs'

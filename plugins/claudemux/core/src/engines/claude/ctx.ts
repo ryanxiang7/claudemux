@@ -16,8 +16,8 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { encodeProjectDir } from '../../paths'
-import { cwdFile } from './persistence'
+import { encodeProjectDir } from '../../persistence/paths'
+import { cwdFile } from '../../persistence/paths'
 import { readSid } from './state'
 import type { ContextResult, TeammateName } from '../types'
 

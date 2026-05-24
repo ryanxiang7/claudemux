@@ -13,7 +13,7 @@
 
 import { readFileSync, statSync } from 'node:fs'
 
-import { lastFileFor, sidFile } from './persistence'
+import { lastFileFor, sidFile } from '../../persistence/paths'
 import { readSid } from './state'
 import type { TeammateName, TextResult } from '../types'
 

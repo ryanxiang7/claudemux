@@ -38,7 +38,7 @@ import {
   idleMarkerFor,
   lastFileFor,
   sidFile,
-} from '../../../src/engines/claude/persistence'
+} from '../../../src/persistence/paths'
 import { formatResume, formatTurn } from '../../../src/verbs/format'
 import { EXIT_SYNC_WAIT_EXPIRED } from '../../../src/tm'
 import type { ClaudeVerbEnv } from '../../../src/engines/claude/env'

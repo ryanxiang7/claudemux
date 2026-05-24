@@ -64,9 +64,9 @@ import { claudeResume } from './resume'
 import { claudeSend } from './send'
 import { claudeSpawn } from './spawn'
 import { claudeWait } from './wait'
+import { ClaudeTeammateRecord } from './persistence'
 import {
   busyMarkerFor,
-  ClaudeTeammateRecord,
   cwdFile,
   idleMarkerFor,
   lastFileFor,
@@ -75,7 +75,7 @@ import {
   sidFile,
   TMUX_SESSION_PREFIX,
   tmuxSessionName,
-} from './persistence'
+} from '../../persistence/paths'
 import { listingExtras } from './state'
 import { pluginJsonPath, tmWrapperPath } from '../../plugin-root'
 import type { TmResult } from '../../tm'
@@ -248,7 +248,7 @@ export class ClaudeEngine implements Engine {
   }
 
   async status(req: StatusRequest, _ctx: EngineContext): Promise<TeammateStatus> {
-    const sessionName = `${TMUX_SESSION_PREFIX}${req.name.replace(/\//g, '__')}`
+    const sessionName = tmuxSessionName(req.name)
     if (!(await hasTmuxSession(this.env, sessionName))) return { kind: 'not-found' }
 
     const linesArg = String(req.lines ?? 80)
@@ -301,7 +301,7 @@ export class ClaudeEngine implements Engine {
   }
 
   async kill(req: KillRequest, _ctx: EngineContext): Promise<KillResult> {
-    const sessionName = `${TMUX_SESSION_PREFIX}${req.name.replace(/\//g, '__')}`
+    const sessionName = tmuxSessionName(req.name)
     const sid = readSid(req.name)
     if (sid !== null) {
       // Clear the three hook artifacts together — idle marker, .last, .busy.
@@ -513,7 +513,7 @@ export class ClaudeEngine implements Engine {
       fields: {
         sid: readSid(req.name) ?? '',
         cwd: readCwd(req.name) ?? '',
-        tmuxSession: `${TMUX_SESSION_PREFIX}${req.name.replace(/\//g, '__')}`,
+        tmuxSession: tmuxSessionName(req.name),
       },
     }
   }

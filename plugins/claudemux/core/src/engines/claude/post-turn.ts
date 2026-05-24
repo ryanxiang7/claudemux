@@ -6,7 +6,7 @@
  */
 
 import { readIfNonEmpty, resolveSid } from './idle'
-import { lastFileFor } from './persistence'
+import { lastFileFor } from '../../persistence/paths'
 import { claudeCtxLine } from './ctx'
 import type { ClaudeCtxEnv } from './ctx'
 import type { TeammateName } from '../types'

@@ -19,8 +19,7 @@ import { isDirectory } from './idle'
 import { iterTeammates } from './tmux'
 import { die } from './tmux'
 import { fmtLocalDateTime } from './clock'
-import { TMUX_SESSION_PREFIX } from './persistence'
-import { idleDir } from '../../paths'
+import { idleDir, TMUX_SESSION_PREFIX } from '../../persistence/paths'
 import {
   isProcessAlive as codexProcessAlive,
   listDaemons as listCodexDaemons,

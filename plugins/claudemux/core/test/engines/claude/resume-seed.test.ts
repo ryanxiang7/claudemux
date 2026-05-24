@@ -29,7 +29,7 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
-import { encodeProjectDir } from '../../../src/paths'
+import { encodeProjectDir } from '../../../src/persistence/paths'
 import { readLastAssistantText } from '../../../src/engines/claude/ctx'
 import { claudeSpawn } from '../../../src/engines/claude/spawn'
 import {
@@ -38,7 +38,7 @@ import {
   lastFileFor,
   readyFile,
   sidFile,
-} from '../../../src/engines/claude/persistence'
+} from '../../../src/persistence/paths'
 import type { ClaudeVerbEnv } from '../../../src/engines/claude/env'
 import type { TmuxResult } from '../../../src/tmux'
 

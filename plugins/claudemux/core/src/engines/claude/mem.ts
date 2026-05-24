@@ -18,7 +18,7 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { encodeProjectDir } from '../../paths'
+import { encodeProjectDir } from '../../persistence/paths'
 import type { TeammateName, TextResult } from '../types'
 
 /** Whether a path exists and is a regular file. */

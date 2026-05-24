@@ -13,7 +13,8 @@ import type { IdentityMigrator } from '../../identity/router'
 import { read as readIdentity, reserve as reserveIdentity } from '../../persistence/identity-store'
 import { readIfPresent } from '../../persistence/atomic-file'
 import type { TeammateName } from '../types'
-import { ClaudeTeammateRecord, cwdFile, sidFile, tmuxSessionName } from './persistence'
+import { ClaudeTeammateRecord } from './persistence'
+import { cwdFile, sidFile, tmuxSessionName } from '../../persistence/paths'
 
 function rstrip(text: string): string {
   return text.replace(/\n+$/, '')

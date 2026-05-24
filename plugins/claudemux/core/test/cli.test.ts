@@ -49,7 +49,7 @@ import {
   readyFile,
   sendAtFile,
   sidFile,
-} from '../src/paths'
+} from '../src/persistence/paths'
 import type { TmuxRunner } from '../src/tmux'
 import { TM_VERBS } from '../src/verbs'
 
@@ -1298,7 +1298,7 @@ describe('resume engine-probing — no checkpoint + no base record', () => {
 
   test('non-probeable cwd skips probing and falls through to Claude default routing', async () => {
     // No base record, no codex meta, no repo dir → `codexCwd` falls back
-    // to the dispatcher dir's realpath. cli.ts flags cwdProbeable=false
+    // to the dispatcher dir's realpath. The CLI parser flags cwdProbeable=false
     // for that case so the probing branch cannot match the dispatcher's
     // own transcripts. With no router resolution either, the compatibility
     // default routes to Claude without consulting transcript probes.

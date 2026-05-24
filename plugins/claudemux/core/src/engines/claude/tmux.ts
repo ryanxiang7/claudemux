@@ -1,7 +1,7 @@
 /**
  * Claude-engine tmux helpers — the session-probe and pane-target lookups
  * the hot-path verbs share. Decision multi-engine-tui-architecture §"Verb is the abstraction" pins
- * the session-name encoding to `engines/claude/persistence.ts`; this
+ * the session-name encoding to `persistence/paths.ts`; this
  * module is the thin runtime layer on top of that, so a verb that needs
  * to ask "is this teammate's tmux session alive?" or "what pane should I
  * send keys to?" calls one helper instead of repeating the same
@@ -9,7 +9,7 @@
  * argv at every site.
  */
 
-import { TMUX_SESSION_PREFIX, tmuxSessionName } from './persistence'
+import { TMUX_SESSION_PREFIX, tmuxSessionName } from '../../persistence/paths'
 import type { TeammateName } from '../types'
 import type { TmResult } from '../../tm'
 import type { TmuxRunner } from '../../tmux'
