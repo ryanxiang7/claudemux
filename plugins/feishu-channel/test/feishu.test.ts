@@ -12,7 +12,6 @@ import {
   FEISHU_CARD_CONTENT_SAFE_BYTES,
   commentFromBatchQuery,
   createFeishuTransport,
-  markdownCardContent,
 } from '../src/feishu'
 
 /**
@@ -102,38 +101,6 @@ describe('commentFromBatchQuery', () => {
   })
 })
 
-describe('markdownCardContent', () => {
-  test('wraps the text in an interactive card with a single markdown element', () => {
-    const text = '**bold** and *italic* and a [link](https://example.com)'
-    const parsed = JSON.parse(markdownCardContent(text))
-
-    expect(parsed).toEqual({
-      config: { wide_screen_mode: true, update_multi: true },
-      elements: [{ tag: 'markdown', content: text }],
-    })
-  })
-
-  test('preserves the markdown body verbatim, with no escaping of its own', () => {
-    // The body may contain characters the card JSON envelope itself escapes
-    // (quotes, backslashes, newlines, code fences). After a JSON round-trip
-    // the body must read out byte-for-byte the same as the input.
-    const text = 'a "quoted" word\n```bash\necho hi\n```\nand a \\ backslash'
-    const parsed = JSON.parse(markdownCardContent(text)) as {
-      elements: { content: string }[]
-    }
-    expect(parsed.elements[0]?.content).toBe(text)
-  })
-
-  test('declares update_multi so a later message.patch is accepted', () => {
-    // Feishu rejects an `im.message.patch` on a card sent without
-    // `update_multi: true`; the `edit_message` tool relies on patch, so the
-    // initial send must opt in.
-    const parsed = JSON.parse(markdownCardContent('hi')) as {
-      config: { update_multi: boolean }
-    }
-    expect(parsed.config.update_multi).toBe(true)
-  })
-})
 
 /**
  * Build a stub `lark.Client` that exposes only the methods this module calls.
@@ -178,13 +145,13 @@ function buildTransport(stub: ReturnType<typeof stubClient>) {
 }
 
 describe('createFeishuTransport — sendText', () => {
-  test('sends as an interactive card with the Markdown card content', async () => {
+  test('sends as a v2 interactive card with the rendered card content', async () => {
     const stub = stubClient()
     const transport = buildTransport(stub)
 
     const result = await transport.sendText('oc_chat', '**bold** message')
 
-    expect(result.messageId).toBe('om_stub')
+    expect(result.messageIds).toEqual(['om_stub'])
     expect(stub.create).toHaveBeenCalledTimes(1)
     const calls = stub.create.mock.calls as unknown as Array<
       [{ params: { receive_id_type: string }; data: { receive_id: string; msg_type: string; content: string } }]
@@ -196,27 +163,46 @@ describe('createFeishuTransport — sendText', () => {
     expect(call.data.receive_id).toBe('oc_chat')
     expect(call.data.msg_type).toBe('interactive')
     const card = JSON.parse(call.data.content) as {
-      config: { update_multi: boolean; wide_screen_mode: boolean }
-      elements: { tag: string; content: string }[]
+      schema: string
+      config: { update_multi: boolean }
+      body: { elements: { tag: string; content: string }[] }
     }
-    expect(card.elements[0]?.tag).toBe('markdown')
-    expect(card.elements[0]?.content).toBe('**bold** message')
+    expect(card.schema).toBe('2.0')
     expect(card.config.update_multi).toBe(true)
+    expect(card.body.elements[0]?.tag).toBe('markdown')
+    // The paragraph token's raw form is passed through to lark_md, which
+    // renders the inline bold marker — nothing is flattened on the way out.
+    expect(card.body.elements[0]?.content).toBe('**bold** message')
   })
 
-  test('returns no messageId when Feishu omits it', async () => {
+  test('returns empty messageIds when Feishu omits message_id', async () => {
     const stub = stubClient()
     stub.create.mockResolvedValueOnce({ data: {} } as never)
     const transport = buildTransport(stub)
 
     const result = await transport.sendText('oc_chat', 'hi')
 
-    expect(result.messageId).toBeUndefined()
+    expect(result.messageIds).toEqual([])
+  })
+
+  test('renders a multi-card body into one im.message.create per card', async () => {
+    // A body that exceeds the per-card byte budget produces several cards;
+    // each card is its own create() call and contributes one message_id.
+    const stub = stubClient()
+    stub.create.mockResolvedValueOnce({ data: { message_id: 'om_a' } } as never)
+    stub.create.mockResolvedValueOnce({ data: { message_id: 'om_b' } } as never)
+    const transport = buildTransport(stub)
+
+    const result = await transport.sendText('oc_chat', 'x'.repeat(60_000))
+
+    expect(stub.create.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(result.messageIds[0]).toBe('om_a')
+    expect(result.messageIds[1]).toBe('om_b')
   })
 })
 
 describe('createFeishuTransport — editText', () => {
-  test('patches the message as a card on the happy path', async () => {
+  test('patches the message as a v2 card on the happy path', async () => {
     const stub = stubClient()
     const transport = buildTransport(stub)
 
@@ -232,9 +218,11 @@ describe('createFeishuTransport — editText', () => {
     if (!call) return
     expect(call.path.message_id).toBe('om_target')
     const card = JSON.parse(call.data.content) as {
-      elements: { tag: string; content: string }[]
+      schema: string
+      body: { elements: { tag: string; content: string }[] }
     }
-    expect(card.elements[0]?.content).toBe('updated *body*')
+    expect(card.schema).toBe('2.0')
+    expect(card.body.elements[0]?.content).toBe('updated *body*')
   })
 
   test('falls back to im.message.update when patch fails — legacy text msg', async () => {
@@ -274,15 +262,20 @@ describe('createFeishuTransport — editText', () => {
     await expect(transport.editText('om_dead', 'hi')).rejects.toBe(patchErr)
   })
 
-  test('rejects oversized edits before any API call', async () => {
+  test('rejects an edit whose body would span multiple cards', async () => {
+    // An edit patches one message_id in place and cannot fan out, so a body
+    // the renderer would split into several cards has no destination. The
+    // guard runs before any API call so the model sees an actionable error
+    // instead of a low-level Feishu code.
     const stub = stubClient()
     const transport = buildTransport(stub)
-    // The guard counts the serialised card content, not the markdown source,
-    // so a body large enough to push the JSON envelope past the safe ceiling
-    // is enough to trigger it.
+    // 60 KB of fence-free text exceeds the per-card budget; the renderer
+    // splits it into two or more cards, which `editText` then refuses.
     const huge = 'a'.repeat(FEISHU_CARD_CONTENT_SAFE_BYTES + 64)
 
-    await expect(transport.editText('om_target', huge)).rejects.toThrow(/card-message body over/)
+    await expect(transport.editText('om_target', huge)).rejects.toThrow(
+      /edit body produced [0-9]+ cards/,
+    )
     expect(stub.patch).not.toHaveBeenCalled()
     expect(stub.update).not.toHaveBeenCalled()
   })

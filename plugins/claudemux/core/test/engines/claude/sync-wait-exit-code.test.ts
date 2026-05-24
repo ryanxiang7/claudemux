@@ -32,7 +32,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { claudeSend } from '../../../src/engines/claude/send'
 import { claudeWait } from '../../../src/engines/claude/wait'
 import { claudeCompact } from '../../../src/engines/claude/compact'
-import { claudeSpawn } from '../../../src/engines/claude/spawn'
 import { probeStillAlive } from '../../../src/engines/claude/wait-signals'
 import {
   idleDir,

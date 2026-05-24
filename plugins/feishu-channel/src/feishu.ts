@@ -30,6 +30,7 @@ import {
   acquireInstanceLockWithEviction,
   releaseInstanceLock,
 } from './instance-lock'
+import { cardToContent, renderMarkdownToCards, type RenderedCard } from './render'
 
 /** Cap on a single WebSocket handshake before it is aborted into a retry. */
 const WS_HANDSHAKE_TIMEOUT_MS = 15_000
@@ -69,27 +70,13 @@ const sdkLogger = {
 
 /** Outcome of an outbound send. */
 export interface FeishuSendResult {
-  /** message_id of the sent message, when Feishu reported one. */
-  messageId?: string
-}
-
-/**
- * Build the `content` string Feishu's message API expects for an interactive
- * card carrying a single markdown body. Used by both the initial send
- * (`im.message.create` with `msg_type: 'interactive'`) and the later edit
- * (`im.message.patch`, which only takes `content` and operates on cards).
- *
- * `update_multi: true` is required so the same message_id can be patched
- * later — Feishu rejects a patch on a card sent without it.
- *
- * Exported so the assembly is unit-tested without a live Feishu connection,
- * and a developer can call it from a one-off script to inspect the payload.
- */
-export function markdownCardContent(text: string): string {
-  return JSON.stringify({
-    config: { wide_screen_mode: true, update_multi: true },
-    elements: [{ tag: 'markdown', content: text }],
-  })
+  /**
+   * message_ids of every card the send produced, in order. A Markdown body
+   * that fits one card produces one entry; a longer body that the renderer
+   * split over several cards produces several. Empty when Feishu omitted the
+   * message_ids.
+   */
+  messageIds: string[]
 }
 
 /**
@@ -119,19 +106,40 @@ export const FEISHU_CARD_CONTENT_SAFE_BYTES = 28 * 1024
 
 /**
  * Throw a clear, model-actionable error when a card payload would exceed
- * Feishu's request-body limit. The chunker in `server.ts` already keeps each
- * send safely under the cap, but an `edit_message` call patches a single
- * card and cannot split — so the size has to be enforced here, before the
- * SDK round-trips and returns a low-level Feishu code with no fix path.
+ * Feishu's request-body limit. The renderer already keeps the first card
+ * safely under the cap by splitting at element boundaries, but an
+ * `edit_message` call patches one card in place and cannot fan out — so the
+ * size has to be enforced here, before the SDK round-trips and returns a
+ * low-level Feishu code with no fix path.
  */
 function assertCardContentFits(content: string): void {
   const bytes = Buffer.byteLength(content, 'utf8')
   if (bytes > FEISHU_CARD_CONTENT_SAFE_BYTES) {
     throw new Error(
       `card content is ${bytes} bytes; Feishu rejects a card-message body over ${FEISHU_CARD_REQUEST_LIMIT_BYTES} bytes. ` +
-        'Send a fresh, shorter message (which the channel chunks automatically) instead of editing in place.',
+        'Send a fresh, shorter message (which the channel splits automatically) instead of editing in place.',
     )
   }
+}
+
+/**
+ * Render `text` as a single v2 card, throwing when the body exceeds what
+ * one card can hold. Used by `editText` — an edit patches one message_id
+ * in place and cannot fan out, so a multi-card body has no destination.
+ */
+function renderSingleCard(text: string): RenderedCard {
+  const cards = renderMarkdownToCards(text)
+  if (cards.length !== 1) {
+    throw new Error(
+      `edit body produced ${cards.length} cards, but an edit can only update one ` +
+        'card in place. Reduce the body length, drop oversized tables, or send a ' +
+        'fresh reply (which the channel splits automatically) instead of editing.',
+    )
+  }
+  // The renderer always returns a non-empty array, but TypeScript can't
+  // narrow that — pull the element out with the assertion that we just
+  // verified there is exactly one.
+  return cards[0] as RenderedCard
 }
 
 /** One reply within a fetched document-comment thread. */
@@ -453,20 +461,27 @@ export function createFeishuTransport(
     },
 
     async sendText(chatId: string, text: string): Promise<FeishuSendResult> {
-      // Wrap the text in an interactive card with a single markdown element,
-      // so Feishu renders bold, italics, lists, links, inline code, and
-      // fenced code blocks server-side. The MCP `reply` tool's `text`
-      // parameter is treated as markdown source; a plain-text reply still
-      // renders identically because plain text is a subset of markdown.
-      const res = await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: markdownCardContent(text),
-        },
-      })
-      return { messageId: res.data?.message_id }
+      // Render the markdown source into one or more v2 cards. Routing per
+      // block type — headings to `header.title`, tables to `tag: table`,
+      // everything else to `tag: markdown` (lark_md) — keeps GFM tables and
+      // ATX headings from leaking through as literal `|` and `#`. A body
+      // too large for one card produces several cards, each sent as its own
+      // message_id so the recipient sees a threaded continuation.
+      const cards = renderMarkdownToCards(text)
+      const messageIds: string[] = []
+      for (const card of cards) {
+        const res = await client.im.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: {
+            receive_id: chatId,
+            msg_type: 'interactive',
+            content: cardToContent(card),
+          },
+        })
+        const id = res.data?.message_id
+        if (id) messageIds.push(id)
+      }
+      return { messageIds }
     },
 
     async addReaction(messageId: string, emoji: string): Promise<string> {
@@ -484,17 +499,20 @@ export function createFeishuTransport(
     },
 
     async editText(messageId: string, text: string): Promise<void> {
-      // `im.message.patch` operates on cards and rejects a request body
-      // larger than Feishu's 30 KB cap — `assertCardContentFits` catches that
-      // early so the caller sees an actionable error instead of a raw
-      // Feishu code.
-      const cardContent = markdownCardContent(text)
+      // An edit patches one message_id in place and cannot fan out, so
+      // `renderSingleCard` rejects a body the renderer would otherwise split
+      // across several cards. `assertCardContentFits` then catches the
+      // residual case of a single-card body that still serialises past the
+      // 30 KB request cap — both checks surface as actionable errors before
+      // any SDK round-trip.
+      const card = renderSingleCard(text)
+      const cardContent = cardToContent(card)
       assertCardContentFits(cardContent)
       try {
-        // The send path now produces an interactive card, so the matching
-        // edit is `im.message.patch` (card-content update). The original card
-        // was sent with `update_multi: true`, which Feishu requires for a
-        // later patch on the same message_id to be accepted.
+        // The send path produces an interactive card, so the matching edit
+        // is `im.message.patch` (card-content update). The original card was
+        // sent with `update_multi: true`, which Feishu requires for a later
+        // patch on the same message_id to be accepted.
         await client.im.message.patch({
           path: { message_id: messageId },
           data: { content: cardContent },

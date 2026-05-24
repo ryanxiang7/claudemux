@@ -10,6 +10,7 @@ import type {
   FeishuSendResult,
   FeishuTransport,
 } from '../../src/feishu'
+import { renderMarkdownToCards } from '../../src/render'
 
 export class FakeTransport implements FeishuTransport {
   botOpenId: string | undefined
@@ -37,7 +38,13 @@ export class FakeTransport implements FeishuTransport {
   async sendText(chatId: string, text: string): Promise<FeishuSendResult> {
     if (this.failOn === 'sendText') throw new Error('feishu send failed')
     this.sent.push({ chatId, text })
-    return { messageId: 'om_sent' }
+    // The real transport renders the markdown into one or more cards and
+    // returns one message_id per card sent. Mirror that here so a test that
+    // exercises the "split across messages" summary path sees the same
+    // messageIds.length the real transport would produce.
+    const cards = renderMarkdownToCards(text)
+    const messageIds = cards.map((_, i) => `om_sent_${i}`)
+    return { messageIds }
   }
 
   /**

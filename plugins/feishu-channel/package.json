@@ -12,6 +12,7 @@
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.64.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "marked": "^15.0.12",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

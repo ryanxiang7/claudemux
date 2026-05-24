@@ -21,7 +21,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 
-import { chunk } from './chunk'
 import { EventRegistry } from './events'
 import type { ChannelDelivery, HandlerContext } from './events'
 import type { FeishuCredentials, FeishuTransport, InboundRoutes } from './feishu'
@@ -38,16 +37,6 @@ const SERVER_VERSION = '0.1.0'
 
 /** The JSON-RPC method that carries an inbound event to the Claude session. */
 const CHANNEL_NOTIFICATION_METHOD = 'notifications/claude/channel'
-
-/**
- * Characters per outbound message. The channel sends each reply as an
- * interactive card whose body is a single markdown element; Feishu caps a
- * card request body at ~30 KB, and JSON-encoding plus UTF-8 expansion (a
- * Chinese character is three bytes) eats into that budget — 8000 source
- * characters fits with comfortable headroom. A longer reply is split into
- * parts at a paragraph / line boundary so Feishu does not reject the send.
- */
-export const FEISHU_TEXT_LIMIT = 8000
 
 /**
  * The emoji the channel reacts with to mark an inbound chat message as
@@ -307,27 +296,23 @@ export function createChannelCore(deps: ChannelCoreDeps): ChannelCore {
         case 'reply': {
           const chatId = requireString(args, 'chat_id')
           const text = requireString(args, 'text')
-          // Feishu rejects an over-long card message, so a long reply is
-          // split into parts that each fit. The `markdown` chunker only cuts
-          // at block boundaries and closes / reopens a fenced code block when
-          // it would otherwise span two parts — without that, a long ```code
-          // block``` would render as half an open fence in one card and an
-          // orphan body in the next.
-          const parts = chunk(text, FEISHU_TEXT_LIMIT, 'markdown')
-          const ids: string[] = []
-          for (const part of parts) {
-            const result = await deps.transport.sendText(chatId, part)
-            if (result.messageId) ids.push(result.messageId)
-          }
+          // The transport renders the markdown source into v2 interactive
+          // cards (`./render`): headings become the card title, GFM tables
+          // become `tag: table` components, every other block becomes a
+          // `tag: markdown` element. A body too large for one card produces
+          // several messages; their ids come back in `messageIds`, in send
+          // order, so the summary names how many landed.
+          const result = await deps.transport.sendText(chatId, text)
           // The chat has been answered — take the "received" indicator back
           // off every message in it that was waiting for this reply. Reached
-          // only after the send loop succeeds, so a failed reply leaves the
+          // only after the send succeeds, so a failed reply leaves the
           // indicator in place.
           await clearReceived(chatId)
+          const ids = result.messageIds
           const summary =
-            parts.length === 1
+            ids.length <= 1
               ? `Sent to ${chatId}${ids[0] ? ` as ${ids[0]}` : ''}.`
-              : `Sent to ${chatId} in ${parts.length} messages.`
+              : `Sent to ${chatId} in ${ids.length} messages.`
           return toolText(summary)
         }
         case 'react': {

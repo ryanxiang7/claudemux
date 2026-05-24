@@ -7,7 +7,6 @@ import { DOC_COMMENT_EVENT_TYPE } from '../src/handlers/doc-comment'
 import { IM_MESSAGE_EVENT_TYPE } from '../src/handlers/im-message'
 import {
   createChannelCore,
-  FEISHU_TEXT_LIMIT,
   loadCredentials,
   readEnvFile,
   RECEIVED_REACTION_EMOJI,
@@ -190,33 +189,36 @@ describe('handleTool — reply', () => {
   })
 })
 
-describe('handleTool — reply chunking', () => {
-  test('a reply within the limit is sent as a single message', async () => {
+describe('handleTool — reply splitting', () => {
+  test('a reply that fits one card is sent as a single message', async () => {
     const transport = new FakeTransport()
     const core = makeCore(transport, [])
 
-    await core.handleTool('reply', { chat_id: 'oc_chat', text: 'short enough' })
+    const result = await core.handleTool('reply', { chat_id: 'oc_chat', text: 'short enough' })
 
     expect(transport.sent).toHaveLength(1)
     expect(transport.sent[0]?.text).toBe('short enough')
+    expect(JSON.stringify(result.content)).toContain('as om_sent_0')
   })
 
-  test('a reply over the limit is split into messages that each fit', async () => {
+  test('a reply too large for one card surfaces an N-messages summary', async () => {
+    // The renderer splits a body that would exceed Feishu's ~30 KB request
+    // cap into multiple cards; the fake transport returns one message_id per
+    // card the renderer produced, and the `reply` summary reports the count.
     const transport = new FakeTransport()
     const core = makeCore(transport, [])
-    const long = 'x'.repeat(FEISHU_TEXT_LIMIT * 2 + 100)
+    // 60 KB of fence-free text exceeds the ~28 KB per-card budget, so the
+    // renderer produces at least two cards regardless of CJK/ASCII width.
+    const long = 'x'.repeat(60_000)
 
     const result = await core.handleTool('reply', { chat_id: 'oc_chat', text: long })
 
     expect(result.isError).toBeUndefined()
-    expect(transport.sent.length).toBeGreaterThan(1)
-    for (const message of transport.sent) {
-      expect(message.text.length).toBeLessThanOrEqual(FEISHU_TEXT_LIMIT)
-    }
-    // Whitespace-free input has no boundary to trim, so the parts rejoin
-    // exactly — no content is dropped on the way out.
-    expect(transport.sent.map((m) => m.text).join('')).toBe(long)
-    expect(JSON.stringify(result.content)).toContain('messages')
+    // The server now calls the transport once with the full body; the
+    // transport itself handles per-card splitting and returns the list of
+    // message_ids.
+    expect(transport.sent).toHaveLength(1)
+    expect(JSON.stringify(result.content)).toMatch(/in [0-9]+ messages/)
   })
 })
 
