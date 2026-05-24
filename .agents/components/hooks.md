@@ -50,6 +50,11 @@ terminal `stop_reason` *and* at least one `text` or `tool_use` content block.
 Requiring the non-thinking block prevents a thinking-only intermediate
 response from being mistaken for the finished turn. On poll timeout it
 leaves the existing `.last` untouched rather than blanking it.
+When walking backward to find the last assistant turn, synthetic string-content
+user entries emitted after the assistant response are skipped instead of
+treated as user turn boundaries; this includes local-command tags and the
+background-task tag family (`<task-notification>`, `<task-summary>`,
+`<task-output>`).
 
 A diagnostic log at `/tmp/claude-idle/_on-stop.log` records one line per
 phase per fire — `cat` it when investigating a misbehaving turn.

@@ -16,6 +16,7 @@ import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
 import { die } from './tmux'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
+import type { HistoryListEntry } from '../types'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -255,13 +256,16 @@ function readHistoryData(content: string): HistoryData {
 }
 
 /**
- * `tm history <repo>` — list a teammate repo's past Claude Code
- * sessions, one per transcript jsonl, newest first. The rows are built
- * natively and aligned by the real `column -t`.
+ * Read list-mode rows for Claude Code sessions. `null` means the Claude
+ * project directory does not exist; an empty array means it exists but has
+ * no transcript files.
  */
-async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv): Promise<TmResult> {
+export function claudeHistoryListEntries(
+  repo: string,
+  projectDir: string,
+): readonly HistoryListEntry[] | null {
   if (!isDirectory(projectDir)) {
-    return { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' }
+    return null
   }
   let names: string[]
   try {
@@ -270,33 +274,21 @@ async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv)
     names = []
   }
   if (names.length === 0) {
-    return { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' }
+    return []
   }
 
-  const files = names.map((name) => {
-    let mtime = 0
-    try {
-      mtime = Math.floor(statSync(join(projectDir, name)).mtimeMs / 1000)
-    } catch {
-      mtime = 0
-    }
-    return { name, mtime }
-  })
-  // `ls -t` — newest first; equal mtimes break by name (a `<`/`>`
-  // compare, not `localeCompare`, so the tie order is the same on
-  // every CI runner).
-  files.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-
   const liveSid = resolveSid(repo) ?? ''
-  const now = Math.floor(Date.now() / 1000)
-  const rows: string[][] = [[' ', 'SID', 'AGE', 'SIZE', 'TOPIC']]
-  for (const { name, mtime } of files) {
+  const entries = names.map((name) => {
     const full = join(projectDir, name)
     const sidFull = name.replace(/\.jsonl$/, '')
+    let mtimeMs = 0
     let size = 0
     try {
-      size = statSync(full).size
+      const stat = statSync(full)
+      mtimeMs = stat.mtimeMs
+      size = stat.size
     } catch {
+      mtimeMs = 0
       size = 0
     }
     let content = ''
@@ -305,13 +297,42 @@ async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv)
     } catch {
       content = ''
     }
-    const mark = liveSid !== '' && sidFull === liveSid ? '*' : ' '
+    return {
+      engine: 'claude',
+      id: sidFull,
+      mtimeMs,
+      size,
+      topic: historyTopic(content),
+      active: liveSid !== '' && sidFull === liveSid,
+    } satisfies HistoryListEntry
+  })
+  // `ls -t` — newest first; equal mtimes break by name (a `<`/`>`
+  // compare, not `localeCompare`, so the tie order is the same on
+  // every CI runner).
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return entries
+}
+
+/**
+ * `tm history <repo>` — list a teammate repo's past Claude Code
+ * sessions, one per transcript jsonl, newest first. The rows are built
+ * natively and aligned by the real `column -t`.
+ */
+async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv): Promise<TmResult> {
+  const entries = claudeHistoryListEntries(repo, projectDir)
+  if (entries === null || entries.length === 0) {
+    return { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' }
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const rows: string[][] = [[' ', 'ENGINE', 'ID', 'AGE', 'SIZE', 'TOPIC']]
+  for (const entry of entries) {
     rows.push([
-      mark,
-      sidFull.slice(0, 8),
-      fmtAge(now - mtime),
-      fmtSize(size),
-      historyTopic(content),
+      entry.active ? '*' : ' ',
+      entry.engine,
+      entry.id.slice(0, 8),
+      fmtAge(Math.max(0, now - Math.floor(entry.mtimeMs / 1000))),
+      fmtSize(entry.size),
+      entry.topic,
     ])
   }
   return env.runColumn(`${rows.map((row) => row.join('\t')).join('\n')}\n`)

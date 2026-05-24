@@ -4014,12 +4014,13 @@ var HELP_TEXTS = {
 `,
   history: `tm history <repo> [<sid-or-thread-prefix>]
 
-      Inspect this repo's past Claude sessions or Codex threads
-      (live or dead). No id: list mode, newest-first table. Claude
-      lists SID, AGE, SIZE, TOPIC; Codex lists THREAD, AGE, SIZE,
-      TOPIC, where THREAD is the first 8 chars of the Codex thread
-      id recorded in a rollout filename. '*' marks the current live
-      teammate's session / thread. With a sid, thread id, or prefix:
+      Inspect this repo's past Claude sessions and Codex threads
+      (live or dead). No id: list mode, newest-first table merged by
+      transcript / rollout mtime. The ENGINE column identifies
+      claude vs codex; ID is the first 8 chars of the Claude sid or
+      Codex thread id recorded in a rollout filename. '*' marks the
+      current live teammate's session / thread. With a sid, thread id,
+      or prefix:
       detail mode (full id, transcript / rollout path, size / line
       count, created time, ctx usage when present, first prompt,
       last assistant text up to 1500 chars, ready-to-paste
@@ -4266,8 +4267,8 @@ function rstrip(text) {
   return text.replace(/\n+$/, "");
 }
 function resolveSid(name) {
-  const raw = readIfNonEmpty(sidFile(name));
-  return raw === null ? null : rstrip(raw);
+  const raw2 = readIfNonEmpty(sidFile(name));
+  return raw2 === null ? null : rstrip(raw2);
 }
 function resolveSidOrDie(name) {
   const sid = resolveSid(name);
@@ -4501,8 +4502,8 @@ function readIfNonEmpty2(path) {
   }
 }
 function readSid(name) {
-  const raw = readIfNonEmpty2(sidFile(name));
-  return raw === null ? null : rstrip2(raw);
+  const raw2 = readIfNonEmpty2(sidFile(name));
+  return raw2 === null ? null : rstrip2(raw2);
 }
 function isRegularFile2(path) {
   try {
@@ -4725,18 +4726,18 @@ import { join as join4 } from "node:path";
 
 // src/identity/name.ts
 var SEGMENT_REGEX = /^[A-Za-z0-9._-]+$/;
-function validateTeammateName(raw) {
-  if (raw.length === 0) return { kind: "invalid", reason: "empty" };
-  if (raw.startsWith("/") || raw.endsWith("/")) {
+function validateTeammateName(raw2) {
+  if (raw2.length === 0) return { kind: "invalid", reason: "empty" };
+  if (raw2.startsWith("/") || raw2.endsWith("/")) {
     return { kind: "invalid", reason: "leading or trailing '/'" };
   }
-  if (raw.includes("/") && raw.includes("__")) {
+  if (raw2.includes("/") && raw2.includes("__")) {
     return {
       kind: "invalid",
       reason: "a nested name (containing '/') must not also contain '__' \u2014 the Claude engine encodes '/' \u2192 '__' for tmux"
     };
   }
-  const segments = raw.split("/");
+  const segments = raw2.split("/");
   for (const seg of segments) {
     if (seg.length === 0) return { kind: "invalid", reason: "empty segment ('//' not allowed)" };
     if (seg === "." || seg === "..") return { kind: "invalid", reason: `segment '${seg}' is reserved` };
@@ -4748,7 +4749,7 @@ function validateTeammateName(raw) {
       };
     }
   }
-  return { kind: "ok", name: raw, segments };
+  return { kind: "ok", name: raw2, segments };
 }
 
 // src/persistence/atomic-file.ts
@@ -4822,17 +4823,17 @@ function reserve(record) {
   }
 }
 function read(name) {
-  const raw = readIfPresent(identityFile(name));
-  if (raw === null) return null;
-  return parse(raw);
+  const raw2 = readIfPresent(identityFile(name));
+  if (raw2 === null) return null;
+  return parse(raw2);
 }
 function remove(name) {
   removeIfPresent(identityFile(name));
 }
-function parse(raw) {
+function parse(raw2) {
   let value;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(raw2);
   } catch {
     return null;
   }
@@ -5612,10 +5613,9 @@ function readHistoryData(content) {
     return EMPTY_HISTORY;
   }
 }
-async function historyList(repo, projectDir, env) {
+function claudeHistoryListEntries(repo, projectDir) {
   if (!isDirectory(projectDir)) {
-    return { code: 0, stdout: `(no past sessions for ${repo})
-`, stderr: "" };
+    return null;
   }
   let names;
   try {
@@ -5624,29 +5624,20 @@ async function historyList(repo, projectDir, env) {
     names = [];
   }
   if (names.length === 0) {
-    return { code: 0, stdout: `(no past sessions for ${repo})
-`, stderr: "" };
+    return [];
   }
-  const files = names.map((name) => {
-    let mtime = 0;
-    try {
-      mtime = Math.floor(statSync7(join7(projectDir, name)).mtimeMs / 1e3);
-    } catch {
-      mtime = 0;
-    }
-    return { name, mtime };
-  });
-  files.sort((a, b) => b.mtime - a.mtime || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const liveSid = resolveSid(repo) ?? "";
-  const now = Math.floor(Date.now() / 1e3);
-  const rows = [[" ", "SID", "AGE", "SIZE", "TOPIC"]];
-  for (const { name, mtime } of files) {
+  const entries = names.map((name) => {
     const full = join7(projectDir, name);
     const sidFull = name.replace(/\.jsonl$/, "");
+    let mtimeMs = 0;
     let size = 0;
     try {
-      size = statSync7(full).size;
+      const stat = statSync7(full);
+      mtimeMs = stat.mtimeMs;
+      size = stat.size;
     } catch {
+      mtimeMs = 0;
       size = 0;
     }
     let content = "";
@@ -5655,13 +5646,34 @@ async function historyList(repo, projectDir, env) {
     } catch {
       content = "";
     }
-    const mark = liveSid !== "" && sidFull === liveSid ? "*" : " ";
+    return {
+      engine: "claude",
+      id: sidFull,
+      mtimeMs,
+      size,
+      topic: historyTopic(content),
+      active: liveSid !== "" && sidFull === liveSid
+    };
+  });
+  entries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return entries;
+}
+async function historyList(repo, projectDir, env) {
+  const entries = claudeHistoryListEntries(repo, projectDir);
+  if (entries === null || entries.length === 0) {
+    return { code: 0, stdout: `(no past sessions for ${repo})
+`, stderr: "" };
+  }
+  const now = Math.floor(Date.now() / 1e3);
+  const rows = [[" ", "ENGINE", "ID", "AGE", "SIZE", "TOPIC"]];
+  for (const entry of entries) {
     rows.push([
-      mark,
-      sidFull.slice(0, 8),
-      fmtAge(now - mtime),
-      fmtSize(size),
-      historyTopic(content)
+      entry.active ? "*" : " ",
+      entry.engine,
+      entry.id.slice(0, 8),
+      fmtAge(Math.max(0, now - Math.floor(entry.mtimeMs / 1e3))),
+      fmtSize(entry.size),
+      entry.topic
     ]);
   }
   return env.runColumn(`${rows.map((row) => row.join("	")).join("\n")}
@@ -6447,12 +6459,12 @@ function readIfNonEmpty5(path) {
   }
 }
 function readSid2(name) {
-  const raw = readIfNonEmpty5(sidFile(name));
-  return raw === null ? null : rstrip3(raw);
+  const raw2 = readIfNonEmpty5(sidFile(name));
+  return raw2 === null ? null : rstrip3(raw2);
 }
 function readCwd(name) {
-  const raw = readIfNonEmpty5(cwdFile(name));
-  return raw === null ? null : rstrip3(raw);
+  const raw2 = readIfNonEmpty5(cwdFile(name));
+  return raw2 === null ? null : rstrip3(raw2);
 }
 async function hasTmuxSession(env, sessionName) {
   try {
@@ -6658,6 +6670,7 @@ var ClaudeEngine = class {
       return {
         kind: "list",
         turns: [{ index: Number(req.index ?? 0), startedAt: 0, summary: rstrip3(result.stdout) }],
+        entries: req.index === null ? claudeHistoryListEntries(req.name, projectDirForRepo(req.name, this.env)) ?? [] : void 0,
         tmResult: result
       };
     }
@@ -7109,6 +7122,16 @@ function readHistoryEntry(file) {
 function historyEntriesForCwd(cwd, env) {
   return listCodexRolloutFiles(env).map((file) => readHistoryEntry(file)).filter((entry) => entry !== null && cwdMatches(entry.cwd, cwd));
 }
+function codexHistoryListEntries(entries, activeThreadId) {
+  return entries.map((entry) => ({
+    engine: "codex",
+    id: entry.threadId,
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+    topic: historyTopic2(entry),
+    active: activeThreadId === entry.threadId
+  }));
+}
 function hasCodexHistoryForCwd(cwd, env) {
   for (const file of listCodexRolloutFiles(env)) {
     const recordedCwd = cwdFromFirstLine(file);
@@ -7138,14 +7161,15 @@ function listHistory(name, entries, activeThreadId, nowMs) {
     return { code: 0, stdout: `(no codex threads for ${name})
 `, stderr: "" };
   }
-  const rows = [[" ", "THREAD", "AGE", "SIZE", "TOPIC"]];
-  for (const entry of entries) {
+  const rows = [[" ", "ENGINE", "ID", "AGE", "SIZE", "TOPIC"]];
+  for (const entry of codexHistoryListEntries(entries, activeThreadId)) {
     rows.push([
-      activeThreadId === entry.threadId ? "*" : " ",
-      entry.threadId.slice(0, 8),
+      entry.active ? "*" : " ",
+      entry.engine,
+      entry.id.slice(0, 8),
       fmtAge3(Math.max(0, Math.floor((nowMs - entry.mtimeMs) / 1e3))),
       fmtSize2(entry.size),
-      historyTopic2(entry)
+      entry.topic
     ]);
   }
   return { code: 0, stdout: alignRows(rows), stderr: "" };
@@ -7217,7 +7241,12 @@ function codexHistory(req, ctx) {
   const tmResult = req.index === null ? listHistory(req.name, entries, activeThreadId, ctx.now()) : detailHistory(req.name, req.index, entries, ctx);
   if (tmResult.code !== 0) return { kind: "failed", message: tmResult.stderr.trim(), tmResult };
   if (req.index === null) {
-    return { kind: "list", turns: [], tmResult };
+    return {
+      kind: "list",
+      turns: [],
+      entries: codexHistoryListEntries(entries, activeThreadId),
+      tmResult
+    };
   }
   return {
     kind: "detail",
@@ -8458,8 +8487,8 @@ function formatKill(name, result) {
   }
 }
 function formatTurn(turn) {
-  const raw = rawTmResult(turn);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(turn);
+  if (raw2 !== null) return raw2;
   switch (turn.kind) {
     case "completed":
       return { code: 0, stdout: turn.text.endsWith("\n") ? turn.text : `${turn.text}
@@ -8479,8 +8508,8 @@ function formatTurn(turn) {
   }
 }
 function formatCompact(result) {
-  const raw = rawTmResult(result);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(result);
+  if (raw2 !== null) return raw2;
   switch (result.kind) {
     case "compacted":
       return { code: 0, stdout: "compacted\n", stderr: "" };
@@ -8496,8 +8525,8 @@ function formatCompact(result) {
   }
 }
 function formatHistory(result) {
-  const raw = rawTmResult(result);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(result);
+  if (raw2 !== null) return raw2;
   switch (result.kind) {
     case "list": {
       const lines = result.turns.map((t) => `#${t.index}	${t.summary}`);
@@ -8516,8 +8545,8 @@ function formatHistory(result) {
   }
 }
 function formatContext(result) {
-  const raw = rawTmResult(result);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(result);
+  if (raw2 !== null) return raw2;
   switch (result.kind) {
     case "usage":
       return {
@@ -8535,8 +8564,8 @@ function formatContext(result) {
   }
 }
 function formatResume(result) {
-  const raw = rawTmResult(result);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(result);
+  if (raw2 !== null) return raw2;
   switch (result.kind) {
     case "resumed":
       return { code: 0, stdout: `resumed: ${result.checkpoint ?? ""}
@@ -8553,8 +8582,8 @@ function formatResume(result) {
   }
 }
 function formatReload(result) {
-  const raw = rawTmResult(result);
-  if (raw !== null) return raw;
+  const raw2 = rawTmResult(result);
+  if (raw2 !== null) return raw2;
   switch (result.kind) {
     case "reloaded":
       return { code: 0, stdout: "reloaded\n", stderr: "" };
@@ -8941,13 +8970,100 @@ async function ctxVerb(name, ctx, opts) {
 }
 
 // src/verbs/history.ts
-async function historyVerb(args, ctx) {
+async function resolveHistoryTarget(args, ctx) {
   const resolved = await ctx.router.resolve(args.name);
   const codexFromHistory = resolved === null && args.cwd !== null && ctx.engines.get("codex") !== void 0 && hasCodexHistoryForCwd(args.cwd, ctx.engineContext.env);
   const engine = codexFromHistory ? ctx.engines.get("codex") : resolved?.engine ?? await resolveTargetEngine(args.name, ctx);
   if ("code" in engine) return engine;
+  return { engine, resolved: resolved !== null, codexFromHistory };
+}
+function historyCandidateEngines(target, ctx) {
+  const engines = [];
+  const add = (engine) => {
+    if (engine === void 0) return;
+    if (!engines.some((candidate) => candidate.kind === engine.kind)) engines.push(engine);
+  };
+  if (target.engine.kind === "codex" && !target.codexFromHistory && !target.resolved) {
+    add(target.engine);
+    return engines;
+  }
+  add(ctx.engines.get("claude"));
+  add(ctx.engines.get("codex"));
+  add(target.engine);
+  return engines;
+}
+function fmtSize3(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1048576) return `${Math.trunc(bytes / 1024)}K`;
+  if (bytes < 1073741824) return `${toFixed1HalfEven3(bytes / 1048576)}M`;
+  return `${toFixed1HalfEven3(bytes / 1073741824)}G`;
+}
+function toFixed1HalfEven3(value) {
+  const tenths = value * 10;
+  const floor = Math.floor(tenths);
+  const frac = tenths - floor;
+  let rounded;
+  if (frac < 0.5) rounded = floor;
+  else if (frac > 0.5) rounded = floor + 1;
+  else rounded = floor % 2 === 0 ? floor : floor + 1;
+  return (rounded / 10).toFixed(1);
+}
+function sortedHistoryEntries(entries) {
+  return [...entries].sort(
+    (a, b) => b.mtimeMs - a.mtimeMs || (a.engine < b.engine ? -1 : a.engine > b.engine ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+}
+async function formatHistoryEntries(entries, ctx) {
+  const nowMs = ctx.engineContext.now();
+  const rows = [[" ", "ENGINE", "ID", "AGE", "SIZE", "TOPIC"]];
+  for (const entry of sortedHistoryEntries(entries)) {
+    rows.push([
+      entry.active ? "*" : " ",
+      entry.engine,
+      entry.id.slice(0, 8),
+      fmtAge(Math.max(0, Math.floor((nowMs - entry.mtimeMs) / 1e3))),
+      fmtSize3(entry.size),
+      entry.topic
+    ]);
+  }
+  return ctx.runColumn(`${rows.map((row) => row.join("	")).join("\n")}
+`);
+}
+function raw(result) {
+  return formatHistory(result);
+}
+async function historyVerb(args, ctx) {
+  const target = await resolveHistoryTarget(args, ctx);
+  if ("code" in target) return target;
   const req = { name: args.name, cwd: args.cwd, index: args.index };
-  return formatHistory(await engine.history(req, ctx.engineContext));
+  if (args.index !== null) {
+    const engines2 = historyCandidateEngines(target, ctx);
+    const results2 = await Promise.all(
+      engines2.map(async (engine) => ({ engine, result: await engine.history(req, ctx.engineContext) }))
+    );
+    const successes = results2.map(({ result }) => raw(result)).filter((result) => result.code === 0);
+    if (successes.length === 1) return successes[0];
+    if (successes.length > 1) {
+      return {
+        code: 1,
+        stdout: "",
+        stderr: `tm: history: prefix '${args.index}' matches entries in multiple engines - be more specific
+`
+      };
+    }
+    const targetResult2 = results2.find(({ engine }) => engine.kind === target.engine.kind)?.result ?? await target.engine.history(req, ctx.engineContext);
+    return raw(targetResult2);
+  }
+  const engines = historyCandidateEngines(target, ctx);
+  const results = await Promise.all(
+    engines.map(async (engine) => ({ engine, result: await engine.history(req, ctx.engineContext) }))
+  );
+  const entries = results.flatMap(
+    ({ result }) => result.kind === "list" && result.entries !== void 0 ? [...result.entries] : []
+  );
+  if (entries.length > 0) return formatHistoryEntries(entries, ctx);
+  const targetResult = results.find(({ engine }) => engine.kind === target.engine.kind)?.result ?? await target.engine.history(req, ctx.engineContext);
+  return raw(targetResult);
 }
 
 // src/verbs/mem.ts

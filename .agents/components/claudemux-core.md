@@ -51,8 +51,11 @@ contracts they hold.
 > thread's latest assistant text when the rollout is present. `tm last`,
 > `tm ctx`, and `tm history` read Codex's
 > append-only rollout JSONL files under `~/.codex/sessions/YYYY/MM/DD/`;
-> `tm history` filters them by recorded cwd and lists thread ids for
-> `tm resume`.
+> `tm history` filters them by recorded cwd. In list mode it merges Claude
+> transcript sessions and Codex rollout threads by mtime, with an `ENGINE`
+> column identifying `claude` vs `codex`; in detail mode a Claude sid prefix
+> or Codex thread-id prefix opens the matching transcript / rollout and prints
+> the ready-to-paste `tm resume` command.
 > `tm resume <name> [<thread-id>]` starts a fresh per-teammate daemon; with an
 > explicit thread id it calls `thread/resume`, and with no id it asks Codex
 > for the latest cwd-matching thread via `thread/list(limit=1,

@@ -404,6 +404,37 @@ function writeCodexRollout(threadId: string, assistantText: string, ageSeconds =
   utimesSync(file, pinned, pinned)
 }
 
+function writeCodexHistoryRollout(
+  repo: string,
+  threadId: string,
+  prompt: string,
+  ageSeconds = 10000,
+): void {
+  const dir = join(codexSessionsRoot(), '2026', '05', '23')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `rollout-2026-05-23T12-00-00-${threadId}.jsonl`)
+  const rolloutCwd = realpathSync(join(dispatcherDir, repo))
+  writeFileSync(file, [
+    JSON.stringify({
+      timestamp: '2026-05-23T12:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        id: threadId,
+        cwd: rolloutCwd,
+        // Keep the raw rollout SIZE column stable across /tmp realpath differences.
+        cwdPad: 'x'.repeat(Math.max(0, 120 - rolloutCwd.length)),
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-05-23T12:00:01.000Z',
+      type: 'event_msg',
+      payload: { type: 'user_message', message: prompt },
+    }),
+  ].join('\n') + '\n')
+  const pinned = Math.floor(Date.now() / 1000) - ageSeconds
+  utimesSync(file, pinned, pinned)
+}
+
 /** Set the session list the fake `tmux ls` returns. */
 function setSessions(text: string): void {
   writeFileSync(sessionsFile, text)
@@ -1232,6 +1263,22 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           writeHistoryTranscript(repo, uniqueName(), [userLine('the newest task')], 4000)
           writeHistoryTranscript(repo, uniqueName(), [userLine('the middle task')], 40000)
           writeHistoryTranscript(repo, uniqueName(), [userLine('the oldest task')], 100000)
+          return { args: [repo] }
+        },
+      },
+      {
+        name: 'mixed Claude sessions and Codex rollouts → merged newest-first with engine column',
+        setup: () => {
+          const repo = uniqueName()
+          makeRepoDir(repo)
+          writeHistoryTranscript(repo, uniqueUuid(), [userLine('claude middle task')], 40000)
+          writeCodexHistoryRollout(
+            repo,
+            uniqueUuid(),
+            'codex newest task',
+            4000,
+          )
+          writeHistoryTranscript(repo, uniqueUuid(), [userLine('claude oldest task')], 100000)
           return { args: [repo] }
         },
       },

@@ -216,10 +216,19 @@ export interface HistoryRequest {
 }
 
 export type HistoryResult =
-  | ({ kind: 'list'; turns: readonly HistoryTurn[] } & RawTmResult)
+  | ({ kind: 'list'; turns: readonly HistoryTurn[]; entries?: readonly HistoryListEntry[] } & RawTmResult)
   | ({ kind: 'detail'; turn: HistoryTurn; items: readonly InteractionItem[] } & RawTmResult)
   | ({ kind: 'not-supported'; reason: string } & RawTmResult)
   | ({ kind: 'failed'; message: string } & RawTmResult)
+
+export interface HistoryListEntry {
+  readonly engine: EngineKind
+  readonly id: string
+  readonly mtimeMs: number
+  readonly size: number
+  readonly topic: string
+  readonly active: boolean
+}
 
 export interface HistoryTurn {
   readonly index: number

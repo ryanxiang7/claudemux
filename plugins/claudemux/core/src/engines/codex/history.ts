@@ -17,7 +17,7 @@ import {
   statSync,
 } from 'node:fs'
 
-import type { EngineContext, HistoryRequest, HistoryResult } from '../types'
+import type { EngineContext, HistoryListEntry, HistoryRequest, HistoryResult } from '../types'
 import type { TmResult } from '../../tm'
 import { readBaseRecord, readCodexMeta } from './persistence.js'
 import { readDaemonState } from './supervisor.js'
@@ -222,6 +222,20 @@ function historyEntriesForCwd(cwd: string, env: NodeJS.ProcessEnv): readonly Cod
     .filter((entry): entry is CodexHistoryEntry => entry !== null && cwdMatches(entry.cwd, cwd))
 }
 
+function codexHistoryListEntries(
+  entries: readonly CodexHistoryEntry[],
+  activeThreadId: string | null,
+): readonly HistoryListEntry[] {
+  return entries.map((entry) => ({
+    engine: 'codex',
+    id: entry.threadId,
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+    topic: historyTopic(entry),
+    active: activeThreadId === entry.threadId,
+  }))
+}
+
 export function hasCodexHistoryForCwd(cwd: string, env: NodeJS.ProcessEnv): boolean {
   for (const file of listCodexRolloutFiles(env)) {
     const recordedCwd = cwdFromFirstLine(file)
@@ -258,14 +272,15 @@ function listHistory(
   if (entries.length === 0) {
     return { code: 0, stdout: `(no codex threads for ${name})\n`, stderr: '' }
   }
-  const rows: string[][] = [[' ', 'THREAD', 'AGE', 'SIZE', 'TOPIC']]
-  for (const entry of entries) {
+  const rows: string[][] = [[' ', 'ENGINE', 'ID', 'AGE', 'SIZE', 'TOPIC']]
+  for (const entry of codexHistoryListEntries(entries, activeThreadId)) {
     rows.push([
-      activeThreadId === entry.threadId ? '*' : ' ',
-      entry.threadId.slice(0, 8),
+      entry.active ? '*' : ' ',
+      entry.engine,
+      entry.id.slice(0, 8),
       fmtAge(Math.max(0, Math.floor((nowMs - entry.mtimeMs) / 1000))),
       fmtSize(entry.size),
-      historyTopic(entry),
+      entry.topic,
     ])
   }
   return { code: 0, stdout: alignRows(rows), stderr: '' }
@@ -352,7 +367,12 @@ export function codexHistory(req: HistoryRequest, ctx: EngineContext): HistoryRe
 
   if (tmResult.code !== 0) return { kind: 'failed', message: tmResult.stderr.trim(), tmResult }
   if (req.index === null) {
-    return { kind: 'list', turns: [], tmResult }
+    return {
+      kind: 'list',
+      turns: [],
+      entries: codexHistoryListEntries(entries, activeThreadId),
+      tmResult,
+    }
   }
   return {
     kind: 'detail',

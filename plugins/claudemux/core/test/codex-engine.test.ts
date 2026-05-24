@@ -736,8 +736,8 @@ describe('CodexEngine — core lifecycle', () => {
 
       expect(result.kind).toBe('list')
       expect(result.tmResult?.code).toBe(0)
-      expect(result.tmResult?.stdout).toContain('THREAD')
-      expect(result.tmResult?.stdout).toContain('*  019e5f5f  5s')
+      expect(result.tmResult?.stdout).toContain('ENGINE')
+      expect(result.tmResult?.stdout).toContain('*  codex   019e5f5f  5s')
       expect(result.tmResult?.stdout).toContain('Implement codex history')
       expect(result.tmResult?.stdout).toContain('Older codex thread')
       expect(result.tmResult?.stdout).not.toContain('Other repo thread')
@@ -854,7 +854,7 @@ describe('CodexEngine — core lifecycle', () => {
     const result = await engine.history({ name, cwd, index: null }, ctxAt(nowMs))
 
     expect(result.kind).toBe('list')
-    expect(result.tmResult?.stdout).toMatch(/^\*  019e5f5f/m)
+    expect(result.tmResult?.stdout).toMatch(/^\*  codex\s+019e5f5f/m)
   })
 
   test('doctor reaps a crashed daemon registry entry', async () => {

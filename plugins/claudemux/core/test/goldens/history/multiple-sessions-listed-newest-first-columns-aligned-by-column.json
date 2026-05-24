@@ -1,5 +1,5 @@
 {
   "code": 0,
-  "stdout": "   SID       AGE  SIZE  TOPIC\n   claudemu  1h   70B   the newest task\n   claudemu  11h  70B   the middle task\n   claudemu  1d   70B   the oldest task\n",
+  "stdout": "   ENGINE  ID        AGE  SIZE  TOPIC\n   claude  claudemu  1h   70B   the newest task\n   claude  claudemu  11h  70B   the middle task\n   claude  claudemu  1d   70B   the oldest task\n",
   "stderr": ""
 }

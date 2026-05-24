@@ -53,10 +53,11 @@ import type { NativeEnv } from '../../env'
 import { claudeCompact } from './compact'
 import { claudeCtxLine, claudeCtxUsage } from './ctx'
 import { claudeDoctor } from './doctor'
-import { claudeHistory } from './history'
+import { claudeHistory, claudeHistoryListEntries } from './history'
 import { claudeLast } from './last'
 import { claudeMem } from './mem'
 import { claudeReload } from './reload'
+import { projectDirForRepo } from './repo-fs'
 import { claudeResume } from './resume'
 import { claudeSend } from './send'
 import { claudeSpawn } from './spawn'
@@ -358,6 +359,9 @@ export class ClaudeEngine implements Engine {
       return {
         kind: 'list',
         turns: [{ index: Number(req.index ?? 0), startedAt: 0, summary: rstrip(result.stdout) }],
+        entries: req.index === null
+          ? claudeHistoryListEntries(req.name, projectDirForRepo(req.name, this.env)) ?? []
+          : undefined,
         tmResult: result,
       }
     }

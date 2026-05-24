@@ -109,10 +109,11 @@ rev_lines() {
 #     type check and we keep walking back.
 #   - synthetic local-command user entries (`<bash-input>`, `<bash-stdout>`,
 #     `<bash-stderr>`, `<local-command-stdout>`, `<local-command-caveat>`,
-#     `<command-name|message|args>`): Claude Code writes these as
+#     `<command-name|message|args>`, `<task-notification|summary|output>`):
+#     Claude Code writes these as
 #     string-content user entries AFTER an assistant turn ends (the `!cmd`
-#     and `/slash` machinery). They are not turn boundaries — skip them and
-#     keep walking back.
+#     and `/slash` machinery, plus background task notifications). They are
+#     not turn boundaries — skip them and keep walking back.
 #   - anything else: skip.
 # `halt` makes jq exit cleanly, the upstream reverser gets SIGPIPE and stops,
 # so the file read is bounded by ONE turn's worth of lines (~10s-100s), not
@@ -121,7 +122,7 @@ rev_lines() {
 extract_last_turn() {
     rev_lines "$1" 2>/dev/null | jq -c '
         if .type == "user" and (.message.content | type) == "string" then
-          if (.message.content | test("^<(bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-caveat|command-name|command-message|command-args)\\b")) then empty
+          if (.message.content | test("^<(bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-caveat|command-name|command-message|command-args|task-notification|task-summary|task-output)\\b")) then empty
           else halt
           end
         elif .type == "assistant" then
