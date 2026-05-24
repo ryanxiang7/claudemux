@@ -53,9 +53,9 @@ import {
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { runCli } from '../src/cli'
 import { runColumn } from '../src/column'
 import { runGrep } from '../src/grep'
-import { NATIVE_VERBS } from '../src/native'
 import {
   busyMarkerFor,
   cwdFile,
@@ -67,6 +67,15 @@ import {
   sendAtFile,
   sidFile,
 } from '../src/paths'
+import {
+  codexBorrowLockFile,
+  codexLastSeenFile,
+  codexMetaFile,
+  codexPidFile,
+  codexStartedAtFile,
+  codexTeammateDir,
+  codexThreadFile,
+} from '../src/engines/codex/persistence'
 import type { TmResult } from '../src/tm'
 import { runTmux } from '../src/tmux'
 
@@ -208,19 +217,27 @@ afterEach(() => {
   for (const file of tmpFiles.splice(0)) {
     if (existsSync(file)) rmSync(file, { force: true })
   }
+  resetCodexRegistry()
 })
 
-/** Run the native handler for the given args; the only runner the harness drives. */
-function runNative(verb: string, args: readonly string[], stdin?: string): Promise<TmResult> {
-  const handler = NATIVE_VERBS[verb]
-  if (!handler) throw new Error(`no native handler for ${verb}`)
-  return handler(args, stdin != null ? { stdin } : undefined, {
+/**
+ * Run a verb through the production CLI dispatcher with a fake environment.
+ *
+ * The harness drives `runCli` rather than the per-verb handler directly so
+ * the differential check covers the routing layer (`triggersHelp`, removed
+ * verbs, the engine/legacy dispatch fork) in addition to the verb body.
+ * This is the regression net the Phase 2a-2 body migration moves under:
+ * a verb that fans out to an Engine method must still produce the exact
+ * `TmResult` the previous direct-NATIVE_VERBS path produced, byte for byte.
+ */
+function runVerb(verb: string, args: readonly string[], stdin?: string): Promise<TmResult> {
+  return runCli([verb, ...args], {
     runTmux,
     runColumn,
     runGrep,
     dispatcherDir,
     projectsDir,
-  })
+  }, stdin)
 }
 
 /**
@@ -310,6 +327,46 @@ function sanitizeSnapshot(snap: FsSnapshot): FsSnapshot {
 function marker(path: string, content: string): void {
   writeFileSync(path, content)
   tmpFiles.push(path)
+}
+
+/** The per-suite codex registry root, isolated from the user's `/tmp`. */
+function codexRegistryRoot(): string {
+  const root = process.env.CLAUDEMUX_CODEX_REGISTRY_ROOT
+  if (root === undefined) throw new Error('CLAUDEMUX_CODEX_REGISTRY_ROOT is not set')
+  return root
+}
+
+/** Reset the fake Codex daemon registry between scenarios. */
+function resetCodexRegistry(): void {
+  const root = codexRegistryRoot()
+  rmSync(root, { recursive: true, force: true })
+  mkdirSync(root, { recursive: true })
+}
+
+/** Seed a fake Codex daemon row without starting an app-server. */
+function writeCodexDaemon(
+  name: string,
+  opts: { threadId?: string; lastSeenAgeSec?: number; borrowed?: boolean } = {},
+): void {
+  mkdirSync(codexTeammateDir(name), { recursive: true })
+  const nowSec = Math.floor(Date.now() / 1000)
+  writeFileSync(codexPidFile(name), '1\n')
+  writeFileSync(codexStartedAtFile(name), `${nowSec - 300}\n`)
+  if (opts.threadId !== undefined) writeFileSync(codexThreadFile(name), `${opts.threadId}\n`)
+  if (opts.lastSeenAgeSec !== undefined) {
+    writeFileSync(codexLastSeenFile(name), `${nowSec - opts.lastSeenAgeSec}\n`)
+  }
+  writeFileSync(
+    codexMetaFile(name),
+    `${JSON.stringify({
+      schema: 1,
+      name,
+      cwd: join(dispatcherDir, name),
+      displayName: null,
+      spawnedAt: nowSec - 300,
+    }, null, 2)}\n`,
+  )
+  if (opts.borrowed === true) writeFileSync(codexBorrowLockFile(name), '99999\n')
 }
 
 /** Set the session list the fake `tmux ls` returns. */
@@ -1023,6 +1080,23 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           return { args: [] }
         },
       },
+      {
+        name: 'a mixed Claude and Codex fleet → both engines render rich rows',
+        setup: () => {
+          const claudeRepo = uniqueName()
+          const claudeSid = uniqueName()
+          const codexName = `codex-${currentRng().slice(0, 8)}`
+          setSessions(`${sessionLine(claudeRepo)}\n`)
+          marker(sidFile(claudeRepo), `${claudeSid}\n`)
+          writeLastMarker(claudeSid, 'claude row stays rich\n')
+          writeCodexDaemon(codexName, {
+            threadId: 'abcdef12-3456-7890-abcd-ef1234567890',
+            lastSeenAgeSec: 42,
+            borrowed: true,
+          })
+          return { args: [] }
+        },
+      },
     ],
   },
   {
@@ -1637,10 +1711,6 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
         setup: () => ({ args: [uniqueName(), '--prompt'] }),
       },
       {
-        name: '--no-wait without --prompt → the validation error',
-        setup: () => ({ args: [uniqueName(), '--no-wait'] }),
-      },
-      {
         name: 'a bare --task with no value → tm exits 1 with no output',
         setup: () => ({ args: [uniqueName(), '--task'] }),
       },
@@ -1686,8 +1756,7 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
     verb: 'send',
     // The full round-trip (send + wait for Stop + print reply) needs a real
     // teammate and is exercised by the live-teammate integration suite. These
-    // scenarios pin every flag-validation path and the `--no-wait` happy path
-    // that fires against the fake tmux.
+    // scenarios pin every flag-validation path.
     scenarios: [
       {
         name: 'no arguments → the missing-repo error',
@@ -1714,17 +1783,6 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
         setup: () => {
           setSessions('')
           return { args: [uniqueName(), '--prompt', 'hi'] }
-        },
-      },
-      {
-        name: '--no-wait against a running fake teammate → the send-at marker is touched',
-        setup: () => {
-          const repo = uniqueName()
-          setSessions(`${sessionLine(repo)}\n`)
-          return {
-            args: [repo, '--no-wait', '--prompt', 'hi'],
-            snapshot: () => snapshotPaths([sendAtFile(repo)]),
-          }
         },
       },
     ],
@@ -1802,10 +1860,6 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
       {
         name: 'an unknown flag → the unknown-flag error',
         setup: () => ({ args: [uniqueName(), '--bogus'] }),
-      },
-      {
-        name: '--no-wait without --prompt → the validation error',
-        setup: () => ({ args: [uniqueName(), '--no-wait'] }),
       },
       {
         name: 'a bare --task with no value → tm exits 1 with no output',
@@ -1906,7 +1960,7 @@ for (const { verb, scenarios } of CONFORMANCE) {
         const { args, stdin, snapshot } = scenario.setup()
         if (snapshot === undefined) {
           // Read-only verb — just compare the result.
-          const result = sanitizeResult(await runNative(verb, args, stdin))
+          const result = sanitizeResult(await runVerb(verb, args, stdin))
           assertOrUpdate(goldenPath(verb, scenario.name), result)
           return
         }
@@ -1915,7 +1969,7 @@ for (const { verb, scenarios } of CONFORMANCE) {
         // (and `afterEach`'s `tmpFiles` cleanup, and the file-suite
         // `afterAll`'s `scratchDir` wipe) sees a clean slate.
         const before = snapshot()
-        const result = sanitizeResult(await runNative(verb, args, stdin))
+        const result = sanitizeResult(await runVerb(verb, args, stdin))
         const after = sanitizeSnapshot(snapshot())
         assertOrUpdate(goldenPath(verb, scenario.name), result)
         assertOrUpdate(fsGoldenPath(verb, scenario.name), after)

@@ -17,7 +17,7 @@ import { runCli } from '../src/cli'
 import type { ColumnRunner } from '../src/column'
 import type { GrepRunner } from '../src/grep'
 import { HELP_TEXTS, OVERVIEW_HELP, REMOVED_VERB_MESSAGES } from '../src/help'
-import type { NativeEnv } from '../src/native'
+import type { NativeEnv } from '../src/env'
 import {
   codexPidFile,
   codexStartedAtFile,
@@ -117,7 +117,7 @@ describe('tm <verb> --help pre-scan', () => {
   })
 
   test('flags before --help do not stop the pre-scan', async () => {
-    const result = await runCli(['send', '--no-wait', '--help'], fakeEnv())
+    const result = await runCli(['send', '--pane-quiet', '--help'], fakeEnv())
     expect(result).toEqual({ code: 0, stdout: HELP_TEXTS.send, stderr: '' })
   })
 
@@ -301,13 +301,13 @@ describe('engine-routed verbs (Phase 2a-1 fleet visibility)', () => {
   // 2b registers a CodexEngine. Routing `kill` through ClaudeEngine
   // prematurely would silently regress `tm kill codex-<n>` callers.
 
-  test('tm states returns code 0 on an empty fleet', async () => {
+  test('tm states returns code 0 with the empty-fleet pointer line', async () => {
     const result = await runCli(
       ['states'],
       fakeEnv({ runTmux: async () => ({ code: 0, stdout: '', stderr: '' }) }),
     )
     expect(result.code).toBe(0)
-    expect(result.stdout).toBe('')
+    expect(result.stdout).toBe('(no teammate sessions)\n')
   })
 
   test('tm status without a repo fails with a usage line', async () => {
