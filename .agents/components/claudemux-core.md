@@ -19,11 +19,14 @@ contracts they hold.
 > [`cli.ts`](/plugins/claudemux/core/src/cli.ts); help text lives in
 > [`help.ts`](/plugins/claudemux/core/src/help.ts). The user-installed
 > [`bin/tm`](/plugins/claudemux/bin/tm) is a small bash launcher that
-> `exec`s `node` against the esbuild bundle committed at
-> [`core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs); a dev launcher
-> at [`core/bin/tm`](/plugins/claudemux/core/bin/tm) runs the same code
-> through `tsx` so source edits need no rebuild. The conformance harness
-> compares native output to committed golden JSON files under
+> `exec`s `node` directly against
+> [`core/src/main.ts`](/plugins/claudemux/core/src/main.ts) under
+> `--experimental-transform-types`; there is no build step and no
+> `npm install`. The vendored `ws` runtime under
+> [`core/third_party/ws/`](/plugins/claudemux/core/third_party/ws/) is the
+> only runtime dependency, reached through the `#ws` subpath in the core
+> `package.json` `imports` map. The conformance harness compares native
+> output to committed golden JSON files under
 > [`core/test/goldens/`](/plugins/claudemux/core/test/goldens).
 >
 > [Decision multi-engine-tui-architecture](/.agents/decisions/multi-engine-tui-architecture.md)
@@ -86,7 +89,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 
 | Module | Role |
 |---|---|
-| `main.ts` | The process entrypoint — read `process.argv` / `process.stdin`, hand to `runCli`, write the result's streams to `process`, set `process.exitCode`. esbuild bundles this file for production; the dev launcher runs it through `tsx`. |
+| `main.ts` | The process entrypoint — read `process.argv` / `process.stdin`, hand to `runCli`, write the result's streams to `process`, set `process.exitCode`. The `bin/tm` launcher execs Node against this file under `--experimental-transform-types`. |
 | `cli.ts` | `runCli` and `productionEnv` — the per-invocation router (help pre-scan, `help <verb>` form, removed-verb migration messages, engine-routed dispatch for teammate-targeted verbs, dispatcher-only / diagnostic dispatch for `archive` / `poll` / `doctor` / `ask`, unknown-verb error) and the production backend wiring. |
 | `help.ts` | `HELP_TEXTS`, `OVERVIEW_HELP`, `REMOVED_VERB_MESSAGES` — the user-facing help strings, the single source of truth that `tm <verb> --help` and `tm help <verb>` print. |
 | `verbs.ts` | `TM_VERBS` — the catalog of the 18 `tm` verbs. |
@@ -167,23 +170,20 @@ exact behavior. Process-launch shell-outs go through `spawnCapture`
 ([`proc.ts`](/plugins/claudemux/core/src/proc.ts)), the one
 `node:child_process` primitive.
 
-## Two launchers
+## The launcher
 
-Two thin shell scripts reach the same TypeScript code through different
-runtimes:
-
-- **Production**: [`bin/tm`](/plugins/claudemux/bin/tm) at the plugin root
-  `exec`s `node` against the committed esbuild bundle
-  [`core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs). A marketplace
-  install of the plugin does not run `npm install`, so the bundle is
-  committed to the repo and the launcher needs only `node` on `PATH`. CI
-  rebuilds the bundle from current source and asserts
-  `git diff --exit-code dist/` so a feature commit cannot leave a stale
-  bundle.
-- **Development**: [`core/bin/tm`](/plugins/claudemux/core/bin/tm) `exec`s
-  `tsx` against `core/src/main.ts` — source edits take effect immediately
-  with no rebuild step. The live-teammate integration suite points
-  `CLAUDEMUX_TM` here to drive the native verbs against a real teammate.
+[`plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm) is a thin bash
+launcher that `exec`s `node --experimental-transform-types --no-warnings`
+directly against [`core/src/main.ts`](/plugins/claudemux/core/src/main.ts),
+with [`core/resolver-register.mjs`](/plugins/claudemux/core/resolver-register.mjs)
+mounting a small ESM resolve hook so the type-stripper accepts the tree's
+extension-less and `.js` import specifiers. There is no build step and no
+`node_modules/` lookup; the one runtime npm dependency, `ws`, is vendored
+under [`core/third_party/ws/`](/plugins/claudemux/core/third_party/ws/)
+and reached through the `#ws` subpath in the core `package.json` `imports`
+map. Source edits take effect on the next `tm` invocation. See
+[zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md)
+for the alternatives and the reasoning behind this shape.
 
 ## Native verbs and the conformance harness
 
@@ -253,14 +253,15 @@ and its files are named `*.itest.ts`, never discovered by `npm test` or CI.
 framework: a temp-dispatcher fixture, a `tm` runner, the `~/.claude.json`
 directory-trust seeding a teammate needs to boot past the workspace-trust
 dialog, and a precondition probe that *skips* the suite — rather than failing
-it — when no live teammate can run. Every `tm` call resolves through
-`resolveTmBinary` / `CLAUDEMUX_TM`, so pointing that override at
-[`core/bin/tm`](/plugins/claudemux/core/bin/tm) re-aims the suite at the
-native CLI:
+it — when no live teammate can run. Every `tm` call resolves through `resolveTmBinary` / `CLAUDEMUX_TM`. Default
+resolution finds the user-facing launcher at
+[`plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm); set `CLAUDEMUX_TM`
+to point at any other launcher (a checked-out fork, a wrapper for
+profiling) without touching the suite:
 
 ```bash
 cd plugins/claudemux/core
-CLAUDEMUX_TM=$(pwd)/bin/tm npx vitest run --config vitest.integration.config.ts
+npx vitest run --config vitest.integration.config.ts
 ```
 
 Why trust is seeded by a targeted write rather than an isolated config dir

@@ -2,19 +2,20 @@
 # tm — the dispatcher's CLI: tmux teammate manager, plus task-ledger and
 # context-usage helpers for dispatcher bookkeeping.
 #
-# This is a thin Node launcher. On the 1.0 (`next`) line the orchestrator is
-# a TypeScript codebase under `../core/`, bundled at release time with
-# esbuild into `../core/dist/cli.mjs` (a single self-contained ES module
-# with no runtime npm dependencies). This launcher just locates that bundle
-# and execs Node against it; help text, verb dispatch, and tmux/state
-# orchestration all live in the bundle.
+# This launcher runs the TypeScript orchestration core (`../core/src/`)
+# directly through Node 22's experimental type-transform pipeline. There is
+# no build step and no `npm install`: the only runtime npm dependency, `ws`,
+# is vendored under `../core/third_party/ws/` and consumed via the `#ws`
+# subpath in `../core/package.json`'s `imports` map. A small ESM resolve
+# hook (`../core/resolver-register.mjs`) lets the type-stripper accept the
+# tree's extension-less and `.js` import specifiers (the codex-protocol
+# bindings are generator output we do not rewrite).
 #
-# Production install path: a marketplace install of the claudemux plugin
-# does *not* run `npm install`, so the bundle is committed to the repo and
-# the launcher needs only `node` on PATH. `npm run build` in
-# `plugins/claudemux/core/` re-emits the bundle from current source; CI
-# rebuilds and asserts `git diff --exit-code dist/` so a stale bundle
-# never lands.
+# Requirements: Node 22.7 or newer (`--experimental-transform-types` ships
+# in 22.7, and the vendored `ws` consumes its CJS lib files via the upstream
+# ESM `wrapper.mjs`, which has been supported well before that). The
+# `--no-warnings` flag suppresses the per-launch `ExperimentalWarning` Node
+# emits for the type-transform flag.
 
 set -eu
 
@@ -22,7 +23,7 @@ set -eu
 # so we loop manually — necessary when a user symlinks this launcher into
 # their PATH (`ln -s .../plugins/claudemux/bin/tm ~/.local/bin/tm`): a plain
 # `dirname "$0"` resolves to the symlink's directory, not the real script's,
-# and the relative `../core/dist/cli.mjs` lookup misses.
+# and the relative `../core/...` lookups miss.
 SCRIPT="$0"
 while [[ -L "$SCRIPT" ]]; do
     LINK_DIR="$(cd "$(dirname "$SCRIPT")" && pwd -P)"
@@ -34,16 +35,42 @@ while [[ -L "$SCRIPT" ]]; do
     fi
 done
 HERE="$(cd "$(dirname "$SCRIPT")" && pwd -P)"
-BUNDLE="$HERE/../core/dist/cli.mjs"
+CORE="$HERE/../core"
+ENTRY="$CORE/src/main.ts"
+REGISTER="$CORE/resolver-register.mjs"
 
 if ! command -v node >/dev/null 2>&1; then
-    echo "tm: node not found on PATH. Install Node 22+ (https://nodejs.org/) and try again." >&2
+    echo "tm: node not found on PATH. Install Node 22.7+ (https://nodejs.org/) and try again." >&2
     exit 1
 fi
 
-if [[ ! -f "$BUNDLE" ]]; then
-    echo "tm: bundle missing at $BUNDLE. Run 'npm run build' in plugins/claudemux/core/ (or reinstall the plugin)." >&2
+# Reject older Node versions with an actionable message — otherwise the user
+# hits an opaque "invalid option: --experimental-transform-types" from a
+# Node that does not know the flag. The vendored `#ws` path goes through
+# the upstream `wrapper.mjs`, which ESM-imports the CJS lib files; that
+# direction has been supported since well before 22.7, so this guard's
+# only constraint is the transform-types flag itself (22.7+).
+NODE_VERSION="$(node -p 'process.versions.node' 2>/dev/null || echo 0.0.0)"
+NODE_MAJOR="${NODE_VERSION%%.*}"
+NODE_REST="${NODE_VERSION#*.}"
+NODE_MINOR="${NODE_REST%%.*}"
+if [[ "$NODE_MAJOR" -lt 22 ]] || { [[ "$NODE_MAJOR" -eq 22 ]] && [[ "$NODE_MINOR" -lt 7 ]]; }; then
+    echo "tm: requires Node 22.7 or newer (found v$NODE_VERSION). Upgrade Node and try again." >&2
     exit 1
 fi
 
-exec node "$BUNDLE" "$@"
+if [[ ! -f "$ENTRY" ]]; then
+    echo "tm: orchestration core missing at $ENTRY — expected the plugin's core/ tree alongside this launcher." >&2
+    exit 1
+fi
+
+if [[ ! -f "$REGISTER" ]]; then
+    echo "tm: resolver hook missing at $REGISTER — expected alongside the orchestration core." >&2
+    exit 1
+fi
+
+exec node \
+    --import "$REGISTER" \
+    --experimental-transform-types \
+    --no-warnings \
+    "$ENTRY" "$@"

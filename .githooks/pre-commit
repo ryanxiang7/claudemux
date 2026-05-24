@@ -48,7 +48,8 @@ feature_class_globs() {
   case "$1" in
     claudemux)
       printf '%s\n' 'bin/*' 'hooks/*' 'scripts/*' 'templates/*' 'skills/*/SKILL.md' \
-        'core/src/*' 'core/package.json' ;;
+        'core/src/*' 'core/package.json' \
+        'core/resolver.mjs' 'core/resolver-register.mjs' 'core/third_party/*' ;;
     feishu-channel)
       printf '%s\n' 'src/*' '.mcp.json' 'package.json' 'skills/*/SKILL.md' ;;
     *) ;;  # Unknown plugin: no declared set — reported below, never blocked on.

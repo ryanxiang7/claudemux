@@ -129,6 +129,7 @@ weekly pass.
 | Tool | Why |
 |---|---|
 | Claude Code CLI | The plugin attaches to it. |
+| Node 22.7+ | The `tm` CLI runs the orchestration core (TypeScript) through Node's experimental type-transform pipeline directly from source — no `npm install`, no build step. 22.7 is the version that introduced `--experimental-transform-types`. |
 | `tmux` | Teammates live in tmux sessions. |
 | `jq` | The Stop hook parses harness JSON. |
 | `bash` | Plugin scripts use Bash features. |

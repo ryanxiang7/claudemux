@@ -35,7 +35,7 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
-import { WebSocketServer } from 'ws'
+import { WebSocketServer } from '#ws'
 
 const argv = process.argv.slice(2)
 if (argv[0] !== 'app-server') {

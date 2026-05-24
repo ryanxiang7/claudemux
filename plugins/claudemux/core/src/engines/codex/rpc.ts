@@ -23,7 +23,7 @@
  * connection down.
  */
 
-import WebSocket, { type RawData } from 'ws'
+import WebSocket, { type RawData } from '#ws'
 
 import type {
   ClientRequest,

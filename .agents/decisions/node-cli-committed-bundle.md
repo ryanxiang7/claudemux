@@ -1,8 +1,8 @@
 # `tm` ships as a committed esbuild bundle + thin Node launcher
 
-- **Status:** Accepted
+- **Status:** Superseded by [zero-install-type-stripping](./zero-install-type-stripping.md)
 - **Date:** 2026-05-23
-- **Affects:** the **`next`** line's production install path — [`plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm), [`plugins/claudemux/core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs), the `claudemux-core` CI job. Made when stage 3c retired the bash `bin/tm` ([roadmap](/.agents/domains/node-cli-orchestrator.md) §8).
+- **Affects:** the **`next`** line's production install path — [`plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm), `plugins/claudemux/core/dist/cli.mjs`, the `claudemux-core` CI job. Made when stage 3c retired the bash `bin/tm` ([roadmap](/.agents/domains/node-cli-orchestrator.md) §8).
 
 ## Context
 
@@ -12,7 +12,7 @@ install is `git clone` of `plugins/<plugin>/` — there is **no `npm install`
 step**, so anything the launcher needs at runtime has to be present in the
 repo already. Three shapes were on the table:
 
-- **(A) Vendor `tsx`** — the dev launcher [`core/bin/tm`](/plugins/claudemux/core/bin/tm) already
+- **(A) Vendor `tsx`** — the dev launcher `core/bin/tm` already
   `exec`s `tsx` against `src/main.ts`. Make `/claudemux:setup` (or a postinstall
   hook) run `npm install --omit=dev` inside `core/` so production users get the
   same path. **Rejected:** requires a setup-time `npm install`, a network
@@ -32,10 +32,10 @@ repo already. Three shapes were on the table:
 
 - [`plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm) — ~20 lines of
   bash that checks `node` is on `PATH`, locates
-  [`core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs), and `exec`s
+  `core/dist/cli.mjs`, and `exec`s
   `node` against it with the forwarded argument vector. No `set -o pipefail`,
   no logic; the bundle owns every decision.
-- [`core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs) — an esbuild
+- `core/dist/cli.mjs` — an esbuild
   bundle of `src/main.ts`, produced by
   `npm run build` (`esbuild ... --bundle --platform=node --target=node22
   --format=esm --banner:js="#!/usr/bin/env node"`). One self-contained file,
@@ -48,7 +48,7 @@ CI job rebuilds it from current source and runs `git diff --exit-code dist/`
 build` fails CI.
 
 For development the **dev launcher** at
-[`core/bin/tm`](/plugins/claudemux/core/bin/tm) keeps `exec`ing `tsx` against
+`core/bin/tm` keeps `exec`ing `tsx` against
 `src/main.ts`, so source edits take effect with no rebuild. The
 live-teammate integration suite points `CLAUDEMUX_TM` at it.
 

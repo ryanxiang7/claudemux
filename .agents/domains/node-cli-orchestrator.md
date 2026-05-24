@@ -215,14 +215,19 @@ Stage 3 landed in three sub-stages:
   [decision live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md).
   The harness drives a real teammate through `tm` so the verb migration in
   3b proceeded under a working regression net rather than ahead of one.
-- **3b:** the six hot-path verbs became native TypeScript and the Node CLI
-  gained a dev launcher at
-  [`core/bin/tm`](/plugins/claudemux/core/bin/tm) so the live suite could be
-  re-aimed at native via `CLAUDEMUX_TM`. The Bash `bin/tm` was unchanged.
-- **3c:** the Bash `bin/tm` was retired. The PATH entry is now a small bash
-  launcher that `exec`s `node` against the committed esbuild bundle at
-  [`core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs); the
-  conformance harness's bash oracle is replaced by per-scenario golden
+- **3b:** the six hot-path verbs became native TypeScript. A short-lived dev
+  launcher under `core/` ran `src/main.ts` through `tsx` so the live suite
+  could be re-aimed at native via `CLAUDEMUX_TM` while the Bash `bin/tm`
+  stayed unchanged.
+- **3c:** the Bash `bin/tm` was retired. The PATH entry became a small bash
+  launcher running Node against the TypeScript core — first against a
+  committed esbuild bundle ([node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md)),
+  then, after the build/install gap surfaced for `git pull`-driven users,
+  against the TypeScript sources directly through
+  `--experimental-transform-types` with the vendored `ws` runtime under
+  [`core/third_party/`](/plugins/claudemux/core/third_party/) — see
+  [zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md).
+  The conformance harness's bash oracle is replaced by per-scenario golden
   JSON files under [`core/test/goldens/`](/plugins/claudemux/core/test/goldens),
   regenerated with `UPDATE_GOLDENS=1`.
 

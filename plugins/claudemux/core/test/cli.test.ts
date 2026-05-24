@@ -1365,13 +1365,10 @@ describe('doctor — sections fire top-down, never raising', () => {
     expect(existsSync(codexTeammateDir(name))).toBe(false)
   })
 
-  test('the reported tm executable path is the production launcher, not the dev wrapper', async () => {
-    // Doctor's job is to tell the user which `tm` actually runs — if it
-    // reports the dev `tsx`-based launcher when the production node-bundle
-    // launcher is what's on PATH, a confused user follows a path that won't
-    // start (no `tsx` outside the dev tree). Pin that the path ends at the
-    // production launcher under `<plugin-root>/bin/tm`, never the dev one
-    // at `core/bin/tm`.
+  test('the reported tm executable path is the production launcher', async () => {
+    // Doctor's job is to tell the user which `tm` actually runs. Pin that
+    // the reported path is the user-facing launcher at
+    // `<plugin-root>/bin/tm`, never anything beneath `core/`.
     const result = await runCli(['doctor'], fakeEnv())
     expect(result.code).toBe(0)
     expect(result.stdout).toMatch(/path:\s+.*\/plugins\/claudemux\/bin\/tm$/m)

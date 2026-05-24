@@ -396,8 +396,6 @@ export class ClaudeEngine implements Engine {
   }
 
   async doctor(_ctx: EngineContext): Promise<DoctorSection> {
-    // Path math must run from a module that sits at the same depth as
-    // the bundled `core/dist/cli.mjs`; `plugin-root.ts` is that module.
     const result = await claudeDoctor([], this.env, {
       tmWrapper: tmWrapperPath(),
       pluginJson: pluginJsonPath(),

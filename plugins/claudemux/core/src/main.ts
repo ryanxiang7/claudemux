@@ -3,9 +3,9 @@
  *
  * Kept separate from [`cli.ts`](./cli.ts) so the library (`runCli`,
  * `productionEnv`) imports cleanly into tests and harnesses without a side
- * effect at module-load time. esbuild bundles *this* file for production
- * (`dist/cli.cjs`); the dev launcher `core/bin/tm` runs this file through
- * `tsx` with no rebuild step.
+ * effect at module-load time. The `bin/tm` launcher execs Node against this
+ * file under `--experimental-transform-types`, so there is no build step
+ * between source and runtime.
  */
 
 import { productionEnv, runCli, triggersHelp } from './cli'

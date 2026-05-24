@@ -58,8 +58,8 @@ jobs:
         run: |
           shellcheck \
             plugins/claudemux/bin/tm \
-            plugins/claudemux/core/bin/tm \
             plugins/claudemux/core/test/fixtures/fake-tmux-bin/tmux \
+            plugins/claudemux/core/scripts/*.sh \
             plugins/claudemux/hooks/*.sh \
             plugins/claudemux/scripts/*.sh \
             bin/changeset \
@@ -128,6 +128,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Cover the declared minimum (22.7.0 — see decision 0025) plus
+        # the floating Node-22 latest. The minimum slot catches an API
+        # that only landed in a later 22.x; the latest slot catches
+        # forward-looking regressions against the toolchain users will
+        # actually upgrade to.
+        node-version: ['22.7.0', '22']
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -138,7 +144,7 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
 
       # Native `tm states` and `tm history` pipe through the real `column`
       # binary, and `tm ctx` / `tm history` parse jsonl transcripts as JSON.
@@ -148,7 +154,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y jq bsdextrautils
 
-      - name: Install dependencies
+      # The runtime has no npm dependencies (`ws` is vendored under
+      # `third_party/ws/`); `npm ci` here only installs dev tooling
+      # (typescript, vitest, @types/*) so typecheck and the unit suite can
+      # run. The launcher itself never reads `node_modules/`.
+      - name: Install dev dependencies
         run: npm ci
 
       - name: Versions
@@ -180,17 +190,19 @@ jobs:
           codex app-server generate-ts --experimental --out src/codex-protocol/
           git diff --exit-code -- src/codex-protocol/
 
-      - name: Build bundle
-        # Rebuild `dist/cli.mjs` from current source. The bundle is the
-        # production launcher's payload (`plugins/claudemux/bin/tm` execs
-        # node against it) and is committed to the repo so a marketplace
-        # install needs no `npm install` step. The next step asserts the
-        # committed bundle matches the freshly-rebuilt one — a feature
-        # commit with no matching `dist/` change is the bug.
-        run: npm run build
-
-      - name: dist not stale
-        run: git diff --exit-code -- dist/
-
       - name: Unit tests
         run: npm test
+
+      # Smoke-test the user-facing launcher itself: it must boot through
+      # Node's type-transform pipeline against the vendored sources without
+      # any `node_modules/ws` present. We hide node_modules during the run
+      # so a regression that quietly resolves `ws` instead of `#ws` is
+      # caught here rather than at install time on a real user's machine.
+      - name: tm launcher boots without runtime deps
+        run: |
+          mv node_modules .node_modules_hidden
+          if ! ../bin/tm --help >/dev/null; then
+            mv .node_modules_hidden node_modules
+            exit 1
+          fi
+          mv .node_modules_hidden node_modules

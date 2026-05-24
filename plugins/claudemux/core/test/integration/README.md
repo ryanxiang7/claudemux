@@ -87,9 +87,10 @@ npx vitest run --config vitest.integration.config.ts test/integration/codex.ites
 CLAUDEMUX_CODEX_SPEND_TOKENS=1 npx vitest run --config vitest.integration.config.ts test/integration/codex.itest.ts
 ```
 
-## Re-aiming the suite at the native verbs
+## Pointing the suite at a custom launcher
 
 Every `tm` call resolves through `resolveTmBinary` (`src/tm.ts`), which honors
-the `CLAUDEMUX_TM` environment override. The suite runs against the Bash
-`bin/tm` today; once the hot-path verbs are migrated to native code, pointing
-`CLAUDEMUX_TM` at the native CLI re-aims this whole suite at it unchanged.
+the `CLAUDEMUX_TM` environment override. Default resolution points at the
+user-facing launcher at `plugins/claudemux/bin/tm`; set `CLAUDEMUX_TM` to
+any other launcher (a checked-out fork, a wrapper for profiling) to re-aim
+the whole suite without touching the harness.

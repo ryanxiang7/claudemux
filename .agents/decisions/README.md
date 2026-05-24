@@ -32,11 +32,12 @@ never collide on a sequence number.
 | [live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md) | Live-teammate integration tests seed directory trust by a targeted `~/.claude.json` write | Accepted |
 | [mcp-native-orchestration-core](/.agents/decisions/mcp-native-orchestration-core.md) | The `next` line replaces `tm` with an MCP-native orchestration core hosting multiple agent families | Superseded by [node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) |
 | [multi-engine-tui-architecture](/.agents/decisions/multi-engine-tui-architecture.md) | The Node core is reshaped around an `Engine` interface, a single per-teammate JSON record, and an `engines/<kind>/` layout so a third TUI slots in without forking the verb layer | Accepted |
-| [node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md) | `tm` ships as a committed esbuild bundle + thin Node launcher | Accepted |
+| [node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md) | `tm` ships as a committed esbuild bundle + thin Node launcher | Superseded by [zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md) |
 | [node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) | The 1.0 line retires the MCP-native core for a pure Node `tm` CLI | Accepted |
 | [research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md) | Every research hazard reaches a recorded disposition before it leaves the research layer | Accepted |
 | [teammates-launch-without-askuserquestion](/.agents/decisions/teammates-launch-without-askuserquestion.md) | Teammates launch with the `AskUserQuestion` tool disabled | Accepted |
 | [tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md) | `tm` was hardened with CI, bats tests, lint, and shared path/encoding helpers | Accepted |
+| [zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md) | `tm` runs TypeScript sources directly under Node `--experimental-transform-types`; `ws` is vendored under `core/third_party/` so there is no `npm install` and no build step | Accepted |
 
 ## When to add a record
 

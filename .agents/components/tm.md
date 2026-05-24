@@ -9,19 +9,23 @@ a Claude Code session.
 
 On the `next` line `tm` is a small bash launcher at
 [`/plugins/claudemux/bin/tm`](/plugins/claudemux/bin/tm) that `exec`s `node`
-against a committed esbuild bundle at
-[`/plugins/claudemux/core/dist/cli.mjs`](/plugins/claudemux/core/dist/cli.mjs).
-The bundle is the verb dispatch and verb implementations in TypeScript; the
-launcher does only what `exec` itself cannot — locate the bundle, check `node`
-is on `PATH`, and forward the argument vector.
+against [`/plugins/claudemux/core/src/main.ts`](/plugins/claudemux/core/src/main.ts)
+through `--experimental-transform-types`, with a tiny resolve hook
+([`core/resolver-register.mjs`](/plugins/claudemux/core/resolver-register.mjs)
++ [`core/resolver.mjs`](/plugins/claudemux/core/resolver.mjs)) so the
+type-stripper accepts the tree's extension-less and `.js` import
+specifiers. There is no build step and no `node_modules/` lookup — the one
+runtime npm dependency, `ws`, is vendored under
+[`core/third_party/ws/`](/plugins/claudemux/core/third_party/ws/) and
+consumed via the `#ws` subpath in the core `package.json` `imports` map.
 
 The TypeScript source lives under
 [`/plugins/claudemux/core/src/`](/plugins/claudemux/core/src); see
 [components/claudemux-core.md](/.agents/components/claudemux-core.md) for the
-module layout. The bundle is committed because a marketplace plugin install
-does not run `npm install`, so the launcher must be able to start with no
-runtime npm dependencies; CI rebuilds the bundle from current source and
-asserts `git diff --exit-code dist/` to keep it honest.
+module layout. The full rationale (including which alternatives lost) is in
+[zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md),
+which supersedes [node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md)'s
+committed-bundle shape.
 
 The historical Bash `bin/tm` was retired in stage 3c — see
 [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) §8.

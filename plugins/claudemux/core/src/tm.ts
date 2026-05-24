@@ -13,8 +13,7 @@
  *    CLI front end and the conformance harness see the same contract.
  *  - `resolveTmBinary` — used by the live-teammate integration harness to
  *    locate the PATH entry it drives. It honors `CLAUDEMUX_TM`, so the same
- *    harness can be re-aimed at a dev launcher (`core/bin/tm`) or any other
- *    `tm` binary without code change.
+ *    harness can be re-aimed at any custom `tm` binary without code change.
  */
 
 import { dirname, join } from 'node:path'
@@ -38,9 +37,8 @@ export interface TmRunOptions {
 
 /**
  * Resolve the `tm` executable. `CLAUDEMUX_TM` overrides it (the live-teammate
- * suite points it at `core/bin/tm` to drive native verbs through the dev
- * launcher); otherwise it is the `bin/tm` shipped alongside this core in the
- * claudemux plugin.
+ * suite points it at any custom launcher this way); otherwise it is the
+ * `bin/tm` shipped alongside this core in the claudemux plugin.
  */
 export function resolveTmBinary(): string {
   const override = process.env.CLAUDEMUX_TM

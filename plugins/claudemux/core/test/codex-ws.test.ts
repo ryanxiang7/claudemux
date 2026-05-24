@@ -15,8 +15,8 @@
 import type { AddressInfo } from 'node:net'
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { WebSocketServer } from 'ws'
-import type { WebSocket as WsServerSocket } from 'ws'
+import { WebSocketServer } from '#ws'
+import type { WebSocket as WsServerSocket } from '#ws'
 
 import { CodexWsClient } from '../src/engines/codex/rpc'
 import type { InitializeResponse } from '../src/codex-protocol/InitializeResponse'
