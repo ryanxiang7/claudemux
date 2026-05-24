@@ -46,7 +46,7 @@ When you spawn delegated repo work (`tm spawn`, Agent teammate, or `claude -p`),
 | `repo` | The repo's absolute path (a sibling subdirectory under the dispatcher dir) |
 | `branch` | `git -C <repo> branch --show-current` at spawn time |
 | `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for `claude -p` |
-| `sid` | The teammate's claude session id. For tmux teammates: `cat /tmp/teammate-<repo>.sid`. For Agent Teams: not applicable. This is the field `tm resume <repo> <sid>` consumes when you come back to the task in a future dispatcher session — **record it at spawn time, not after the teammate has died**. |
+| `sid` | The teammate's Claude session id, or the Codex thread id when the teammate runs on Codex. For Claude tmux teammates: `cat /tmp/teammate-<repo>.sid`. For live Codex teammates: `cat /tmp/teammate-codex/<repo>/thread`. For Agent Teams: not applicable. This is the id `tm resume <repo> <id>` consumes when you come back to the task in a future dispatcher session — **record it while the teammate is live, not after it has died**. |
 | `intent` | One short line — what the user actually asked for |
 | `artifacts` | URLs to any Dev Task / MR / Feishu doc as they appear (start empty, fill later) |
 | `created` | Timestamp at spawn |

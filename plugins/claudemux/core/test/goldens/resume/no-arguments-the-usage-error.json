@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt \"...\"]  (Claude sid may be omitted to auto-pick; Codex requires an explicit thread id)\n"
+  "stderr": "tm: usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt \"...\"]  (id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)\n"
 }

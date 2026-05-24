@@ -350,6 +350,70 @@ describe('CodexEngine — core lifecycle', () => {
     expect(readDaemonState(name)?.threadId).toBe(threadId)
   })
 
+  test('resume without a thread id lists the latest codex thread for the cwd', async () => {
+    const name = nameUnder()
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789ac6'
+    const rpcLog = join(registryDir, 'resume-latest-rpc.log')
+    spawned.push(name)
+
+    const resumed = await engine.resume(
+      {
+        name,
+        cwd,
+        checkpoint: null,
+        prompt: null,
+        displayName: 'latest codex',
+      },
+      ctxWithEnv({
+        ...process.env,
+        CODEX_FAKE_RPC_LOG: rpcLog,
+        CODEX_FAKE_THREAD_LIST_ID: threadId,
+      }),
+    )
+
+    expect(resumed).toMatchObject({
+      kind: 'resumed',
+      checkpoint: threadId,
+      tmResult: {
+        code: 0,
+        stdout: `resumed: ${threadId}\n`,
+      },
+    })
+    expect(readBaseRecord(name)).toMatchObject({
+      name,
+      engine: 'codex',
+      cwd,
+      displayName: 'latest codex',
+    })
+    expect(readDaemonState(name)?.threadId).toBe(threadId)
+    const methods = readFileSync(rpcLog, 'utf8').trim().split('\n')
+    expect(methods).toContain('thread/list')
+    expect(methods).toContain('thread/resume')
+    expect(methods.indexOf('thread/list')).toBeLessThan(methods.indexOf('thread/resume'))
+  })
+
+  test('resume without a thread id reports not-found when codex has no cwd history', async () => {
+    const name = nameUnder()
+
+    const resumed = await engine.resume(
+      {
+        name,
+        cwd,
+        checkpoint: null,
+        prompt: null,
+        displayName: null,
+      },
+      ctxWithEnv({ ...process.env, CODEX_FAKE_THREAD_LIST_EMPTY: '1' }),
+    )
+
+    expect(resumed).toEqual({
+      kind: 'not-found',
+      reason: `no codex threads found for cwd ${cwd}`,
+    })
+    expect(readBaseRecord(name)).toBeNull()
+    expect(readDaemonState(name)).toBeNull()
+  })
+
   test('resume rejects an already running codex teammate', async () => {
     const name = nameUnder()
     spawned.push(name)

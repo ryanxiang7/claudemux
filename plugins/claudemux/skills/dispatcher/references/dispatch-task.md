@@ -39,7 +39,7 @@ When you `tm spawn <repo>`:
 
 ## Resuming a prior task
 
-If the user wants to continue a task whose teammate has died (dispatcher restarted, `tm kill`, Mac reboot), don't `tm spawn` a fresh session — that loses the prior context. Use `tm resume <repo> <sid>` instead, sid pulled from the active ledger (or `tm history <repo>` if the ledger entry is gone). See `inspect-and-resume.md`.
+If the user wants to continue a task whose teammate has died (dispatcher restarted, `tm kill`, Mac reboot), don't `tm spawn` a fresh session — that loses the prior context. Use `tm resume <repo> <sid-or-thread-id>` instead, with the id pulled from the active ledger or `tm history <repo>`. See `inspect-and-resume.md`.
 
 ## Recording the task in the ledger
 

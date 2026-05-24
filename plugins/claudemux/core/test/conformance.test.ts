@@ -1922,20 +1922,9 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           return { args: [repo] }
         },
       },
-      {
-        name: 'no project dir, no sid → the "has anyone ever run claude" error',
-        setup: () => {
-          const repo = uniqueName()
-          makeRepoDir(repo)
-          return { args: [repo] }
-        },
-      },
-      // Skipped: "project dir exists but holds no jsonl, no sid" — bash
-      // dies silently (exit 1, empty stderr) because `set -e` aborts at the
-      // `ls "$dir"/*.jsonl` no-match before the next-line `die` fires. Native
-      // produces the intended `no .jsonl transcripts ...` line; that is a
-      // user-facing improvement, not bug-for-bug, so it does not pass the
-      // differential check and is not scenarioed here.
+      // No-sid resume now delegates history selection to `claude --continue`,
+      // so the path reaches tmux/Claude instead of pre-scanning project jsonl.
+      // The unit routing suite covers the launch command and sid-file timing.
       {
         name: 'explicit sid with no transcript at the target → the no-transcript error',
         setup: () => {

@@ -1,20 +1,17 @@
 /**
  * `tm resume` — relaunch a prior conversation. With no sid the verb
- * falls back to "newest jsonl by mtime" (a stderr warning prompts the
- * caller to pass an explicit sid from the dispatcher's task ledger).
+ * delegates session choice to the Claude CLI's native `--continue`.
  * With a sid it proves the transcript exists, then delegates to
  * `spawn --resume`.
  */
 
-import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { claudeSpawn } from './spawn'
+import { claudeContinue, claudeSpawn } from './spawn'
 import { isDirectory, isRegularFile } from './idle'
 import { UUID_RE } from './identifiers'
 import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
 import { die, sessionExists } from './tmux'
-import { fmtLocalDateTime } from './clock'
 import { tmuxSessionName } from './persistence'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
@@ -90,8 +87,8 @@ export async function claudeResume(args: readonly string[], env: ClaudeVerbEnv):
   if (repo === '') {
     return die(
       'usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]  ' +
-        '(sid from ledger preferred; auto-pick on omit; --task relabels the ' +
-        'resumed conversation)',
+        '(omit sid to delegate latest-session selection to Claude --continue; ' +
+        '--task relabels the resumed conversation)',
     )
   }
 
@@ -106,48 +103,17 @@ export async function claudeResume(args: readonly string[], env: ClaudeVerbEnv):
     )
   }
 
-  const projectDir = projectDirForRepo(repo, env)
-  let autoPickStderr = ''
-
   if (sid === '') {
-    if (!isDirectory(projectDir)) {
-      return die(
-        `no project dir at ${projectDir} — has anyone ever run claude inside ` +
-          `${path}? Try 'tm spawn ${repo}' first.`,
-      )
-    }
-    let names: string[] = []
-    try {
-      names = readdirSync(projectDir).filter((file) => file.endsWith('.jsonl'))
-    } catch {
-      names = []
-    }
-    if (names.length === 0) {
-      return die(`no .jsonl transcripts under ${projectDir} — try 'tm spawn ${repo}' to start fresh.`)
-    }
-    const stats = names.map((file) => {
-      let mtime = 0
-      try {
-        mtime = Math.floor(statSync(join(projectDir, file)).mtimeMs / 1000)
-      } catch {
-        mtime = 0
-      }
-      return { file, mtime }
-    })
-    stats.sort((a, b) => b.mtime - a.mtime || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
-    const latest = stats[0]!
-    sid = latest.file.replace(/\.jsonl$/, '')
-    autoPickStderr =
-      `tm resume: no sid given — auto-picked ${sid} (jsonl mtime ` +
-      `${fmtLocalDateTime(latest.mtime)}). Prefer passing the sid from your task ledger.\n`
-  } else {
-    const target = join(projectDir, `${sid}.jsonl`)
-    if (!isRegularFile(target)) {
-      return die(
-        `no transcript at ${target} — wrong repo for this sid, or sid does not ` +
-          `exist. Check 'ls ${projectDir}/'.`,
-      )
-    }
+    return claudeContinue(repo, { task, prompt, hasPrompt }, env)
+  }
+
+  const projectDir = projectDirForRepo(repo, env)
+  const target = join(projectDir, `${sid}.jsonl`)
+  if (!isRegularFile(target)) {
+    return die(
+      `no transcript at ${target} — wrong repo for this sid, or sid does not ` +
+        `exist. Check 'ls ${projectDir}/'.`,
+    )
   }
 
   if (!UUID_RE.test(sid)) return die(`sid is not a valid uuid: ${sid}`)
@@ -164,9 +130,5 @@ export async function claudeResume(args: readonly string[], env: ClaudeVerbEnv):
     spawnArgs.push('--prompt', prompt)
   }
   const result = await claudeSpawn(spawnArgs, env)
-  return {
-    code: result.code,
-    stdout: result.stdout,
-    stderr: autoPickStderr + result.stderr,
-  }
+  return result
 }

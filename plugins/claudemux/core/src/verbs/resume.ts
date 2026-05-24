@@ -19,6 +19,9 @@ export interface ResumeArgs {
 
 export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<TmResult> {
   const resolved = await ctx.router.resolve(args.name)
+  // After `tm kill`, a non-prefix Codex teammate has no base record left.
+  // This narrow explicit-thread lookup preserves `tm resume <name> <thread-id>`;
+  // no-id auto-pick lives inside CodexEngine and uses Codex's native thread/list RPC.
   const codexFromRollout =
     resolved === null &&
     args.checkpoint !== null &&

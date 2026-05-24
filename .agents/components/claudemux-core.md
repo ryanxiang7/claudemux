@@ -42,7 +42,7 @@ contracts they hold.
 > or their dedicated helper modules.
 >
 > Codex teammates are driven by `CodexEngine`. `tm spawn codex-<n>`,
-> `tm send codex-<n>`, `tm wait codex-<n>`, `tm resume codex-<n> <thread-id>`,
+> `tm send codex-<n>`, `tm wait codex-<n>`, `tm resume codex-<n> [<thread-id>]`,
 > `tm kill codex-<n>`, and Codex liveness verbs route through the generic verb layer and
 > [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts).
 > `tm status`, `tm ls`, and `tm states` combine daemon registry health,
@@ -53,10 +53,12 @@ contracts they hold.
 > append-only rollout JSONL files under `~/.codex/sessions/YYYY/MM/DD/`;
 > `tm history` filters them by recorded cwd and lists thread ids for
 > `tm resume`.
-> `tm resume <name> <thread-id>` starts a fresh per-teammate daemon, writes
-> the thread id back to `/tmp/teammate-codex/<name>/thread`, and calls
-> `thread/resume`; for killed non-prefix Codex names, `verbs/resume.ts` uses
-> the rollout filename as the durable routing hint.
+> `tm resume <name> [<thread-id>]` starts a fresh per-teammate daemon; with an
+> explicit thread id it calls `thread/resume`, and with no id it asks Codex
+> for the latest cwd-matching thread via `thread/list(limit=1,
+> sortKey=updated_at, cwd=<repo>)` before resuming it. For killed non-prefix
+> Codex names with an explicit thread id, `verbs/resume.ts` uses the rollout
+> filename as the durable routing hint.
 > `tm ask "<prompt>"` uses
 > [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts).
 > Daemon lifecycle lives in
@@ -88,7 +90,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `verbs/` | Verb-layer dispatch — `verbs/{ls,states,status,kill,spawn,send,wait,compact,resume,last,ctx,history,mem,reload}.ts` build engine requests, resolve teammate names through `identity/router.ts`, call engine methods, and format discriminated results through `verbs/format.ts`. `verbs/{ask,archive,poll}.ts` are local dispatcher / diagnostic helpers. |
 | `engines/engine.ts`, `engines/types.ts`, `engines/registry.ts`, `engines/teammate-record.ts` | The `Engine` interface, the shared request/result/value types (decision 0024 §"Engine interface" and §"Capabilities"), the invocation-scoped `EngineRegistry`, and the abstract `TeammateRecord` base whose subclasses live under `engines/<kind>/persistence.ts`. |
 | `engines/claude/` | The Claude engine. `claude-engine.ts` implements `Engine`; `persistence.ts` owns the `.cwd` / `.sid` / `.ready` / `.send-at` builders and the `tmuxSessionName` encoding for nested teammate names (decision 0024 §"Nested teammate names"). The verb bodies live in `engines/claude/<verb>.ts` and are reached through the verb layer. |
-| `engines/codex/` | The Codex engine. `engine.ts` implements `Engine`; `persistence.ts` owns the base record plus `/tmp/teammate-codex/<name>/` registry-directory builders; `rollout.ts` reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` for last replies, token usage, activity fallback, and killed-name resume routing; `history.ts` lists and expands rollout-backed thread ids for `tm history`. Codex-supported verbs use the app-server daemon; unsupported teammate verbs return structured `not-supported` results through the same Engine method surface. |
+| `engines/codex/` | The Codex engine. `engine.ts` implements `Engine`; `persistence.ts` owns the base record plus `/tmp/teammate-codex/<name>/` registry-directory builders; `rollout.ts` reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` for last replies, token usage, activity fallback, and killed-name explicit resume routing; `history.ts` lists and expands rollout-backed thread ids for `tm history`. Codex-supported verbs use the app-server daemon; unsupported teammate verbs return structured `not-supported` results through the same Engine method surface. |
 | `persistence/atomic-file.ts` | Atomic write primitives (`atomicWrite`, `reserveExclusive`, `readIfPresent`) — every teammate-record write goes through these so a concurrent verb never observes a torn file. |
 | `persistence/identity-store.ts` | The only file that writes / reads `/tmp/teammate-<name>.json` — decision 0024 §"TeammateRecord" enforcement. `reserve` is the `O_CREAT \| O_EXCL` spawn-time race winner; `list()` recursively scans `/tmp/teammate*` (including the Codex registry root, since `codex/foo`'s base record lives at `/tmp/teammate-codex/foo.json`) and relies on schema parse + path-segment reconstruction to keep daemon-private files out of the listing. Identity root is overridable via `CLAUDEMUX_IDENTITY_ROOT` for tests. |
 | `persistence/project-dir.ts` | `encodeProjectDir` — Claude Code's on-disk projects-dir encoding ([decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md) one-source-of-truth). |
@@ -101,7 +103,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `column.ts` | The `column` backend — `runColumn` pipes tab-separated rows through `column -t` for table-rendering verbs. |
 | `grep.ts` | The `grep` backend — `runGrep` matches input against a regex with `grep -qE` for the `poll` verb. |
 | `paths.ts` | Path builders for the shared Claude `/tmp` protocol files and `~/.claude/projects` paths — the path-builder discipline ([decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)) on the TypeScript side. |
-| [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts) | `CodexEngine implements Engine`: spawn/send/wait/list/status/kill/resume/last/ctx/history, with `resume` relaunching a daemon by thread id, `history` listing rollout-backed thread ids by cwd, `list` and `status` probing daemon health plus Codex thread status, and structured not-supported results for capabilities Codex does not expose. |
+| [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts) | `CodexEngine implements Engine`: spawn/send/wait/list/status/kill/resume/last/ctx/history, with `resume` relaunching a daemon by explicit thread id or by Codex `thread/list` latest-thread selection, `history` listing rollout-backed thread ids by cwd, `list` and `status` probing daemon health plus Codex thread status, and structured not-supported results for capabilities Codex does not expose. |
 | [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts) | Thin compatibility helpers around `CodexEngine` for Codex-specific callers and tests, plus `codexAsk` for the pool-borrow diagnostic path. The main teammate-targeted CLI dispatch goes through `verbs/<v>.ts` and the Engine registry. |
 | [`plugins/claudemux/core/src/engines/codex/supervisor.ts`](/plugins/claudemux/core/src/engines/codex/supervisor.ts) | Per-teammate daemon lifecycle — `spawnDaemon`, `daemonAlive`, `readDaemonState`, `listDaemons`, `reapDaemon`, and the per-call bookkeeping helpers. Owns spawn-detached, lock-based duplicate-spawn protection, the unix-socket readiness probe, and SIGTERM-then-SIGKILL reap. |
 | [`plugins/claudemux/core/src/engines/codex/rpc.ts`](/plugins/claudemux/core/src/engines/codex/rpc.ts) | The WebSocket JSON-RPC client. Routes incoming frames by envelope shape (`method+id+params` is a server-request, `method+params` is a notification, `id+result\|error` is a response), pinned by [`plugins/claudemux/core/test/codex-schema.test.ts`](/plugins/claudemux/core/test/codex-schema.test.ts). |

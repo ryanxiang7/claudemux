@@ -335,6 +335,46 @@ describe('native dispatch', () => {
     }
   })
 
+  test('claude resume without sid skips project-dir precheck, launches native --continue, and leaves sid hook-owned', async () => {
+    const repo = `resume-continue-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const repoDir = join(dispatcherDir, repo)
+    const oldSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    mkdirSync(repoDir, { recursive: true })
+    mkdirSync(dirname(sidFile(repo)), { recursive: true })
+    writeFileSync(sidFile(repo), `${oldSid}\n`)
+    const tmuxCalls: string[][] = []
+    const runTmux: TmuxRunner = async (args) => {
+      tmuxCalls.push([...args])
+      if (args[0] === 'has-session') return { code: 1, stdout: '', stderr: '' }
+      if (args[0] === 'new-session') return { code: 0, stdout: '%1\n', stderr: '' }
+      if (args[0] === 'send-keys') {
+        mkdirSync(dirname(readyFile(repo)), { recursive: true })
+        writeFileSync(readyFile(repo), '')
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+
+    try {
+      const result = await runCli(
+        ['resume', repo],
+        fakeEnv({ dispatcherDir, runTmux }),
+      )
+      expect(result.code).toBe(0)
+      expect(result.stderr).toContain('continued latest sid=pending')
+      const launch = tmuxCalls.find((args) => args[0] === 'send-keys')?.[3]
+      expect(launch).toContain('claude --continue')
+      expect(readFileSync(sidFile(repo), 'utf8')).toBe(`${oldSid}\n`)
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(cwdFile(repo), { force: true })
+      rmSync(sidFile(repo), { force: true })
+      rmSync(readyFile(repo), { force: true })
+      rmSync(sendAtFile(repo), { force: true })
+    }
+  })
+
   test.each([
     ['spawn parent segment', ['spawn', '../escape', '--engine', 'codex']],
     ['spawn dot segment', ['spawn', './bad', '--engine', 'codex']],
@@ -506,7 +546,7 @@ describe('native dispatch', () => {
     }
   })
 
-  test('resume routes an existing codex teammate through CodexEngine and requires a thread id', async () => {
+  test('resume routes an existing codex teammate through CodexEngine with null checkpoint', async () => {
     const name = `codex-dispatch-resume-${Date.now()}`
     writeBaseRecord(new CodexTeammateRecord({
       name,
@@ -515,15 +555,24 @@ describe('native dispatch', () => {
       displayName: null,
     }))
     const registry = new EngineRegistry()
-    registry.register(new CodexEngine())
+    const seen: Array<{ name: string; cwd: string | null; checkpoint: string | null }> = []
+    const fakeCodex = {
+      kind: 'codex',
+      resume: async (req: { name: string; cwd: string | null; checkpoint: string | null }) => {
+        seen.push({ name: req.name, cwd: req.cwd, checkpoint: req.checkpoint })
+        return { kind: 'resumed', checkpoint: '019e5f5f-2e57-7abc-8def-123456789ac7' }
+      },
+    } as unknown as Engine
+    registry.register(fakeCodex)
 
     try {
       const result = await runCli(['resume', name], fakeEnv({ engines: registry }))
       expect(result).toEqual({
-        code: 1,
-        stdout: '',
-        stderr: 'tm: resume: codex resume requires an explicit thread id\n',
+        code: 0,
+        stdout: 'resumed: 019e5f5f-2e57-7abc-8def-123456789ac7\n',
+        stderr: '',
       })
+      expect(seen).toEqual([{ name, cwd: realpathSync('/tmp'), checkpoint: null }])
     } finally {
       removeBaseRecord(name)
     }

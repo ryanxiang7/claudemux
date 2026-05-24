@@ -303,7 +303,7 @@ same file). The hook-write set stays exactly as today:
 | `/tmp/teammate-<name>.json` | `tm` (registry layer) | every verb that resolves by name | base TeammateRecord (D3) |
 | `/tmp/teammate-<name>.cwd` | `tm` at spawn (Claude engine) | SessionStart hook, Claude engine | ClaudeTeammateRecord extension |
 | `/tmp/teammate-<name>.send-at` | `tm` per send (Claude engine) | Claude engine (pane-quiet) | ClaudeTeammateRecord extension |
-| `/tmp/teammate-<name>.sid` | `tm` at spawn, SessionStart hook on `/clear` | Claude engine (every verb) | ClaudeTeammateRecord extension, hook-mutable — stays a separate plain-text file because the hook updates it on `/clear` without `tm` running |
+| `/tmp/teammate-<name>.sid` | `tm` at fresh / explicit-sid spawn, SessionStart hook on `/clear` and `claude --continue` | Claude engine (every verb) | ClaudeTeammateRecord extension, hook-mutable — stays a separate plain-text file because the hook updates it on `/clear` without `tm` running |
 | `/tmp/teammate-<name>.ready` | `tm` (`rm` at spawn) + SessionStart hook (`touch`) | `tm spawn` readiness probe | ClaudeTeammateRecord extension, hook-touch protocol — stays a separate file because `touch` is the protocol verb |
 | `/tmp/claude-idle/<sid>` | on-stop hook (`touch`) | `tm wait` (Claude engine) | hooks-managed, **left as-is** |
 | `/tmp/claude-idle/<sid>.busy` | on-busy hook (`touch`), on-stop hook (`rm`) | `tm states`, `tm ls` | hooks-managed, **left as-is** |
@@ -312,7 +312,7 @@ same file). The hook-write set stays exactly as today:
 | `/tmp/claudemux-sid-changes.log` | SessionStart hook (append) | post-hoc inspection | diagnostic, **left as-is** |
 | `/tmp/teammate-codex/<name>/pid` | Codex engine | Codex liveness | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/socket` | Codex daemon (`--listen unix://...`), Codex engine reads | Codex engine | CodexTeammateRecord extension |
-| `/tmp/teammate-codex/<name>/thread` | Codex engine after first `thread/start`, or `tm resume <name> <thread-id>` | Codex engine | CodexTeammateRecord extension |
+| `/tmp/teammate-codex/<name>/thread` | Codex engine after first `thread/start`, explicit `tm resume <name> <thread-id>`, or no-id `tm resume <name>` after Codex `thread/list` picks the latest cwd thread | Codex engine | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/started-at` | Codex engine at spawn | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/last-seen` | Codex engine per round-trip | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/meta.json` | Codex engine at spawn/resume | doctor, status | CodexTeammateRecord extension |
@@ -427,7 +427,9 @@ public CLI. None is removed by this reshape.
 `~/.claude/projects/<encoded>/` and lists transcript sid values. The
 Codex engine reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
 filters rollouts by their recorded cwd, and lists thread ids that can be
-passed to `tm resume <name> <thread-id>`. `tm mem` is rarely used today
+passed to `tm resume <name> <thread-id>`; no-id Codex resume uses the
+app-server's `thread/list` latest-thread selection instead of the history
+scanner. `tm mem` is rarely used today
 but keeps a stable surface — Claude reads project memory under
 `~/.claude/projects/<encoded>/memory/`; Codex returns `not-supported`.
 The verb formatter prints one explanatory line and exits 0 for unsupported

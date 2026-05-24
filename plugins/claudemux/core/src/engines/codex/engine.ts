@@ -45,6 +45,7 @@ import type {
 } from '../types'
 import type { ClientInfo, InitializeResponse } from '../../codex-protocol/index.js'
 import type { ThreadItem } from '../../codex-protocol/v2/ThreadItem.js'
+import type { ThreadListResponse } from '../../codex-protocol/v2/ThreadListResponse.js'
 import type { ThreadReadResponse } from '../../codex-protocol/v2/ThreadReadResponse.js'
 import type { ThreadResumeResponse } from '../../codex-protocol/v2/ThreadResumeResponse.js'
 import type { ThreadStartResponse } from '../../codex-protocol/v2/ThreadStartResponse.js'
@@ -198,6 +199,21 @@ function codexThreadIdFailure(threadId: string): string | null {
   return CODEX_THREAD_ID_RE.test(threadId)
     ? null
     : `codex thread id is not a valid uuid: ${threadId}`
+}
+
+async function latestCodexThreadIdForCwd(
+  client: CodexWsClient,
+  cwd: string,
+): Promise<string | null> {
+  const response = await client.request<'thread/list', ThreadListResponse>('thread/list', {
+    limit: 1,
+    sortKey: 'updated_at',
+    sortDirection: 'desc',
+    archived: false,
+    cwd,
+    useStateDbOnly: false,
+  })
+  return response.data[0]?.id ?? null
 }
 
 function codexSpawnHeader(name: string): string {
@@ -662,10 +678,8 @@ export class CodexEngine implements Engine {
   async resume(req: ResumeRequest, ctx: EngineContext): Promise<ResumeResult> {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) return { kind: 'failed', message: invalidName }
-    if (req.checkpoint === null) {
-      return { kind: 'failed', message: 'codex resume requires an explicit thread id' }
-    }
-    const invalidThreadId = codexThreadIdFailure(req.checkpoint)
+    let threadId = req.checkpoint
+    const invalidThreadId = threadId === null ? null : codexThreadIdFailure(threadId)
     if (invalidThreadId !== null) return { kind: 'failed', message: invalidThreadId }
 
     const existing = readBaseRecord(req.name)
@@ -717,10 +731,24 @@ export class CodexEngine implements Engine {
       })
 
       await this.healthCheck(req.name)
-      writeThreadId(req.name, req.checkpoint)
       client = await openInitializedCodexClient(req.name)
+      if (threadId === null) {
+        threadId = await latestCodexThreadIdForCwd(client, cwd)
+        if (threadId === null) {
+          client.close()
+          client = null
+          removeBaseRecord(req.name)
+          await reapDaemon(req.name)
+          return { kind: 'not-found', reason: `no codex threads found for cwd ${cwd}` }
+        }
+        const latestInvalidThreadId = codexThreadIdFailure(threadId)
+        if (latestInvalidThreadId !== null) {
+          throw new Error(`thread/list returned invalid thread id: ${threadId}`)
+        }
+      }
+      writeThreadId(req.name, threadId)
       await client.request<'thread/resume', ThreadResumeResponse>('thread/resume', {
-        threadId: req.checkpoint,
+        threadId,
         persistExtendedHistory: false,
       })
       touchLastSeen(req.name)
@@ -730,10 +758,10 @@ export class CodexEngine implements Engine {
       if (req.prompt === null) {
         return {
           kind: 'resumed',
-          checkpoint: req.checkpoint,
+          checkpoint: threadId,
           tmResult: {
             code: 0,
-            stdout: `resumed: ${req.checkpoint}\n`,
+            stdout: `resumed: ${threadId}\n`,
             stderr: codexResumeHeader(req.name),
           },
         }
@@ -744,7 +772,7 @@ export class CodexEngine implements Engine {
       ))
       return {
         kind: 'resumed',
-        checkpoint: req.checkpoint,
+        checkpoint: threadId,
         tmResult: {
           code: turn.code,
           stdout: turn.stdout,

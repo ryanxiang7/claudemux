@@ -3712,7 +3712,7 @@ var require_websocket_server = __commonJS({
 });
 
 // src/cli.ts
-import { realpathSync as realpathSync5, statSync as statSync16 } from "node:fs";
+import { realpathSync as realpathSync5, statSync as statSync15 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join13 } from "node:path";
 
@@ -3769,7 +3769,7 @@ USAGE  (most common first)
   tm spawn <repo> [--prompt "..."]       launch teammate; --prompt = atomic bootstrap
   tm wait <repo> [--fresh]               wait for next Stop; print reply
   tm compact <repo>                      /compact + verify, prints "compacted"
-  tm resume <repo> [<sid>]               resume a prior conversation
+  tm resume <repo> [<sid/thread-id>]     resume a prior conversation
   tm last <repo>                         reprint the last-turn reply
   tm kill <repo>                         kill the teammate's tmux session
   tm reload <repo>... | --all            fan out /reload-plugins
@@ -3921,19 +3921,19 @@ var HELP_TEXTS = {
         - PostCompact never fires within timeout. Compaction is
           hung or the Stop hook is misconfigured.
 `,
-  resume: `tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]
+  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]
 
       Resume a prior conversation. Claude teammates use a transcript
-      sid: PREFER passing <sid> from the dispatcher's task ledger
-      (active-dispatcher-tasks.md records the sid of each teammate it
-      spawned). Without sid, Claude picks the newest jsonl by mtime as
-      a one-off convenience (stderr warning). Validates the jsonl
-      exists in the project dir; UUID format enforced.
-      Codex teammates require an explicit thread id from their
-      /tmp/teammate-codex/<name>/thread file or rollout filename. The
-      verb starts a new app-server daemon, writes the thread id back to
-      the Codex registry, and calls thread/resume; it does not auto-pick
-      a Codex thread.
+      sid: passing <sid> validates that transcript and launches
+      'claude --resume <sid>'. Without sid, Claude's native
+      'claude --continue' chooses the latest session for the cwd; the
+      /tmp/teammate-<repo>.sid marker is written by the SessionStart
+      hook after the REPL starts.
+      Codex teammates use a thread id: passing <thread-id> calls
+      thread/resume directly. Without thread id, claudemux starts a new
+      app-server daemon, calls thread/list(limit=1, sortKey=updated_at,
+      cwd=<repo>) to ask Codex for the latest thread, writes that thread
+      id back to the Codex registry, and then calls thread/resume.
       Fails if a teammate session for <repo> already exists.
       --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
@@ -4103,7 +4103,7 @@ function resolveTmuxBinary() {
 var runTmux = (args, options) => spawnCapture([resolveTmuxBinary(), ...args], options);
 
 // src/engines/claude/claude-engine.ts
-import { existsSync as existsSync5, readFileSync as readFileSync11, rmSync as rmSync5, statSync as statSync12 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync11, rmSync as rmSync5, statSync as statSync11 } from "node:fs";
 
 // src/engines/claude/compact.ts
 import { existsSync } from "node:fs";
@@ -5829,7 +5829,6 @@ async function claudeReload(args, env) {
 }
 
 // src/engines/claude/resume.ts
-import { readdirSync as readdirSync4, statSync as statSync11 } from "node:fs";
 import { join as join10 } from "node:path";
 
 // src/engines/claude/spawn.ts
@@ -6089,7 +6088,27 @@ async function claudeSpawn(args, env) {
   }
   const parsed = parseSpawnArgs(args.slice(1));
   if ("error" in parsed) return parsed.error;
-  const { resumeSid, task, prompt, hasPrompt } = parsed;
+  return claudeLaunch({
+    repo,
+    resumeSid: parsed.resumeSid,
+    continueLatest: false,
+    task: parsed.task,
+    prompt: parsed.prompt,
+    hasPrompt: parsed.hasPrompt
+  }, env);
+}
+async function claudeContinue(repo, opts, env) {
+  return claudeLaunch({
+    repo,
+    resumeSid: "",
+    continueLatest: true,
+    task: opts.task,
+    prompt: opts.prompt,
+    hasPrompt: opts.hasPrompt
+  }, env);
+}
+async function claudeLaunch(req, env) {
+  const { repo, resumeSid, continueLatest, task, prompt, hasPrompt } = req;
   const path = join9(env.dispatcherDir, repo);
   if (!isDirectory(path)) return dieRepoNotFound("spawn", repo, path, env.dispatcherDir);
   const cwdPhys = realpathSync3(path);
@@ -6109,7 +6128,7 @@ async function claudeSpawn(args, env) {
       );
     }
     displayName = `${repo}-${slug}`;
-  } else if (resumeSid.length === 0) {
+  } else if (resumeSid.length === 0 && !continueLatest) {
     displayName = `${repo}-${randSuffix()}`;
   }
   const name = tmuxSessionName(repo);
@@ -6155,13 +6174,17 @@ async function claudeSpawn(args, env) {
     return die(`tmux new-session failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (paneId.length === 0) return die(`tmux new-session returned no session id for ${repo}`);
-  const sid = resumeSid.length > 0 ? resumeSid : newSid();
+  const sid = resumeSid.length > 0 ? resumeSid : continueLatest ? "" : newSid();
   const launchFlags = teammateLaunchFlags(mdExcludes);
   const nameArg = displayName.length > 0 ? ` -n ${shellSingleQuote2(displayName)}` : "";
-  const launchCmd = resumeSid.length > 0 ? `claude --resume ${sid} ${launchFlags}${nameArg}` : `claude --session-id ${sid} ${launchFlags}${nameArg}`;
+  const launchCmd = continueLatest ? `claude --continue ${launchFlags}${nameArg}` : resumeSid.length > 0 ? `claude --resume ${sid} ${launchFlags}${nameArg}` : `claude --session-id ${sid} ${launchFlags}${nameArg}`;
   await env.runTmux(["send-keys", "-t", paneId, launchCmd, "Enter"]);
   let stderr = "";
-  if (resumeSid.length > 0) {
+  if (continueLatest) {
+    const nameNote = displayName.length > 0 ? `, name=${displayName}` : "";
+    stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, continued latest sid=pending${nameNote})
+`;
+  } else if (resumeSid.length > 0) {
     const nameNote = displayName.length > 0 ? `, name=${displayName}` : "";
     stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, resumed sid=${sid}${nameNote})
 `;
@@ -6170,12 +6193,14 @@ async function claudeSpawn(args, env) {
     stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, sid=${sid}${nameNote})
 `;
   }
-  const sf = sidFile(repo);
-  mkdirSync4(dirname7(sf), { recursive: true });
-  writeFileSync4(sf, `${sid}
+  if (!continueLatest) {
+    const sf = sidFile(repo);
+    mkdirSync4(dirname7(sf), { recursive: true });
+    writeFileSync4(sf, `${sid}
 `);
-  clearIdle(sid);
-  if (resumeSid.length === 0) {
+    clearIdle(sid);
+  }
+  if (resumeSid.length === 0 && !continueLatest) {
     mkdirSync4(idleDir(), { recursive: true });
     writeFileSync4(lastFileFor(sid), "");
   }
@@ -6255,7 +6280,7 @@ async function claudeResume(args, env) {
   const { repo, task, prompt, hasPrompt } = parsed;
   if (repo === "") {
     return die(
-      'usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation)'
+      'usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]  (omit sid to delegate latest-session selection to Claude --continue; --task relabels the resumed conversation)'
     );
   }
   const path = join10(env.dispatcherDir, repo);
@@ -6266,44 +6291,15 @@ async function claudeResume(args, env) {
       `${repo} already running (tmux=${name}) \u2014 'tm kill ${repo}' first if you really want to start over`
     );
   }
-  const projectDir = projectDirForRepo(repo, env);
-  let autoPickStderr = "";
   if (sid === "") {
-    if (!isDirectory(projectDir)) {
-      return die(
-        `no project dir at ${projectDir} \u2014 has anyone ever run claude inside ${path}? Try 'tm spawn ${repo}' first.`
-      );
-    }
-    let names = [];
-    try {
-      names = readdirSync4(projectDir).filter((file) => file.endsWith(".jsonl"));
-    } catch {
-      names = [];
-    }
-    if (names.length === 0) {
-      return die(`no .jsonl transcripts under ${projectDir} \u2014 try 'tm spawn ${repo}' to start fresh.`);
-    }
-    const stats = names.map((file) => {
-      let mtime = 0;
-      try {
-        mtime = Math.floor(statSync11(join10(projectDir, file)).mtimeMs / 1e3);
-      } catch {
-        mtime = 0;
-      }
-      return { file, mtime };
-    });
-    stats.sort((a, b) => b.mtime - a.mtime || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
-    const latest = stats[0];
-    sid = latest.file.replace(/\.jsonl$/, "");
-    autoPickStderr = `tm resume: no sid given \u2014 auto-picked ${sid} (jsonl mtime ${fmtLocalDateTime(latest.mtime)}). Prefer passing the sid from your task ledger.
-`;
-  } else {
-    const target = join10(projectDir, `${sid}.jsonl`);
-    if (!isRegularFile(target)) {
-      return die(
-        `no transcript at ${target} \u2014 wrong repo for this sid, or sid does not exist. Check 'ls ${projectDir}/'.`
-      );
-    }
+    return claudeContinue(repo, { task, prompt, hasPrompt }, env);
+  }
+  const projectDir = projectDirForRepo(repo, env);
+  const target = join10(projectDir, `${sid}.jsonl`);
+  if (!isRegularFile(target)) {
+    return die(
+      `no transcript at ${target} \u2014 wrong repo for this sid, or sid does not exist. Check 'ls ${projectDir}/'.`
+    );
   }
   if (!UUID_RE.test(sid)) return die(`sid is not a valid uuid: ${sid}`);
   const spawnArgs = [repo, "--resume", sid];
@@ -6314,11 +6310,7 @@ async function claudeResume(args, env) {
     spawnArgs.push("--prompt", prompt);
   }
   const result = await claudeSpawn(spawnArgs, env);
-  return {
-    code: result.code,
-    stdout: result.stdout,
-    stderr: autoPickStderr + result.stderr
-  };
+  return result;
 }
 
 // src/engines/claude/wait.ts
@@ -6406,7 +6398,7 @@ function rstrip3(text) {
 }
 function readIfNonEmpty5(path) {
   try {
-    if (statSync12(path).size === 0) return null;
+    if (statSync11(path).size === 0) return null;
     return readFileSync11(path, "utf8");
   } catch {
     return null;
@@ -6681,13 +6673,13 @@ import {
   readFileSync as readFileSync13,
   readSync,
   realpathSync as realpathSync4,
-  statSync as statSync14
+  statSync as statSync13
 } from "node:fs";
 
 // src/engines/codex/rollout.ts
 import { homedir } from "node:os";
 import { join as join11 } from "node:path";
-import { readdirSync as readdirSync5, readFileSync as readFileSync12, statSync as statSync13 } from "node:fs";
+import { readdirSync as readdirSync4, readFileSync as readFileSync12, statSync as statSync12 } from "node:fs";
 var CODEX_ROLLOUT_BUSY_WINDOW_MS = 2e4;
 function isPlainObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -6709,7 +6701,7 @@ function codexSessionsRoot(env) {
 function sortedNumericDirs(root) {
   let entries;
   try {
-    entries = readdirSync5(root, { withFileTypes: true });
+    entries = readdirSync4(root, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -6729,7 +6721,7 @@ function rolloutThreadId(name) {
 function findInDay(dayDir, suffix, exactThreadId) {
   let entries;
   try {
-    entries = readdirSync5(dayDir, { withFileTypes: true });
+    entries = readdirSync4(dayDir, { withFileTypes: true });
   } catch {
     return null;
   }
@@ -6741,7 +6733,7 @@ function findInDay(dayDir, suffix, exactThreadId) {
     const path = join11(dayDir, name);
     let mtimeMs;
     try {
-      mtimeMs = statSync13(path).mtimeMs;
+      mtimeMs = statSync12(path).mtimeMs;
     } catch {
       continue;
     }
@@ -6774,7 +6766,7 @@ function findCodexRolloutFile(threadId, env) {
 function listInDay(dayDir) {
   let entries;
   try {
-    entries = readdirSync5(dayDir, { withFileTypes: true });
+    entries = readdirSync4(dayDir, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -6787,7 +6779,7 @@ function listInDay(dayDir) {
     try {
       files.push({
         path,
-        mtimeMs: statSync13(path).mtimeMs,
+        mtimeMs: statSync12(path).mtimeMs,
         threadId,
         createdAt: rolloutCreatedAt(entry.name)
       });
@@ -7057,7 +7049,7 @@ function readHistoryEntry(file) {
   if (cwd === null) return null;
   let size = 0;
   try {
-    size = statSync14(file.path).size;
+    size = statSync13(file.path).size;
   } catch {
     size = 0;
   }
@@ -7518,6 +7510,17 @@ function codexNameFailure(name) {
 function codexThreadIdFailure(threadId) {
   return CODEX_THREAD_ID_RE.test(threadId) ? null : `codex thread id is not a valid uuid: ${threadId}`;
 }
+async function latestCodexThreadIdForCwd(client, cwd) {
+  const response = await client.request("thread/list", {
+    limit: 1,
+    sortKey: "updated_at",
+    sortDirection: "desc",
+    archived: false,
+    cwd,
+    useStateDbOnly: false
+  });
+  return response.data[0]?.id ?? null;
+}
 function codexSpawnHeader(name) {
   const state = readDaemonState(name);
   return state === null ? `spawned: ${name}
@@ -7918,10 +7921,8 @@ var CodexEngine = class {
   async resume(req, ctx) {
     const invalidName = codexNameFailure(req.name);
     if (invalidName !== null) return { kind: "failed", message: invalidName };
-    if (req.checkpoint === null) {
-      return { kind: "failed", message: "codex resume requires an explicit thread id" };
-    }
-    const invalidThreadId = codexThreadIdFailure(req.checkpoint);
+    let threadId = req.checkpoint;
+    const invalidThreadId = threadId === null ? null : codexThreadIdFailure(threadId);
     if (invalidThreadId !== null) return { kind: "failed", message: invalidThreadId };
     const existing = readBaseRecord(req.name);
     if (existing !== null) {
@@ -7969,10 +7970,24 @@ var CodexEngine = class {
         }
       });
       await this.healthCheck(req.name);
-      writeThreadId(req.name, req.checkpoint);
       client = await openInitializedCodexClient(req.name);
+      if (threadId === null) {
+        threadId = await latestCodexThreadIdForCwd(client, cwd);
+        if (threadId === null) {
+          client.close();
+          client = null;
+          removeBaseRecord(req.name);
+          await reapDaemon(req.name);
+          return { kind: "not-found", reason: `no codex threads found for cwd ${cwd}` };
+        }
+        const latestInvalidThreadId = codexThreadIdFailure(threadId);
+        if (latestInvalidThreadId !== null) {
+          throw new Error(`thread/list returned invalid thread id: ${threadId}`);
+        }
+      }
+      writeThreadId(req.name, threadId);
       await client.request("thread/resume", {
-        threadId: req.checkpoint,
+        threadId,
         persistExtendedHistory: false
       });
       touchLastSeen(req.name);
@@ -7981,10 +7996,10 @@ var CodexEngine = class {
       if (req.prompt === null) {
         return {
           kind: "resumed",
-          checkpoint: req.checkpoint,
+          checkpoint: threadId,
           tmResult: {
             code: 0,
-            stdout: `resumed: ${req.checkpoint}
+            stdout: `resumed: ${threadId}
 `,
             stderr: codexResumeHeader(req.name)
           }
@@ -7996,7 +8011,7 @@ var CodexEngine = class {
       ));
       return {
         kind: "resumed",
-        checkpoint: req.checkpoint,
+        checkpoint: threadId,
         tmResult: {
           code: turn.code,
           stdout: turn.stdout,
@@ -8189,7 +8204,7 @@ function productionRegistry(env) {
 }
 
 // src/verbs/archive.ts
-import { readFileSync as readFileSync14, statSync as statSync15, writeFileSync as writeFileSync5 } from "node:fs";
+import { readFileSync as readFileSync14, statSync as statSync14, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join12 } from "node:path";
 
 // src/persistence/project-dir.ts
@@ -8222,7 +8237,7 @@ function die2(message) {
 }
 function isRegularFile5(path) {
   try {
-    return statSync15(path).isFile();
+    return statSync14(path).isFile();
   } catch {
     return false;
   }
@@ -8989,7 +9004,7 @@ function runHelpVerb(rest) {
 }
 function isDirectory3(path) {
   try {
-    return statSync16(path).isDirectory();
+    return statSync15(path).isDirectory();
   } catch {
     return false;
   }
@@ -9177,7 +9192,7 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       if ("error" in parsed) return parsed.error;
       if (parsed.repo === "") {
         return die5(
-          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  (Claude sid may be omitted to auto-pick; Codex requires an explicit thread id)'
+          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  (id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)'
         );
       }
       return resumeVerb(

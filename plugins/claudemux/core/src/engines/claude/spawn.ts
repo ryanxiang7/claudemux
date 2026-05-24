@@ -10,8 +10,7 @@
  * `tm spawn --prompt` atomic — the pre-send sleep happens against a
  * REPL that has already booted.
  *
- * This module is Claude-only. The codex fork lives at the dispatch
- * layer (native.ts wrapper today, cli.ts in the final cleanup).
+ * This module is Claude-only. The engine router owns cross-engine dispatch.
  */
 
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -43,6 +42,15 @@ export interface SpawnArgs {
   prompt: string
   hasPrompt: boolean
   timeout: string | null
+}
+
+interface ClaudeLaunchArgs {
+  readonly repo: string
+  readonly resumeSid: string
+  readonly continueLatest: boolean
+  readonly task: string
+  readonly prompt: string
+  readonly hasPrompt: boolean
 }
 
 /**
@@ -158,8 +166,37 @@ export async function claudeSpawn(
   }
   const parsed = parseSpawnArgs(args.slice(1))
   if ('error' in parsed) return parsed.error
-  const { resumeSid, task, prompt, hasPrompt } = parsed
+  return claudeLaunch({
+    repo,
+    resumeSid: parsed.resumeSid,
+    continueLatest: false,
+    task: parsed.task,
+    prompt: parsed.prompt,
+    hasPrompt: parsed.hasPrompt,
+  }, env)
+}
 
+export async function claudeContinue(
+  repo: string,
+  opts: {
+    readonly task: string
+    readonly prompt: string
+    readonly hasPrompt: boolean
+  },
+  env: ClaudeVerbEnv,
+): Promise<TmResult> {
+  return claudeLaunch({
+    repo,
+    resumeSid: '',
+    continueLatest: true,
+    task: opts.task,
+    prompt: opts.prompt,
+    hasPrompt: opts.hasPrompt,
+  }, env)
+}
+
+async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<TmResult> {
+  const { repo, resumeSid, continueLatest, task, prompt, hasPrompt } = req
   const path = join(env.dispatcherDir, repo)
   if (!isDirectory(path)) return dieRepoNotFound('spawn', repo, path, env.dispatcherDir)
 
@@ -177,7 +214,7 @@ export async function claudeSpawn(
   })
 
   // Display-name selection: `--task` → `<repo>-<sanitized>`, else
-  // `<repo>-<rand4>` for a fresh spawn, else empty (preserve on `--resume`).
+  // `<repo>-<rand4>` for a fresh spawn, else empty (preserve on resume/continue).
   let displayName = ''
   if (task.length > 0) {
     const slug = sanitizeTaskSlug(task)
@@ -188,7 +225,7 @@ export async function claudeSpawn(
       )
     }
     displayName = `${repo}-${slug}`
-  } else if (resumeSid.length === 0) {
+  } else if (resumeSid.length === 0 && !continueLatest) {
     displayName = `${repo}-${randSuffix()}`
   }
 
@@ -251,17 +288,23 @@ export async function claudeSpawn(
   }
   if (paneId.length === 0) return die(`tmux new-session returned no session id for ${repo}`)
 
-  const sid = resumeSid.length > 0 ? resumeSid : newSid()
+  const sid = resumeSid.length > 0 ? resumeSid : continueLatest ? '' : newSid()
   const launchFlags = teammateLaunchFlags(mdExcludes)
   const nameArg = displayName.length > 0 ? ` -n ${shellSingleQuote(displayName)}` : ''
   const launchCmd =
-    resumeSid.length > 0
+    continueLatest
+      ? `claude --continue ${launchFlags}${nameArg}`
+      : resumeSid.length > 0
       ? `claude --resume ${sid} ${launchFlags}${nameArg}`
       : `claude --session-id ${sid} ${launchFlags}${nameArg}`
   await env.runTmux(['send-keys', '-t', paneId, launchCmd, 'Enter'])
 
   let stderr = ''
-  if (resumeSid.length > 0) {
+  if (continueLatest) {
+    const nameNote = displayName.length > 0 ? `, name=${displayName}` : ''
+    stderr +=
+      `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, continued latest sid=pending${nameNote})\n`
+  } else if (resumeSid.length > 0) {
     const nameNote = displayName.length > 0 ? `, name=${displayName}` : ''
     stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, resumed sid=${sid}${nameNote})\n`
   } else {
@@ -269,15 +312,17 @@ export async function claudeSpawn(
     stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, sid=${sid}${nameNote})\n`
   }
 
-  const sf = sidFile(repo)
-  mkdirSync(dirname(sf), { recursive: true })
-  writeFileSync(sf, `${sid}\n`)
-  clearIdle(sid)
+  if (!continueLatest) {
+    const sf = sidFile(repo)
+    mkdirSync(dirname(sf), { recursive: true })
+    writeFileSync(sf, `${sid}\n`)
+    clearIdle(sid)
+  }
 
   // Fresh-spawn `.last` sentinel — keeps `tm last` reporting "no reply
   // yet" until the first real Stop. Resume mode skips this: the resumed
   // session's last-turn text is context the dispatcher may want to re-read.
-  if (resumeSid.length === 0) {
+  if (resumeSid.length === 0 && !continueLatest) {
     mkdirSync(idleDir(), { recursive: true })
     writeFileSync(lastFileFor(sid), '')
   }

@@ -377,7 +377,7 @@ async function dispatchEngineVerb(
       if (parsed.repo === '') {
         return die(
           'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  ' +
-            '(Claude sid may be omitted to auto-pick; Codex requires an explicit thread id)',
+            '(id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)',
         )
       }
       return resumeVerb(

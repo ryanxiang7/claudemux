@@ -21,7 +21,7 @@ USAGE  (most common first)
   tm spawn <repo> [--prompt "..."]       launch teammate; --prompt = atomic bootstrap
   tm wait <repo> [--fresh]               wait for next Stop; print reply
   tm compact <repo>                      /compact + verify, prints "compacted"
-  tm resume <repo> [<sid>]               resume a prior conversation
+  tm resume <repo> [<sid/thread-id>]     resume a prior conversation
   tm last <repo>                         reprint the last-turn reply
   tm kill <repo>                         kill the teammate's tmux session
   tm reload <repo>... | --all            fan out /reload-plugins
@@ -175,19 +175,19 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
         - PostCompact never fires within timeout. Compaction is
           hung or the Stop hook is misconfigured.
 `,
-  resume: `tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]
+  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]
 
       Resume a prior conversation. Claude teammates use a transcript
-      sid: PREFER passing <sid> from the dispatcher's task ledger
-      (active-dispatcher-tasks.md records the sid of each teammate it
-      spawned). Without sid, Claude picks the newest jsonl by mtime as
-      a one-off convenience (stderr warning). Validates the jsonl
-      exists in the project dir; UUID format enforced.
-      Codex teammates require an explicit thread id from their
-      /tmp/teammate-codex/<name>/thread file or rollout filename. The
-      verb starts a new app-server daemon, writes the thread id back to
-      the Codex registry, and calls thread/resume; it does not auto-pick
-      a Codex thread.
+      sid: passing <sid> validates that transcript and launches
+      'claude --resume <sid>'. Without sid, Claude's native
+      'claude --continue' chooses the latest session for the cwd; the
+      /tmp/teammate-<repo>.sid marker is written by the SessionStart
+      hook after the REPL starts.
+      Codex teammates use a thread id: passing <thread-id> calls
+      thread/resume directly. Without thread id, claudemux starts a new
+      app-server daemon, calls thread/list(limit=1, sortKey=updated_at,
+      cwd=<repo>) to ask Codex for the latest thread, writes that thread
+      id back to the Codex registry, and then calls thread/resume.
       Fails if a teammate session for <repo> already exists.
       --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on

@@ -2,8 +2,8 @@
 // Fake `codex` binary used by the supervisor tests. Accepts the same
 // `app-server --listen unix://<path>` invocation the real codex binary
 // understands, binds a unix-domain socket at that path, speaks a tiny
-// WebSocket JSON-RPC subset (`initialize`, `thread/start`, `thread/resume`,
-// `turn/start`), and then sleeps forever (until SIGTERM / SIGKILL). The
+// WebSocket JSON-RPC subset (`initialize`, `thread/start`, `thread/list`,
+// `thread/resume`, `turn/start`), and then sleeps forever (until SIGTERM / SIGKILL). The
 // subset is enough for CodexEngine contract tests while keeping supervisor
 // lifecycle tests cheap.
 //
@@ -16,6 +16,8 @@
 //                                  answer thread/read with this status
 //   CODEX_FAKE_THREAD_READ_DELAY_MS=<n>
 //                                  wait <n>ms before answering thread/read
+//   CODEX_FAKE_THREAD_LIST_ID=<id> answer thread/list with this thread id
+//   CODEX_FAKE_THREAD_LIST_EMPTY=1 answer thread/list with no threads
 //   CODEX_FAKE_CONNECTION_LOG=<path>
 //                                  append "open"/"close" connection events
 //   CODEX_FAKE_RPC_LOG=<path>      append one JSON-RPC method name per request
@@ -161,6 +163,25 @@ function bind() {
       } else if (env.method === 'thread/resume') {
         const thread = makeThread(params.threadId ?? `thread-${++threadCounter}`)
         sendJson({ id, result: makeThreadResponse(thread) })
+      } else if (env.method === 'thread/list') {
+        if (process.env.CODEX_FAKE_THREAD_LIST_EMPTY === '1') {
+          sendJson({ id, result: { data: [], nextCursor: null, backwardsCursor: null } })
+          return
+        }
+        const threadId =
+          process.env.CODEX_FAKE_THREAD_LIST_ID ??
+          '019e5f5f-2e57-7abc-8def-123456789abc'
+        const cwd = Array.isArray(params.cwd)
+          ? (params.cwd[0] ?? process.cwd())
+          : (params.cwd ?? process.cwd())
+        sendJson({
+          id,
+          result: {
+            data: [makeThread(threadId, cwd)],
+            nextCursor: null,
+            backwardsCursor: null,
+          },
+        })
       } else if (env.method === 'thread/read' && process.env.CODEX_FAKE_THREAD_READ_STATUS !== undefined) {
         const thread = makeThread(
           params.threadId ?? `thread-${++threadCounter}`,
