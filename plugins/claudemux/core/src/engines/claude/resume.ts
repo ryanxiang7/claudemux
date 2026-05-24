@@ -23,12 +23,15 @@ export interface ResumeArgs {
   task: string
   prompt: string
   hasPrompt: boolean
+  engine: 'claude' | 'codex' | null
 }
 
 /**
  * `cmd_resume`'s arg loop; two positionals (`<repo> [<sid>]`) plus
  * flags. Like `cmd_spawn`, `--task` is bash's silent-exit-1 path (no
  * `[[ $# -ge 2 ]]` guard); `--prompt` is the explicit-die path.
+ * `--engine` is the explicit-die path too — it carries a required
+ * `claude`/`codex` value, parallel to `tm spawn --engine`.
  */
 export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: TmResult } {
   const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
@@ -37,6 +40,7 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
   let task = ''
   let prompt = ''
   let hasPrompt = false
+  let engine: 'claude' | 'codex' | null = null
   let i = 0
   while (i < args.length) {
     const arg = args[i]!
@@ -55,6 +59,21 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
       i += 2
     } else if (arg.startsWith('--task=')) {
       task = arg.slice('--task='.length)
+      i++
+    } else if (arg === '--engine') {
+      if (i + 1 >= args.length) return { error: die('tm resume: --engine requires a value') }
+      const value = args[i + 1]!
+      if (value !== 'claude' && value !== 'codex') {
+        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) }
+      }
+      engine = value
+      i += 2
+    } else if (arg.startsWith('--engine=')) {
+      const value = arg.slice('--engine='.length)
+      if (value !== 'claude' && value !== 'codex') {
+        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) }
+      }
+      engine = value
       i++
     } else if (arg === '--') {
       i++
@@ -76,7 +95,7 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
       }
     }
   }
-  return { repo, sid, task, prompt, hasPrompt }
+  return { repo, sid, task, prompt, hasPrompt, engine }
 }
 
 export async function claudeResume(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {

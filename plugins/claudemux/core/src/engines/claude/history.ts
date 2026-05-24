@@ -10,6 +10,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { encodeProjectDir } from '../../paths'
 import { fmtAge, fmtLocalDateTime } from './clock'
 import { isDirectory, isRegularFile, resolveSid } from './idle'
 import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
@@ -434,6 +435,31 @@ function historyDetail(repo: string, projectDir: string, prefix: string): TmResu
     '\n' +
     `resume: tm resume ${repo} ${sidFull}\n`
   return { code: 0, stdout, stderr: '' }
+}
+
+/**
+ * Existence-only check: does the Claude Code project dir for `cwd`
+ * hold any transcript jsonl? Mirrors `hasCodexHistoryForCwd` — both
+ * resume-probing callers ask the same question of each engine and
+ * branch on the answer, so the two helpers must agree on what
+ * "has candidate" means (any file present; depth-read is intentionally
+ * absent, since `claude --continue` will itself pick the latest).
+ *
+ * `projectsDir` is plumbed in by the caller (cli.ts owns env wiring
+ * via `NativeEnv.projectsDir`); deriving from `$HOME` here would
+ * diverge from tests that inject a tmpdir `projectsDir`.
+ */
+export function hasClaudeHistoryForCwd(cwd: string, projectsDir: string): boolean {
+  const projectDir = join(projectsDir, encodeProjectDir(cwd))
+  if (!isDirectory(projectDir)) return false
+  try {
+    for (const name of readdirSync(projectDir)) {
+      if (name.endsWith('.jsonl')) return true
+    }
+  } catch {
+    return false
+  }
+  return false
 }
 
 export async function claudeHistory(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {

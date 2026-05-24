@@ -175,7 +175,7 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
         - PostCompact never fires within timeout. Compaction is
           hung or the Stop hook is misconfigured.
 `,
-  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]
+  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."] [--engine claude|codex]
 
       Resume a prior conversation. Claude teammates use a transcript
       sid: passing <sid> validates that transcript and launches
@@ -188,6 +188,14 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       app-server daemon, calls thread/list(limit=1, sortKey=updated_at,
       cwd=<repo>) to ask Codex for the latest thread, writes that thread
       id back to the Codex registry, and then calls thread/resume.
+      Engine selection without an explicit id: when the teammate has no
+      base record left (e.g. after 'tm kill'), claudemux probes the cwd
+      against both engines' history (Claude project dir + Codex rollout
+      sessions). A single candidate auto-routes; if both engines hold
+      resumable history the verb refuses to guess and asks for
+      disambiguation. Pass --engine claude|codex to skip probing and
+      route directly, or supply an explicit <sid>/<thread-id>. --engine
+      overrides every other selector — even an active router record.
       Fails if a teammate session for <repo> already exists.
       --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on

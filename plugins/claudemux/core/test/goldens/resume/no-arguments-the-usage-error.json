@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt \"...\"]  (id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)\n"
+  "stderr": "tm: usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt \"...\"] [--engine claude|codex]  (id may be omitted: claudemux probes both engines for a resumable session and routes the single candidate; if both engines have history, use --engine to disambiguate)\n"
 }

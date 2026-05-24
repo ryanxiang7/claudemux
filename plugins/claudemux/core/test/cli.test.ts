@@ -44,6 +44,7 @@ import { EngineRegistry } from '../src/engines/registry'
 import { read as readIdentity } from '../src/persistence/identity-store'
 import {
   cwdFile,
+  encodeProjectDir,
   lastFileFor,
   readyFile,
   sendAtFile,
@@ -335,14 +336,22 @@ describe('native dispatch', () => {
     }
   })
 
-  test('claude resume without sid skips project-dir precheck, launches native --continue, and leaves sid hook-owned', async () => {
+  test('claude resume without sid routes to claude via probing and launches native --continue, leaving sid hook-owned', async () => {
     const repo = `resume-continue-${Date.now()}`
     const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const projectsDir = mkdtempSync('/tmp/cmxcli-projects-')
     const repoDir = join(dispatcherDir, repo)
     const oldSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     mkdirSync(repoDir, { recursive: true })
     mkdirSync(dirname(sidFile(repo)), { recursive: true })
     writeFileSync(sidFile(repo), `${oldSid}\n`)
+    // Seed a transcript jsonl so the resume-probing branch finds Claude as
+    // the single candidate and routes here (claude --continue). Probing
+    // refusing to guess when no engine has history is its own assertion,
+    // covered in the "resume probing" describe block below.
+    const projectDir = join(projectsDir, encodeProjectDir(realpathSync(repoDir)))
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(projectDir, `${oldSid}.jsonl`), '')
     const tmuxCalls: string[][] = []
     const runTmux: TmuxRunner = async (args) => {
       tmuxCalls.push([...args])
@@ -359,7 +368,7 @@ describe('native dispatch', () => {
     try {
       const result = await runCli(
         ['resume', repo],
-        fakeEnv({ dispatcherDir, runTmux }),
+        fakeEnv({ dispatcherDir, projectsDir, runTmux }),
       )
       expect(result.code).toBe(0)
       expect(result.stderr).toContain('continued latest sid=pending')
@@ -368,6 +377,7 @@ describe('native dispatch', () => {
       expect(readFileSync(sidFile(repo), 'utf8')).toBe(`${oldSid}\n`)
     } finally {
       rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(projectsDir, { recursive: true, force: true })
       rmSync(cwdFile(repo), { force: true })
       rmSync(sidFile(repo), { force: true })
       rmSync(readyFile(repo), { force: true })
@@ -868,6 +878,371 @@ describe('native dispatch', () => {
       })
     } finally {
       removeBaseRecord(name)
+    }
+  })
+})
+
+describe('resume engine-probing — no checkpoint + no base record', () => {
+  // After `tm kill`, a non-prefix codex teammate's base record is gone and
+  // the router returns null. The probing branch in `verbs/resume.ts` asks
+  // both engines whether they hold history for the teammate's cwd, then:
+  //   - routes the single candidate if exactly one matches,
+  //   - refuses with an ambiguity error if both match,
+  //   - errors with "no resumable session" if neither matches.
+  // `--engine` is an unconditional override that bypasses the probe.
+
+  type ResumeCall = { engine: 'claude' | 'codex'; name: string; cwd: string | null; checkpoint: string | null }
+
+  // The default `fakeTmux` returns code 0 for everything, which would make
+  // `LegacyClaudeTmuxRouter`'s `has-session` probe always succeed and the
+  // router would short-circuit probing to the Claude engine. Probing
+  // exists for the "no session, no record" case, so these tests must
+  // stub `has-session` as missing (code 1).
+  const noTmuxSession: TmuxRunner = async (args) =>
+    args[0] === 'has-session'
+      ? { code: 1, stdout: '', stderr: '' }
+      : { code: 0, stdout: '', stderr: '' }
+
+  function fakeResumeEngine(kind: 'claude' | 'codex', sink: ResumeCall[]): Engine {
+    return {
+      kind,
+      resume: async (req: { name: string; cwd: string | null; checkpoint: string | null }) => {
+        sink.push({ engine: kind, name: req.name, cwd: req.cwd, checkpoint: req.checkpoint })
+        return { kind: 'resumed', checkpoint: req.checkpoint }
+      },
+    } as unknown as Engine
+  }
+
+  function setupProbeFixture(): {
+    repo: string
+    dispatcherDir: string
+    projectsDir: string
+    sessionsRoot: string
+    repoRealpath: string
+    sink: ResumeCall[]
+    registry: EngineRegistry
+    cleanup: () => void
+  } {
+    const repo = `probe-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+    const dispatcherDir = mkdtempSync('/tmp/cmx-probe-disp-')
+    const projectsDir = mkdtempSync('/tmp/cmx-probe-proj-')
+    const sessionsRoot = mkdtempSync('/tmp/cmx-probe-sessions-')
+    const savedSessionsRoot = process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+    process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = sessionsRoot
+    const repoDir = join(dispatcherDir, repo)
+    mkdirSync(repoDir, { recursive: true })
+    const repoRealpath = realpathSync(repoDir)
+    const sink: ResumeCall[] = []
+    const registry = new EngineRegistry()
+    registry.register(fakeResumeEngine('claude', sink))
+    registry.register(fakeResumeEngine('codex', sink))
+    return {
+      repo,
+      dispatcherDir,
+      projectsDir,
+      sessionsRoot,
+      repoRealpath,
+      sink,
+      registry,
+      cleanup: () => {
+        if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+        else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot
+        rmSync(dispatcherDir, { recursive: true, force: true })
+        rmSync(projectsDir, { recursive: true, force: true })
+        rmSync(sessionsRoot, { recursive: true, force: true })
+      },
+    }
+  }
+
+  function seedClaudeJsonl(projectsDir: string, cwd: string): void {
+    const projectDir = join(projectsDir, encodeProjectDir(cwd))
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(projectDir, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl'), '')
+  }
+
+  test('codex-only candidate auto-routes to codex', async () => {
+    const f = setupProbeFixture()
+    try {
+      writeCliRollout(f.sessionsRoot, '019e5f5f-2e57-7abc-8def-aaaaaaaaaaa1', f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'codex', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('claude-only candidate auto-routes to claude', async () => {
+    const f = setupProbeFixture()
+    try {
+      seedClaudeJsonl(f.projectsDir, f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'claude', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('both candidates → ambiguity error, dispatch reaches neither engine', async () => {
+    const f = setupProbeFixture()
+    try {
+      writeCliRollout(f.sessionsRoot, '019e5f5f-2e57-7abc-8def-aaaaaaaaaaa2', f.repoRealpath)
+      seedClaudeJsonl(f.projectsDir, f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain('ambiguous')
+      expect(result.stderr).toContain('--engine codex|claude')
+      expect(result.stderr).toContain('<sid>')
+      expect(result.stderr).toContain(f.repoRealpath)
+      expect(f.sink).toEqual([])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('neither candidate → no resumable session error', async () => {
+    const f = setupProbeFixture()
+    try {
+      const result = await runCli(
+        ['resume', f.repo],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain(`no resumable session for ${f.repo}`)
+      expect(result.stderr).toContain(`cwd ${f.repoRealpath}`)
+      expect(result.stderr).toContain('tm spawn')
+      expect(f.sink).toEqual([])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('--engine claude overrides probing even when only codex has history', async () => {
+    const f = setupProbeFixture()
+    try {
+      writeCliRollout(f.sessionsRoot, '019e5f5f-2e57-7abc-8def-aaaaaaaaaaa3', f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo, '--engine', 'claude'],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'claude', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('--engine codex overrides probing even when only claude has history', async () => {
+    const f = setupProbeFixture()
+    try {
+      seedClaudeJsonl(f.projectsDir, f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo, '--engine', 'codex'],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'codex', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('--engine wins even when both candidates exist (ambiguity bypass)', async () => {
+    const f = setupProbeFixture()
+    try {
+      writeCliRollout(f.sessionsRoot, '019e5f5f-2e57-7abc-8def-aaaaaaaaaaa4', f.repoRealpath)
+      seedClaudeJsonl(f.projectsDir, f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo, '--engine=codex'],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'codex', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('--engine routes even when nothing else would (empty history)', async () => {
+    const f = setupProbeFixture()
+    try {
+      // No rollout, no claude jsonl — probing alone would say "no resumable
+      // session". An explicit --engine bypasses probing and hands the
+      // engine a null checkpoint to do as it pleases (`claude --continue`
+      // for claude; `thread/list(limit=1)` for codex).
+      const result = await runCli(
+        ['resume', f.repo, '--engine', 'claude'],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'claude', name: f.repo, cwd: f.repoRealpath, checkpoint: null },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('checkpoint reverse-lookup beats router and probing (existing behavior preserved)', async () => {
+    const f = setupProbeFixture()
+    try {
+      // Both engines have probable history AND a codex thread-id is passed
+      // — the checkpoint reverse-lookup path takes precedence over the
+      // probing branch, so the ambiguity error never fires. This pins the
+      // documented priority ordering: --engine > checkpoint > router > probing.
+      const threadId = '019e5f5f-2e57-7abc-8def-aaaaaaaaaaa5'
+      writeCliRollout(f.sessionsRoot, threadId, f.repoRealpath)
+      seedClaudeJsonl(f.projectsDir, f.repoRealpath)
+      const result = await runCli(
+        ['resume', f.repo, threadId],
+        fakeEnv({
+          dispatcherDir: f.dispatcherDir,
+          projectsDir: f.projectsDir,
+          engines: f.registry,
+          runTmux: noTmuxSession,
+        }),
+      )
+      expect(result.code).toBe(0)
+      expect(f.sink).toEqual([
+        { engine: 'codex', name: f.repo, cwd: f.repoRealpath, checkpoint: threadId },
+      ])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('--engine with unregistered engine fails loudly', async () => {
+    // Only the codex engine is registered — `--engine claude` finds no
+    // entry in the registry and the verb returns a clean error rather than
+    // crashing on a null deref.
+    const repo = `probe-no-claude-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmx-probe-disp-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const registry = new EngineRegistry()
+    registry.register(fakeResumeEngine('codex', []))
+    try {
+      const result = await runCli(
+        ['resume', repo, '--engine', 'claude'],
+        fakeEnv({ dispatcherDir, engines: registry, runTmux: noTmuxSession }),
+      )
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain('--engine claude is not registered')
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('--engine requires a value (bare flag dies with usage)', async () => {
+    const result = await runCli(['resume', 'repo', '--engine'], fakeEnv())
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('--engine requires a value')
+  })
+
+  test('--engine rejects values outside {claude, codex}', async () => {
+    const result = await runCli(['resume', 'repo', '--engine', 'gpt'], fakeEnv())
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("--engine must be 'claude' or 'codex'")
+  })
+
+  test('non-probeable cwd skips probing and falls through to legacy resolver', async () => {
+    // No base record, no codex meta, no repo dir → `codexCwd` falls back
+    // to the dispatcher dir's realpath. cli.ts flags cwdProbeable=false
+    // for that case so the probing branch cannot match the dispatcher's
+    // own transcripts. With no router resolution either, the legacy
+    // name-prefix resolver routes to the Claude engine (since the name
+    // is not codex-prefixed).
+    const repo = `noproberepo-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmx-probe-noprobe-')
+    // Seed Claude transcripts UNDER the dispatcher's encoded path so the
+    // dispatcher-fallback cwd WOULD probe-match — this asserts the
+    // cwdProbeable guard actually fires.
+    const projectsDir = mkdtempSync('/tmp/cmx-probe-proj-')
+    const dispatcherRealpath = realpathSync(dispatcherDir)
+    const dispatcherProjectDir = join(projectsDir, encodeProjectDir(dispatcherRealpath))
+    mkdirSync(dispatcherProjectDir, { recursive: true })
+    writeFileSync(join(dispatcherProjectDir, 'oops.jsonl'), '')
+
+    const sink: ResumeCall[] = []
+    const registry = new EngineRegistry()
+    registry.register(fakeResumeEngine('claude', sink))
+    registry.register(fakeResumeEngine('codex', sink))
+
+    try {
+      const result = await runCli(
+        ['resume', repo],
+        fakeEnv({ dispatcherDir, projectsDir, engines: registry, runTmux: noTmuxSession }),
+      )
+      // Falls into the legacy resolver → Claude engine (non-codex name).
+      // The Claude engine is faked here, so it accepts the request — what
+      // matters is that probing did NOT match the dispatcher's stray
+      // transcript and false-route on cwd=dispatcher.
+      expect(result.code).toBe(0)
+      expect(sink).toEqual([
+        { engine: 'claude', name: repo, cwd: dispatcherRealpath, checkpoint: null },
+      ])
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(projectsDir, { recursive: true, force: true })
     }
   })
 })

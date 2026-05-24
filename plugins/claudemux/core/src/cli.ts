@@ -418,10 +418,25 @@ async function dispatchEngineVerb(
       if ('error' in parsed) return parsed.error
       if (parsed.repo === '') {
         return die(
-          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  ' +
-            '(id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)',
+          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."] ' +
+            '[--engine claude|codex]  (id may be omitted: claudemux probes both engines ' +
+            'for a resumable session and routes the single candidate; if both engines have ' +
+            'history, use --engine to disambiguate)',
         )
       }
+      // `codexCwd`'s last-resort fallback is the dispatcher dir itself (when
+      // neither a Codex record nor a real repo subdirectory exists). That
+      // fallback is fine for the checkpoint-reverse path — the engine never
+      // reads `cwd` if `checkpoint` matches a rollout — but it would make
+      // the Claude-side probe match the dispatcher's own transcripts and
+      // false-route. Flag whether the cwd is trustworthy so the probing
+      // branch can skip itself in the dispatcher-fallback case and let the
+      // legacy resolver surface the standard "repo not found" error.
+      const repoPath = join(env.dispatcherDir, parsed.repo)
+      const cwdProbeable =
+        readBaseRecord(parsed.repo) !== null ||
+        readCodexMeta(parsed.repo) !== null ||
+        isDirectory(repoPath)
       return resumeVerb(
         {
           name: parsed.repo,
@@ -429,6 +444,9 @@ async function dispatchEngineVerb(
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           displayName: parsed.task.length === 0 ? null : parsed.task,
+          engineHint: parsed.engine,
+          projectsDir: env.projectsDir,
+          cwdProbeable,
         },
         ctx,
       )

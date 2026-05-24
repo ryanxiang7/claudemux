@@ -3921,7 +3921,7 @@ var HELP_TEXTS = {
         - PostCompact never fires within timeout. Compaction is
           hung or the Stop hook is misconfigured.
 `,
-  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]
+  resume: `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."] [--engine claude|codex]
 
       Resume a prior conversation. Claude teammates use a transcript
       sid: passing <sid> validates that transcript and launches
@@ -3934,6 +3934,14 @@ var HELP_TEXTS = {
       app-server daemon, calls thread/list(limit=1, sortKey=updated_at,
       cwd=<repo>) to ask Codex for the latest thread, writes that thread
       id back to the Codex registry, and then calls thread/resume.
+      Engine selection without an explicit id: when the teammate has no
+      base record left (e.g. after 'tm kill'), claudemux probes the cwd
+      against both engines' history (Claude project dir + Codex rollout
+      sessions). A single candidate auto-routes; if both engines hold
+      resumable history the verb refuses to guess and asks for
+      disambiguation. Pass --engine claude|codex to skip probing and
+      route directly, or supply an explicit <sid>/<thread-id>. --engine
+      overrides every other selector \u2014 even an active router record.
       Fails if a teammate session for <repo> already exists.
       --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
@@ -5761,6 +5769,18 @@ resume: tm resume ${repo} ${sidFull}
 `;
   return { code: 0, stdout, stderr: "" };
 }
+function hasClaudeHistoryForCwd(cwd, projectsDir) {
+  const projectDir = join7(projectsDir, encodeProjectDir(cwd));
+  if (!isDirectory(projectDir)) return false;
+  try {
+    for (const name of readdirSync3(projectDir)) {
+      if (name.endsWith(".jsonl")) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
 async function claudeHistory(args, env) {
   const repo = args[0] ?? "";
   if (repo.length === 0) return die("usage: tm history <repo> [<sid-or-prefix>]");
@@ -6287,6 +6307,7 @@ function parseResumeArgs(args) {
   let task = "";
   let prompt = "";
   let hasPrompt = false;
+  let engine = null;
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
@@ -6305,6 +6326,21 @@ function parseResumeArgs(args) {
       i += 2;
     } else if (arg.startsWith("--task=")) {
       task = arg.slice("--task=".length);
+      i++;
+    } else if (arg === "--engine") {
+      if (i + 1 >= args.length) return { error: die("tm resume: --engine requires a value") };
+      const value = args[i + 1];
+      if (value !== "claude" && value !== "codex") {
+        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) };
+      }
+      engine = value;
+      i += 2;
+    } else if (arg.startsWith("--engine=")) {
+      const value = arg.slice("--engine=".length);
+      if (value !== "claude" && value !== "codex") {
+        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) };
+      }
+      engine = value;
       i++;
     } else if (arg === "--") {
       i++;
@@ -6325,7 +6361,7 @@ function parseResumeArgs(args) {
       };
     }
   }
-  return { repo, sid, task, prompt, hasPrompt };
+  return { repo, sid, task, prompt, hasPrompt, engine };
 }
 async function claudeResume(args, env) {
   const parsed = parseResumeArgs(args);
@@ -8922,11 +8958,11 @@ async function compactVerb(name, ctx, opts = { timeoutMs: null }) {
 }
 
 // src/verbs/resume.ts
-async function resumeVerb(args, ctx) {
-  const resolved = await ctx.router.resolve(args.name);
-  const codexFromRollout = resolved === null && args.checkpoint !== null && ctx.engines.get("codex") !== void 0 && findCodexRolloutFile(args.checkpoint, ctx.engineContext.env) !== null;
-  const engine = codexFromRollout ? ctx.engines.get("codex") : resolved?.engine ?? await resolveTargetEngine(args.name, ctx);
-  if ("code" in engine) return engine;
+function die5(message) {
+  return { code: 1, stdout: "", stderr: `tm: ${message}
+` };
+}
+async function dispatchResume(engine, args, ctx) {
   const req = {
     name: args.name,
     cwd: args.cwd,
@@ -8935,6 +8971,41 @@ async function resumeVerb(args, ctx) {
     displayName: args.displayName
   };
   return formatResume(await engine.resume(req, ctx.engineContext));
+}
+async function resumeVerb(args, ctx) {
+  if (args.engineHint !== null) {
+    const engine2 = ctx.engines.get(args.engineHint);
+    if (engine2 === void 0) {
+      return die5(`resume: --engine ${args.engineHint} is not registered in this process`);
+    }
+    return dispatchResume(engine2, args, ctx);
+  }
+  const codex = ctx.engines.get("codex");
+  if (args.checkpoint !== null && codex !== void 0 && findCodexRolloutFile(args.checkpoint, ctx.engineContext.env) !== null) {
+    return dispatchResume(codex, args, ctx);
+  }
+  const resolved = await ctx.router.resolve(args.name);
+  if (resolved !== null) {
+    return dispatchResume(resolved.engine, args, ctx);
+  }
+  if (args.checkpoint === null && args.cwd !== null && args.cwdProbeable) {
+    const claude = ctx.engines.get("claude");
+    const codexHas = codex !== void 0 && hasCodexHistoryForCwd(args.cwd, ctx.engineContext.env);
+    const claudeHas = claude !== void 0 && hasClaudeHistoryForCwd(args.cwd, args.projectsDir);
+    if (codexHas && claudeHas) {
+      return die5(
+        `resume: ambiguous \u2014 both codex and claude have resumable history for cwd ${args.cwd}. Pass --engine codex|claude, or give an explicit <sid> (claude) / <thread-id> (codex).`
+      );
+    }
+    if (codexHas) return dispatchResume(codex, args, ctx);
+    if (claudeHas) return dispatchResume(claude, args, ctx);
+    return die5(
+      `resume: no resumable session for ${args.name} \u2014 no Claude transcript under projectsDir and no Codex rollout for cwd ${args.cwd}. To start a new session, use 'tm spawn ${args.name} [--engine codex|claude]'.`
+    );
+  }
+  const engine = await resolveTargetEngine(args.name, ctx);
+  if ("code" in engine) return engine;
+  return dispatchResume(engine, args, ctx);
 }
 
 // src/verbs/last.ts
@@ -9125,7 +9196,7 @@ function productionVerbContext(env) {
     runColumn: env.runColumn
   };
 }
-function die5(message) {
+function die6(message) {
   return { code: 1, stdout: "", stderr: `tm: ${message}
 ` };
 }
@@ -9173,7 +9244,7 @@ function secondsToMs(value) {
 function parseTimeoutMs(label, value) {
   if (value === null) return null;
   if (!isNonNegativeInteger(value)) {
-    return { error: die5(`${label}: --timeout must be a non-negative integer (got: '${value}')`) };
+    return { error: die6(`${label}: --timeout must be a non-negative integer (got: '${value}')`) };
   }
   return secondsToMs(value);
 }
@@ -9250,17 +9321,17 @@ function parseReloadTargets(rest) {
   for (const arg of rest) {
     if (arg === "--all") all = true;
     else if (arg === "-h" || arg === "--help") {
-      return { error: die5("usage: tm reload <repo>... | --all") };
+      return { error: die6("usage: tm reload <repo>... | --all") };
     } else if (arg.startsWith("-")) {
-      return { error: die5(`tm reload: unknown flag: ${arg}`) };
+      return { error: die6(`tm reload: unknown flag: ${arg}`) };
     } else {
       repos.push(arg);
     }
   }
   if (all) {
-    if (repos.length > 0) return { error: die5("tm reload: --all conflicts with explicit repos") };
+    if (repos.length > 0) return { error: die6("tm reload: --all conflicts with explicit repos") };
   } else if (repos.length === 0) {
-    return { error: die5("usage: tm reload <repo>... | --all") };
+    return { error: die6("usage: tm reload <repo>... | --all") };
   }
   return { all, repos };
 }
@@ -9301,7 +9372,7 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
     case "spawn": {
       const name = rest[0] ?? "";
       if (name.length === 0) {
-        return die5('usage: tm spawn <repo> [--task <slug>] [--prompt "..."]');
+        return die6('usage: tm spawn <repo> [--task <slug>] [--prompt "..."]');
       }
       const parsed = parseSpawnArgs(rest.slice(1));
       if ("error" in parsed) return parsed.error;
@@ -9310,7 +9381,7 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       const engine = await inferSpawnEngine(name, parsed.engine, ctx);
       if (engine === "codex") {
         const invalidName = codexNameFailure2(name);
-        if (invalidName !== null) return die5(invalidName);
+        if (invalidName !== null) return die6(invalidName);
       }
       return spawnVerb(
         {
@@ -9329,12 +9400,12 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       const parsed = parseSendArgs(rest);
       if ("error" in parsed) return parsed.error;
       if (parsed.repo === "") {
-        return die5(
+        return die6(
           'tm send: missing <repo>. Usage: tm send <repo> --prompt "..." [--pane-quiet] [--timeout N]'
         );
       }
       if (!parsed.hasPrompt) {
-        return die5(
+        return die6(
           'tm send: missing --prompt. Usage: tm send <repo> --prompt "..." [--pane-quiet] [--timeout N]'
         );
       }
@@ -9354,7 +9425,7 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       const parsed = parseWaitArgs(rest);
       if ("error" in parsed) return parsed.error;
       if (parsed.repo === "") {
-        return die5("usage: tm wait <repo> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]");
+        return die6("usage: tm wait <repo> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]");
       }
       const timeoutMs = parseTimeoutMs("tm wait", parsed.timeout);
       if (timeoutMs !== null && typeof timeoutMs === "object") return timeoutMs.error;
@@ -9380,24 +9451,29 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       const parsed = parseResumeArgs(rest);
       if ("error" in parsed) return parsed.error;
       if (parsed.repo === "") {
-        return die5(
-          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  (id may be omitted: Claude delegates to --continue; Codex uses thread/list latest)'
+        return die6(
+          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."] [--engine claude|codex]  (id may be omitted: claudemux probes both engines for a resumable session and routes the single candidate; if both engines have history, use --engine to disambiguate)'
         );
       }
+      const repoPath = join13(env.dispatcherDir, parsed.repo);
+      const cwdProbeable = readBaseRecord(parsed.repo) !== null || readCodexMeta(parsed.repo) !== null || isDirectory3(repoPath);
       return resumeVerb(
         {
           name: parsed.repo,
           cwd: codexCwd(parsed.repo, env),
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
-          displayName: parsed.task.length === 0 ? null : parsed.task
+          displayName: parsed.task.length === 0 ? null : parsed.task,
+          engineHint: parsed.engine,
+          projectsDir: env.projectsDir,
+          cwdProbeable
         },
         ctx
       );
     }
     case "last": {
       const name = rest[0] ?? "";
-      if (name.length === 0) return die5("usage: tm last <repo>");
+      if (name.length === 0) return die6("usage: tm last <repo>");
       return lastVerb(name, ctx);
     }
     case "ctx": {
@@ -9421,18 +9497,18 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
         );
       }
       if (results.length === 0) {
-        return die5("usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]");
+        return die6("usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]");
       }
       return combineResults(results);
     }
     case "history": {
       const name = rest[0] ?? "";
-      if (name.length === 0) return die5("usage: tm history <repo> [<sid-or-thread-prefix>]");
+      if (name.length === 0) return die6("usage: tm history <repo> [<sid-or-thread-prefix>]");
       return historyVerb({ name, cwd: codexCwd(name, env), index: rest[1] ?? null }, ctx);
     }
     case "mem": {
       const name = rest[0] ?? "";
-      if (name.length === 0) return die5("usage: tm mem <repo>");
+      if (name.length === 0) return die6("usage: tm mem <repo>");
       return memVerb(name, ctx);
     }
     case "reload": {
@@ -9484,13 +9560,13 @@ function parseCtxArgs(args) {
     } else if (arg.startsWith("--window=")) {
       windowOverride = arg.slice("--window=".length);
     } else if (arg.startsWith("-")) {
-      return { error: die5(`tm ctx: unknown flag: ${arg}`) };
+      return { error: die6(`tm ctx: unknown flag: ${arg}`) };
     } else {
       repos.push(arg);
     }
   }
   if (windowOverride !== "" && windowOverride !== "200k" && windowOverride !== "1m") {
-    return { error: die5("tm ctx: --window must be 200k or 1m") };
+    return { error: die6("tm ctx: --window must be 200k or 1m") };
   }
   return { repos, windowOverride, all };
 }
