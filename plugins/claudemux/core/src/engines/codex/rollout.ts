@@ -27,6 +27,7 @@ export interface CodexRolloutSnapshot {
   readonly path: string
   readonly mtimeMs: number
   readonly lastAssistantText: string | null
+  readonly lastAssistantAtMs: number | null
   readonly tokenUsage: RolloutTokenUsage | null
 }
 
@@ -236,6 +237,14 @@ function assistantTextFromEntry(entry: unknown): string | null {
   return null
 }
 
+function timestampMsFromEntry(entry: unknown): number | null {
+  if (!isPlainObject(entry)) return null
+  const timestamp = stringProp(entry, 'timestamp')
+  if (timestamp === null) return null
+  const parsed = Date.parse(timestamp)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function tokenCountFromSnake(info: Record<string, unknown>): RolloutTokenUsage | null {
   const last = info['last_token_usage']
   if (!isPlainObject(last)) return null
@@ -304,6 +313,7 @@ export function readCodexRolloutSnapshot(
   }
 
   let lastAssistantText: string | null = null
+  let lastAssistantAtMs: number | null = null
   let tokenUsage: RolloutTokenUsage | null = null
   for (const line of content.split('\n')) {
     if (line.trim() === '') continue
@@ -313,11 +323,15 @@ export function readCodexRolloutSnapshot(
     } catch {
       continue
     }
-    lastAssistantText = assistantTextFromEntry(entry) ?? lastAssistantText
+    const assistantText = assistantTextFromEntry(entry)
+    if (assistantText !== null) {
+      lastAssistantText = assistantText
+      lastAssistantAtMs = timestampMsFromEntry(entry)
+    }
     tokenUsage = tokenUsageFromEntry(entry) ?? tokenUsage
   }
 
-  return { ...rollout, lastAssistantText, tokenUsage }
+  return { ...rollout, lastAssistantText, lastAssistantAtMs, tokenUsage }
 }
 
 export function rolloutRecentlyActive(

@@ -616,6 +616,7 @@ describe('CodexEngine — core lifecycle', () => {
     const name = nameUnder()
     const threadId = '019e5f5f-2e57-7abc-8def-123456789ac5'
     const nowMs = 1_800_000_000_000
+    const assistantAtMs = nowMs - 45_000
     const lastAssistant =
       `abcdefghijklmnopqrstuvwxyz${String.fromCharCode(7)}ABCDEFGHIJKLMNOPQRSTUVWXYZ-extra\nsecond line`
     writeDaemonFiles(name, threadId)
@@ -623,12 +624,23 @@ describe('CodexEngine — core lifecycle', () => {
       threadId,
       [
         {
-          timestamp: '2026-05-24T00:00:02.000Z',
+          timestamp: new Date(assistantAtMs).toISOString(),
           type: 'event_msg',
           payload: {
             type: 'agent_message',
             message: lastAssistant,
             phase: 'final_answer',
+          },
+        },
+        {
+          timestamp: new Date(nowMs - 10_000).toISOString(),
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: { input_tokens: 10 },
+              model_context_window: 100,
+            },
           },
         },
       ],
@@ -640,7 +652,7 @@ describe('CodexEngine — core lifecycle', () => {
 
     expect(row).toMatchObject({
       extras: {
-        last: `${Buffer.byteLength(lastAssistant, 'utf8')}B/10s`,
+        last: `${Buffer.byteLength(lastAssistant, 'utf8')}B/45s`,
         preview: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX',
       },
     })

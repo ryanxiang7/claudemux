@@ -370,7 +370,8 @@ function codexLastTextCells(
   nowSec: number,
 ): { readonly last: string; readonly preview: string } | null {
   if (rollout?.lastAssistantText === null || rollout?.lastAssistantText === undefined) return null
-  const age = Math.max(0, nowSec - Math.floor(rollout.mtimeMs / 1000))
+  const assistantAtMs = rollout.lastAssistantAtMs ?? rollout.mtimeMs
+  const age = Math.max(0, nowSec - Math.floor(assistantAtMs / 1000))
   return {
     last: `${Buffer.byteLength(rollout.lastAssistantText, 'utf8')}B/${fmtAge(age)}`,
     preview: codexPreview(rollout.lastAssistantText),

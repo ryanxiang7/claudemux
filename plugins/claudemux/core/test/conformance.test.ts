@@ -400,8 +400,9 @@ function writeCodexRollout(threadId: string, assistantText: string, ageSeconds =
   const dir = join(codexSessionsRoot(), '2026', '05', '23')
   mkdirSync(dir, { recursive: true })
   const file = join(dir, `rollout-2026-05-23T12-00-00-${threadId}.jsonl`)
+  const pinned = Math.floor(Date.now() / 1000) - ageSeconds
   writeFileSync(file, `${JSON.stringify({
-    timestamp: '2026-05-23T12:00:00.000Z',
+    timestamp: new Date(pinned * 1000).toISOString(),
     type: 'event_msg',
     payload: {
       type: 'agent_message',
@@ -409,7 +410,6 @@ function writeCodexRollout(threadId: string, assistantText: string, ageSeconds =
       phase: 'final_answer',
     },
   })}\n`)
-  const pinned = Math.floor(Date.now() / 1000) - ageSeconds
   utimesSync(file, pinned, pinned)
 }
 
