@@ -3921,16 +3921,22 @@ var HELP_TEXTS = {
 `,
   resume: `tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]
 
-      Resume a prior conversation. PREFER passing <sid> from the
-      dispatcher's task ledger (active-dispatcher-tasks.md records
-      the sid of each teammate it spawned). Without sid, picks the
-      newest jsonl by mtime as a one-off convenience (stderr
-      warning). Validates the jsonl exists in the project dir; UUID
-      format enforced. Fails if a teammate session for <repo>
-      already exists.
-      --prompt sends a follow-up after a 3s settle, atomic like
+      Resume a prior conversation. Claude teammates use a transcript
+      sid: PREFER passing <sid> from the dispatcher's task ledger
+      (active-dispatcher-tasks.md records the sid of each teammate it
+      spawned). Without sid, Claude picks the newest jsonl by mtime as
+      a one-off convenience (stderr warning). Validates the jsonl
+      exists in the project dir; UUID format enforced.
+      Codex teammates require an explicit thread id from their
+      /tmp/teammate-codex/<name>/thread file or rollout filename. The
+      verb starts a new app-server daemon, writes the thread id back to
+      the Codex registry, and calls thread/resume; it does not auto-pick
+      a Codex thread.
+      Fails if a teammate session for <repo> already exists.
+      --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
-      the sync path). --task relabels the resumed conversation.
+      the sync path where available). --task relabels the resumed
+      conversation.
       Like every teammate launch, the resumed REPL starts with the
       AskUserQuestion tool disabled (see 'tm help spawn' for why): a
       resumed teammate raises questions by ending its turn with
@@ -7070,6 +7076,7 @@ var CODEX_CLIENT_INFO = {
 };
 var COMPACT_REASON = "codex compacts its own context automatically when the 252k window fills";
 var CODEX_STATUS_RPC_TIMEOUT_MS = 250;
+var CODEX_THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function notSupported(reason) {
   return { kind: "not-supported", reason };
 }
@@ -7149,10 +7156,19 @@ function codexNameFailure(name) {
   const validation = validateTeammateName(name);
   return validation.kind === "ok" ? null : `invalid codex teammate name '${name}': ${validation.reason}`;
 }
+function codexThreadIdFailure(threadId) {
+  return CODEX_THREAD_ID_RE.test(threadId) ? null : `codex thread id is not a valid uuid: ${threadId}`;
+}
 function codexSpawnHeader(name) {
   const state = readDaemonState(name);
   return state === null ? `spawned: ${name}
 ` : `spawned: ${name} (pid=${state.pid}, socket=${state.socketPath})
+`;
+}
+function codexResumeHeader(name) {
+  const state = readDaemonState(name);
+  return state === null ? `resumed: ${name}
+` : `resumed: ${name} (pid=${state.pid}, socket=${state.socketPath})
 `;
 }
 function formatFirstTurn(turn) {
@@ -7255,7 +7271,7 @@ var CodexEngine = class {
     history: "unsupported",
     memory: "unsupported",
     reload: "unsupported",
-    resume: "unsupported",
+    resume: "thread-id",
     detachedTurn: "unsupported",
     events: "push"
   };
@@ -7528,8 +7544,109 @@ var CodexEngine = class {
   async compact(_req, _ctx) {
     return { kind: "not-supported", reason: COMPACT_REASON };
   }
-  async resume(_req, _ctx) {
-    return { kind: "not-supported", reason: "codex thread resume is internal to send/wait in Phase 2b" };
+  async resume(req, ctx) {
+    const invalidName = codexNameFailure(req.name);
+    if (invalidName !== null) return { kind: "failed", message: invalidName };
+    if (req.checkpoint === null) {
+      return { kind: "failed", message: "codex resume requires an explicit thread id" };
+    }
+    const invalidThreadId = codexThreadIdFailure(req.checkpoint);
+    if (invalidThreadId !== null) return { kind: "failed", message: invalidThreadId };
+    const existing = readBaseRecord(req.name);
+    if (existing !== null) {
+      if (existing.engine !== "codex") {
+        return { kind: "failed", message: `'${req.name}' already exists as a ${existing.engine} teammate` };
+      }
+      if (daemonAlive(req.name) || daemonSpawnInProgress(req.name)) {
+        return { kind: "failed", message: `codex teammate '${req.name}' is already running` };
+      }
+      removeBaseRecord(req.name);
+    }
+    if (daemonAlive(req.name)) {
+      return { kind: "failed", message: `codex teammate '${req.name}' is already running` };
+    }
+    if (daemonSpawnInProgress(req.name)) {
+      return { kind: "failed", message: `codex teammate '${req.name}' is already being spawned` };
+    }
+    const createdAt = Math.floor(ctx.now() / 1e3);
+    const cwd = req.cwd ?? process.cwd();
+    const record = new CodexTeammateRecord({
+      name: req.name,
+      cwd,
+      createdAt,
+      displayName: req.displayName
+    });
+    const reserved = reserveBaseRecord(record);
+    if (reserved.kind === "taken") {
+      return { kind: "failed", message: `'${req.name}' already exists as a ${reserved.existing.engine} teammate` };
+    }
+    if (reserved.kind === "failed") return { kind: "failed", message: reserved.message };
+    let client = null;
+    try {
+      await spawnDaemon({
+        name: req.name,
+        binPath: this.options.binPath,
+        cwd,
+        env: ctx.env,
+        readyTimeoutMs: this.options.readyTimeoutMs,
+        meta: {
+          schema: 1,
+          name: req.name,
+          cwd,
+          displayName: req.displayName,
+          spawnedAt: createdAt
+        }
+      });
+      await this.healthCheck(req.name);
+      writeThreadId(req.name, req.checkpoint);
+      client = await openInitializedCodexClient(req.name);
+      await client.request("thread/resume", {
+        threadId: req.checkpoint,
+        persistExtendedHistory: false
+      });
+      touchLastSeen(req.name);
+      client.close();
+      client = null;
+      if (req.prompt === null) {
+        return {
+          kind: "resumed",
+          checkpoint: req.checkpoint,
+          tmResult: {
+            code: 0,
+            stdout: `resumed: ${req.checkpoint}
+`,
+            stderr: codexResumeHeader(req.name)
+          }
+        };
+      }
+      const turn = formatFirstTurn(await this.send(
+        { name: req.name, prompt: req.prompt, timeoutMs: null, paneQuiet: false },
+        ctx
+      ));
+      return {
+        kind: "resumed",
+        checkpoint: req.checkpoint,
+        tmResult: {
+          code: turn.code,
+          stdout: turn.stdout,
+          stderr: codexResumeHeader(req.name) + turn.stderr
+        }
+      };
+    } catch (e) {
+      removeBaseRecord(req.name);
+      if (e instanceof CodexDaemonAlreadyAliveError) {
+        return { kind: "failed", message: e.message };
+      }
+      if (!(e instanceof CodexDaemonSpawnInProgressError)) {
+        await reapDaemon(req.name);
+      }
+      return {
+        kind: "failed",
+        message: e instanceof Error ? e.message : String(e)
+      };
+    } finally {
+      if (client !== null) client.close();
+    }
   }
   async last(req, ctx) {
     const threadId = readDaemonState(req.name)?.threadId ?? null;
@@ -8349,10 +8466,13 @@ async function compactVerb(name, ctx, opts = { timeoutMs: null }) {
 
 // src/verbs/resume.ts
 async function resumeVerb(args, ctx) {
-  const engine = await resolveTargetEngine(args.name, ctx);
+  const resolved = await ctx.router.resolve(args.name);
+  const codexFromRollout = resolved === null && args.checkpoint !== null && ctx.engines.get("codex") !== void 0 && findCodexRolloutFile(args.checkpoint, ctx.engineContext.env) !== null;
+  const engine = codexFromRollout ? ctx.engines.get("codex") : resolved?.engine ?? await resolveTargetEngine(args.name, ctx);
   if ("code" in engine) return engine;
   const req = {
     name: args.name,
+    cwd: args.cwd,
     checkpoint: args.checkpoint,
     prompt: args.prompt,
     displayName: args.displayName
@@ -8531,6 +8651,13 @@ function spawnCwd(name, engine, env) {
   }
   return join13(env.dispatcherDir, name);
 }
+function resumeCwd(name, env) {
+  try {
+    return spawnCwd(name, "codex", env);
+  } catch {
+    return process.cwd();
+  }
+}
 async function combineResults(results) {
   let code = 0;
   let stdout = "";
@@ -8677,12 +8804,13 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       if ("error" in parsed) return parsed.error;
       if (parsed.repo === "") {
         return die5(
-          'usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]  (sid from ledger preferred; auto-pick on omit; --task relabels the resumed conversation)'
+          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  (Claude sid may be omitted to auto-pick; Codex requires an explicit thread id)'
         );
       }
       return resumeVerb(
         {
           name: parsed.repo,
+          cwd: resumeCwd(parsed.repo, env),
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           displayName: parsed.task.length === 0 ? null : parsed.task

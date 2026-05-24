@@ -7,20 +7,31 @@ import type { ResumeRequest, TeammateName } from '../engines/types'
 import type { TmResult } from '../tm'
 import type { VerbContext } from './context'
 import { resolveTargetEngine } from './resolve'
+import { findCodexRolloutFile } from '../engines/codex/rollout'
 
 export interface ResumeArgs {
   readonly name: TeammateName
+  readonly cwd: string | null
   readonly checkpoint: string | null
   readonly prompt: string | null
   readonly displayName: string | null
 }
 
 export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<TmResult> {
-  const engine = await resolveTargetEngine(args.name, ctx)
+  const resolved = await ctx.router.resolve(args.name)
+  const codexFromRollout =
+    resolved === null &&
+    args.checkpoint !== null &&
+    ctx.engines.get('codex') !== undefined &&
+    findCodexRolloutFile(args.checkpoint, ctx.engineContext.env) !== null
+  const engine = codexFromRollout
+    ? ctx.engines.get('codex')!
+    : resolved?.engine ?? await resolveTargetEngine(args.name, ctx)
   if ('code' in engine) return engine
 
   const req: ResumeRequest = {
     name: args.name,
+    cwd: args.cwd,
     checkpoint: args.checkpoint,
     prompt: args.prompt,
     displayName: args.displayName,

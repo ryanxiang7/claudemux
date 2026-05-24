@@ -18,6 +18,7 @@
 //                                  wait <n>ms before answering thread/read
 //   CODEX_FAKE_CONNECTION_LOG=<path>
 //                                  append "open"/"close" connection events
+//   CODEX_FAKE_RPC_LOG=<path>      append one JSON-RPC method name per request
 //   CODEX_FAKE_TURN_COMPLETE_DELAY_MS=<n>
 //                                  wait <n>ms before sending turn notifications
 //   CODEX_FAKE_TURN_STATUS=failed  complete the turn as failed
@@ -67,6 +68,12 @@ function logConnection(event) {
   const file = process.env.CODEX_FAKE_CONNECTION_LOG
   if (file === undefined || file.length === 0) return
   appendFileSync(file, `${event}\n`)
+}
+
+function logRpc(method) {
+  const file = process.env.CODEX_FAKE_RPC_LOG
+  if (file === undefined || file.length === 0) return
+  appendFileSync(file, `${method}\n`)
 }
 
 function bind() {
@@ -131,6 +138,7 @@ function bind() {
 
     socket.on('message', (data) => {
       const env = JSON.parse(data.toString())
+      logRpc(env.method)
       const id = env.id
       const params = env.params ?? {}
       if (env.method === 'initialize') {

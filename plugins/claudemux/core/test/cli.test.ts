@@ -8,7 +8,7 @@
  * tests here are about wiring (which handler was reached, with which args).
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -80,6 +80,16 @@ function fakeEnv(over: Partial<NativeEnv> = {}): NativeEnv {
     projectsDir: '/tmp',
     ...over,
   }
+}
+
+function writeCliRollout(sessionsRoot: string, threadId: string): string {
+  const dir = join(sessionsRoot, '2026', '05', '24')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `rollout-2026-05-24T00-00-00-${threadId}.jsonl`)
+  writeFileSync(file, '\n')
+  const mtime = new Date()
+  utimesSync(file, mtime, mtime)
+  return file
 }
 
 describe('bare tm and the help verb', () => {
@@ -455,7 +465,6 @@ describe('native dispatch', () => {
 
   test.each([
     ['compact', (name: string) => ['compact', name], 'codex compacts its own context automatically'],
-    ['resume', (name: string) => ['resume', name], 'codex thread resume is internal'],
     ['history', (name: string) => ['history', name], 'codex thread history enumeration is not exposed'],
     ['mem', (name: string) => ['mem', name], 'codex does not use Claude project memory files'],
     ['reload', (name: string) => ['reload', name], 'codex has no reload prompt command'],
@@ -477,6 +486,58 @@ describe('native dispatch', () => {
       expect(result.stderr).toContain(reason)
     } finally {
       removeBaseRecord(name)
+    }
+  })
+
+  test('resume routes an existing codex teammate through CodexEngine and requires a thread id', async () => {
+    const name = `codex-dispatch-resume-${Date.now()}`
+    writeBaseRecord(new CodexTeammateRecord({
+      name,
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
+    }))
+    const registry = new EngineRegistry()
+    registry.register(new CodexEngine())
+
+    try {
+      const result = await runCli(['resume', name], fakeEnv({ engines: registry }))
+      expect(result).toEqual({
+        code: 1,
+        stdout: '',
+        stderr: 'tm: resume: codex resume requires an explicit thread id\n',
+      })
+    } finally {
+      removeBaseRecord(name)
+    }
+  })
+
+  test('resume routes a killed non-prefix codex teammate by rollout thread id', async () => {
+    const name = `resume-router-${Date.now()}`
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789abc'
+    const sessionsRoot = mkdtempSync('/tmp/cmxcli-sessions-')
+    const savedSessionsRoot = process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+    const seen: Array<{ name: string; cwd: string | null; checkpoint: string | null }> = []
+    const fakeCodex = {
+      kind: 'codex',
+      resume: async (req: { name: string; cwd: string | null; checkpoint: string | null }) => {
+        seen.push({ name: req.name, cwd: req.cwd, checkpoint: req.checkpoint })
+        return { kind: 'resumed', checkpoint: req.checkpoint }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeCodex)
+    process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = sessionsRoot
+    writeCliRollout(sessionsRoot, threadId)
+
+    try {
+      const result = await runCli(['resume', name, threadId], fakeEnv({ engines: registry }))
+      expect(result).toEqual({ code: 0, stdout: `resumed: ${threadId}\n`, stderr: '' })
+      expect(seen).toEqual([{ name, cwd: realpathSync('/tmp'), checkpoint: threadId }])
+    } finally {
+      if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+      else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot
+      rmSync(sessionsRoot, { recursive: true, force: true })
     }
   })
 

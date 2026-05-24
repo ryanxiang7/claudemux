@@ -207,6 +207,14 @@ function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
   return join(env.dispatcherDir, name)
 }
 
+function resumeCwd(name: string, env: NativeEnv): string {
+  try {
+    return spawnCwd(name, 'codex', env)
+  } catch {
+    return process.cwd()
+  }
+}
+
 async function combineResults(results: readonly Promise<TmResult>[]): Promise<TmResult> {
   let code = 0
   let stdout = ''
@@ -366,14 +374,14 @@ async function dispatchEngineVerb(
       if ('error' in parsed) return parsed.error
       if (parsed.repo === '') {
         return die(
-          'usage: tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]  ' +
-            '(sid from ledger preferred; auto-pick on omit; --task relabels the ' +
-            'resumed conversation)',
+          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."]  ' +
+            '(Claude sid may be omitted to auto-pick; Codex requires an explicit thread id)',
         )
       }
       return resumeVerb(
         {
           name: parsed.repo,
+          cwd: resumeCwd(parsed.repo, env),
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           displayName: parsed.task.length === 0 ? null : parsed.task,

@@ -175,16 +175,22 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
 `,
   resume: `tm resume <repo> [<sid>] [--task <slug>] [--prompt "..."]
 
-      Resume a prior conversation. PREFER passing <sid> from the
-      dispatcher's task ledger (active-dispatcher-tasks.md records
-      the sid of each teammate it spawned). Without sid, picks the
-      newest jsonl by mtime as a one-off convenience (stderr
-      warning). Validates the jsonl exists in the project dir; UUID
-      format enforced. Fails if a teammate session for <repo>
-      already exists.
-      --prompt sends a follow-up after a 3s settle, atomic like
+      Resume a prior conversation. Claude teammates use a transcript
+      sid: PREFER passing <sid> from the dispatcher's task ledger
+      (active-dispatcher-tasks.md records the sid of each teammate it
+      spawned). Without sid, Claude picks the newest jsonl by mtime as
+      a one-off convenience (stderr warning). Validates the jsonl
+      exists in the project dir; UUID format enforced.
+      Codex teammates require an explicit thread id from their
+      /tmp/teammate-codex/<name>/thread file or rollout filename. The
+      verb starts a new app-server daemon, writes the thread id back to
+      the Codex registry, and calls thread/resume; it does not auto-pick
+      a Codex thread.
+      Fails if a teammate session for <repo> already exists.
+      --prompt sends a follow-up after relaunch, atomic like
       'tm spawn --prompt' (inherits 'tm send''s stderr ctx echo on
-      the sync path). --task relabels the resumed conversation.
+      the sync path where available). --task relabels the resumed
+      conversation.
       Like every teammate launch, the resumed REPL starts with the
       AskUserQuestion tool disabled (see 'tm help spawn' for why): a
       resumed teammate raises questions by ending its turn with

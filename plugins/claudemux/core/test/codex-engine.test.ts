@@ -228,6 +228,111 @@ describe('CodexEngine — core lifecycle', () => {
     expect(duplicate).toEqual({ kind: 'already-exists', existingEngine: 'codex' })
   })
 
+  test('resume starts a daemon, writes the thread id, and calls thread/resume', async () => {
+    const name = nameUnder()
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789abc'
+    const rpcLog = join(registryDir, 'resume-rpc.log')
+    spawned.push(name)
+
+    const resumed = await engine.resume(
+      {
+        name,
+        cwd,
+        checkpoint: threadId,
+        prompt: null,
+        displayName: 'resumed codex',
+      },
+      ctxWithEnv({ ...process.env, CODEX_FAKE_RPC_LOG: rpcLog }),
+    )
+
+    expect(resumed).toMatchObject({
+      kind: 'resumed',
+      checkpoint: threadId,
+      tmResult: {
+        code: 0,
+        stdout: `resumed: ${threadId}\n`,
+        stderr: expect.stringMatching(new RegExp(`^resumed: ${name} \\(pid=\\d+, socket=.*\\)\\n$`)),
+      },
+    })
+    expect(readBaseRecord(name)).toMatchObject({
+      name,
+      engine: 'codex',
+      cwd,
+      displayName: 'resumed codex',
+    })
+    expect(readDaemonState(name)?.threadId).toBe(threadId)
+    expect(readFileSync(codexThreadFile(name), 'utf8').trim()).toBe(threadId)
+    expect(readFileSync(rpcLog, 'utf8').split('\n')).toContain('thread/resume')
+
+    const send = await engine.send(
+      { name, prompt: 'continue from resumed thread', timeoutMs: 5000, paneQuiet: false },
+      ctx(),
+    )
+    expect(send).toMatchObject({ kind: 'completed' })
+    expect(readDaemonState(name)?.threadId).toBe(threadId)
+  })
+
+  test('resume rejects an already running codex teammate', async () => {
+    const name = nameUnder()
+    spawned.push(name)
+    await engine.spawn(
+      { name, cwd, resumeCheckpoint: null, prompt: null, timeoutMs: null, displayName: null },
+      ctx(),
+    )
+
+    const resumed = await engine.resume(
+      {
+        name,
+        cwd,
+        checkpoint: '019e5f5f-2e57-7abc-8def-123456789abc',
+        prompt: null,
+        displayName: null,
+      },
+      ctx(),
+    )
+
+    expect(resumed).toEqual({
+      kind: 'failed',
+      message: `codex teammate '${name}' is already running`,
+    })
+  })
+
+  test('resume accepts UUIDv7-shaped thread ids but rejects non-UUID checkpoints', async () => {
+    const acceptedName = nameUnder()
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789abc'
+    spawned.push(acceptedName)
+
+    const accepted = await engine.resume(
+      {
+        name: acceptedName,
+        cwd,
+        checkpoint: threadId,
+        prompt: null,
+        displayName: null,
+      },
+      ctx(),
+    )
+    expect(accepted).toMatchObject({ kind: 'resumed', checkpoint: threadId })
+
+    const rejectedName = nameUnder()
+    const rejected = await engine.resume(
+      {
+        name: rejectedName,
+        cwd,
+        checkpoint: 'not-a-thread-id',
+        prompt: null,
+        displayName: null,
+      },
+      ctx(),
+    )
+    expect(rejected).toEqual({
+      kind: 'failed',
+      message: 'codex thread id is not a valid uuid: not-a-thread-id',
+    })
+    expect(readBaseRecord(rejectedName)).toBeNull()
+    expect(readDaemonState(rejectedName)).toBeNull()
+  })
+
   test('concurrent same-name spawn keeps the winning daemon alive', async () => {
     const name = nameUnder()
     spawned.push(name)

@@ -90,6 +90,8 @@ export const CODEX_CLIENT_INFO: ClientInfo = {
 const COMPACT_REASON =
   'codex compacts its own context automatically when the 252k window fills'
 const CODEX_STATUS_RPC_TIMEOUT_MS = 250
+const CODEX_THREAD_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export interface CodexEngineOptions {
   readonly binPath?: string
@@ -189,11 +191,24 @@ function codexNameFailure(name: string): string | null {
     : `invalid codex teammate name '${name}': ${validation.reason}`
 }
 
+function codexThreadIdFailure(threadId: string): string | null {
+  return CODEX_THREAD_ID_RE.test(threadId)
+    ? null
+    : `codex thread id is not a valid uuid: ${threadId}`
+}
+
 function codexSpawnHeader(name: string): string {
   const state = readDaemonState(name)
   return state === null
     ? `spawned: ${name}\n`
     : `spawned: ${name} (pid=${state.pid}, socket=${state.socketPath})\n`
+}
+
+function codexResumeHeader(name: string): string {
+  const state = readDaemonState(name)
+  return state === null
+    ? `resumed: ${name}\n`
+    : `resumed: ${name} (pid=${state.pid}, socket=${state.socketPath})\n`
 }
 
 function formatFirstTurn(turn: TurnResult): TmResult {
@@ -326,7 +341,7 @@ export class CodexEngine implements Engine {
     history: 'unsupported',
     memory: 'unsupported',
     reload: 'unsupported',
-    resume: 'unsupported',
+    resume: 'thread-id',
     detachedTurn: 'unsupported',
     events: 'push',
   }
@@ -621,8 +636,113 @@ export class CodexEngine implements Engine {
     return { kind: 'not-supported', reason: COMPACT_REASON }
   }
 
-  async resume(_req: ResumeRequest, _ctx: EngineContext): Promise<ResumeResult> {
-    return { kind: 'not-supported', reason: 'codex thread resume is internal to send/wait in Phase 2b' }
+  async resume(req: ResumeRequest, ctx: EngineContext): Promise<ResumeResult> {
+    const invalidName = codexNameFailure(req.name)
+    if (invalidName !== null) return { kind: 'failed', message: invalidName }
+    if (req.checkpoint === null) {
+      return { kind: 'failed', message: 'codex resume requires an explicit thread id' }
+    }
+    const invalidThreadId = codexThreadIdFailure(req.checkpoint)
+    if (invalidThreadId !== null) return { kind: 'failed', message: invalidThreadId }
+
+    const existing = readBaseRecord(req.name)
+    if (existing !== null) {
+      if (existing.engine !== 'codex') {
+        return { kind: 'failed', message: `'${req.name}' already exists as a ${existing.engine} teammate` }
+      }
+      if (daemonAlive(req.name) || daemonSpawnInProgress(req.name)) {
+        return { kind: 'failed', message: `codex teammate '${req.name}' is already running` }
+      }
+      removeBaseRecord(req.name)
+    }
+    if (daemonAlive(req.name)) {
+      return { kind: 'failed', message: `codex teammate '${req.name}' is already running` }
+    }
+    if (daemonSpawnInProgress(req.name)) {
+      return { kind: 'failed', message: `codex teammate '${req.name}' is already being spawned` }
+    }
+
+    const createdAt = Math.floor(ctx.now() / 1000)
+    const cwd = req.cwd ?? process.cwd()
+    const record = new CodexTeammateRecord({
+      name: req.name,
+      cwd,
+      createdAt,
+      displayName: req.displayName,
+    })
+    const reserved = reserveBaseRecord(record)
+    if (reserved.kind === 'taken') {
+      return { kind: 'failed', message: `'${req.name}' already exists as a ${reserved.existing.engine} teammate` }
+    }
+    if (reserved.kind === 'failed') return { kind: 'failed', message: reserved.message }
+
+    let client: CodexWsClient | null = null
+    try {
+      await spawnDaemon({
+        name: req.name,
+        binPath: this.options.binPath,
+        cwd,
+        env: ctx.env,
+        readyTimeoutMs: this.options.readyTimeoutMs,
+        meta: {
+          schema: 1,
+          name: req.name,
+          cwd,
+          displayName: req.displayName,
+          spawnedAt: createdAt,
+        },
+      })
+
+      await this.healthCheck(req.name)
+      writeThreadId(req.name, req.checkpoint)
+      client = await openInitializedCodexClient(req.name)
+      await client.request<'thread/resume', ThreadResumeResponse>('thread/resume', {
+        threadId: req.checkpoint,
+        persistExtendedHistory: false,
+      })
+      touchLastSeen(req.name)
+      client.close()
+      client = null
+
+      if (req.prompt === null) {
+        return {
+          kind: 'resumed',
+          checkpoint: req.checkpoint,
+          tmResult: {
+            code: 0,
+            stdout: `resumed: ${req.checkpoint}\n`,
+            stderr: codexResumeHeader(req.name),
+          },
+        }
+      }
+      const turn = formatFirstTurn(await this.send(
+        { name: req.name, prompt: req.prompt, timeoutMs: null, paneQuiet: false },
+        ctx,
+      ))
+      return {
+        kind: 'resumed',
+        checkpoint: req.checkpoint,
+        tmResult: {
+          code: turn.code,
+          stdout: turn.stdout,
+          stderr: codexResumeHeader(req.name) + turn.stderr,
+        },
+      }
+    } catch (e) {
+      removeBaseRecord(req.name)
+      if (e instanceof CodexDaemonAlreadyAliveError) {
+        return { kind: 'failed', message: e.message }
+      }
+      if (!(e instanceof CodexDaemonSpawnInProgressError)) {
+        await reapDaemon(req.name)
+      }
+      return {
+        kind: 'failed',
+        message: e instanceof Error ? e.message : String(e),
+      }
+    } finally {
+      if (client !== null) client.close()
+    }
   }
 
   async last(req: LastRequest, ctx: EngineContext): Promise<TextResult> {

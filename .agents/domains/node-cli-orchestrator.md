@@ -133,6 +133,12 @@ persistence). A Codex teammate uses it directly — no tmux, no screen-scraping.
   commentary from the current thread's rollout JSONL. `tm ctx` reads the latest
   token-count event from the same rollout file and reports used tokens,
   context-window tokens, and percentage.
+- **Thread resume.** `tm resume <name> <thread-id>` for Codex starts a fresh
+  per-teammate `app-server`, writes the thread id back to
+  `/tmp/teammate-codex/<name>/thread`, and calls `thread/resume`. When `tm kill`
+  has removed the base identity record for a non-`codex-*` name, the resume verb
+  uses the matching rollout filename under `~/.codex/sessions/YYYY/MM/DD/` as
+  the durable hint that the checkpoint belongs to Codex.
 - **Schema pinning.** `codex app-server` is marked `[experimental]` end to end,
   and its JSON-RPC messages omit the `jsonrpc` version field — they are not
   strict JSON-RPC 2.0. The WebSocket client pins the message schema explicitly

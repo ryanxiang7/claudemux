@@ -312,10 +312,10 @@ same file). The hook-write set stays exactly as today:
 | `/tmp/claudemux-sid-changes.log` | SessionStart hook (append) | post-hoc inspection | diagnostic, **left as-is** |
 | `/tmp/teammate-codex/<name>/pid` | Codex engine | Codex liveness | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/socket` | Codex daemon (`--listen unix://...`), Codex engine reads | Codex engine | CodexTeammateRecord extension |
-| `/tmp/teammate-codex/<name>/thread` | Codex engine after first `thread/start` | Codex engine | CodexTeammateRecord extension |
+| `/tmp/teammate-codex/<name>/thread` | Codex engine after first `thread/start`, or `tm resume <name> <thread-id>` | Codex engine | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/started-at` | Codex engine at spawn | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/last-seen` | Codex engine per round-trip | doctor | CodexTeammateRecord extension |
-| `/tmp/teammate-codex/<name>/meta.json` | Codex engine at spawn | doctor, future resume | CodexTeammateRecord extension |
+| `/tmp/teammate-codex/<name>/meta.json` | Codex engine at spawn/resume | doctor, status | CodexTeammateRecord extension |
 | `~/.claude/projects/<encoded>/...` | Claude Code | `tm history`, Claude engine `ctx` | Claude Code product surface, **left as-is** |
 
 The rule by row, in two sentences: **`tm`-owned, engine-implementation-

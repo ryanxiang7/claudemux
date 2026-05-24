@@ -166,6 +166,8 @@ export type CompactResult =
 
 export interface ResumeRequest {
   readonly name: TeammateName
+  /** Absolute working directory used by engines that relaunch a process. */
+  readonly cwd: string | null
   /** Engine-specific identifier (Claude sid / Codex thread id); null lets the engine auto-pick when supported. */
   readonly checkpoint: string | null
   /** Optional first-turn prompt after the resumed teammate is relaunched. */
