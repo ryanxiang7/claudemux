@@ -45,6 +45,7 @@ import type { ClientInfo, InitializeResponse } from '../../codex-protocol/index.
 import type { ThreadItem } from '../../codex-protocol/v2/ThreadItem.js'
 import type { ThreadResumeResponse } from '../../codex-protocol/v2/ThreadResumeResponse.js'
 import type { ThreadStartResponse } from '../../codex-protocol/v2/ThreadStartResponse.js'
+import type { TmResult } from '../../tm'
 import type { TurnCompletedNotification } from './events.js'
 import { CodexWsClient } from './rpc.js'
 import { runTurn, subscribeTurnCollection } from './events.js'
@@ -76,7 +77,7 @@ import { validateTeammateName } from '../../identity/name.js'
 export const CODEX_CLIENT_INFO: ClientInfo = {
   name: 'claudemux',
   title: null,
-  version: '1.0.0-beta.0',
+  version: '1.0.0',
 }
 
 const COMPACT_REASON =
@@ -173,6 +174,29 @@ function codexNameFailure(name: string): string | null {
     : `invalid codex teammate name '${name}': ${validation.reason}`
 }
 
+function codexSpawnHeader(name: string): string {
+  const state = readDaemonState(name)
+  return state === null
+    ? `spawned: ${name}\n`
+    : `spawned: ${name} (pid=${state.pid}, socket=${state.socketPath})\n`
+}
+
+function formatFirstTurn(turn: TurnResult): TmResult {
+  if (turn.tmResult !== undefined) return turn.tmResult
+  switch (turn.kind) {
+    case 'completed':
+      return { code: 0, stdout: turn.text.endsWith('\n') ? turn.text : `${turn.text}\n`, stderr: '' }
+    case 'failed':
+      return { code: 1, stdout: '', stderr: `tm: turn failed: ${turn.message}\n` }
+    case 'timed-out':
+      return { code: 1, stdout: '', stderr: `tm: turn timed out after ${turn.elapsedMs}ms\n` }
+    case 'not-supported':
+      return { code: 0, stdout: '', stderr: `  not supported: ${turn.reason}\n` }
+    case 'no-op':
+      return { code: 0, stdout: '', stderr: `  no-op: ${turn.reason}\n` }
+  }
+}
+
 function fmtAge(age: number): string {
   if (age < 60) return `${age}s`
   if (age < 3600) return `${Math.floor(age / 60)}m`
@@ -234,6 +258,9 @@ export class CodexEngine implements Engine {
   async spawn(req: SpawnRequest, ctx: EngineContext): Promise<SpawnResult> {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) return { kind: 'failed', message: invalidName }
+    if (req.resumeCheckpoint !== null) {
+      return { kind: 'failed', message: '--resume is not supported for codex teammates' }
+    }
 
     const existing = readBaseRecord(req.name)
     if (existing !== null) {
@@ -276,13 +303,28 @@ export class CodexEngine implements Engine {
       await this.healthCheck(req.name)
 
       if (req.prompt === null) {
-        return { kind: 'spawned', name: req.name, firstTurn: null }
+        return {
+          kind: 'spawned',
+          name: req.name,
+          firstTurn: null,
+          tmResult: { code: 0, stdout: '', stderr: codexSpawnHeader(req.name) },
+        }
       }
       const firstTurn = await this.send(
-        { name: req.name, prompt: req.prompt, timeoutMs: req.timeoutMs },
+        { name: req.name, prompt: req.prompt, timeoutMs: req.timeoutMs, paneQuiet: false },
         ctx,
       )
-      return { kind: 'spawned', name: req.name, firstTurn }
+      const turn = formatFirstTurn(firstTurn)
+      return {
+        kind: 'spawned',
+        name: req.name,
+        firstTurn,
+        tmResult: {
+          code: turn.code,
+          stdout: turn.stdout,
+          stderr: codexSpawnHeader(req.name) + turn.stderr,
+        },
+      }
     } catch (e) {
       removeBaseRecord(req.name)
       if (e instanceof CodexDaemonAlreadyAliveError) {
@@ -302,6 +344,13 @@ export class CodexEngine implements Engine {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) {
       return { kind: 'failed', message: invalidName, recoverable: false }
+    }
+    if (req.paneQuiet) {
+      return {
+        kind: 'failed',
+        message: 'tm send: --pane-quiet is not supported for codex teammates',
+        recoverable: false,
+      }
     }
     if (!daemonAlive(req.name)) {
       return {
@@ -359,6 +408,20 @@ export class CodexEngine implements Engine {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) {
       return { kind: 'failed', message: invalidName, recoverable: false }
+    }
+    if (req.fresh) {
+      return {
+        kind: 'failed',
+        message: 'tm wait: --fresh is not supported for codex teammates',
+        recoverable: false,
+      }
+    }
+    if (req.paneQuiet) {
+      return {
+        kind: 'failed',
+        message: 'tm wait: --pane-quiet is not supported for codex teammates',
+        recoverable: false,
+      }
     }
     if (!daemonAlive(req.name)) {
       return { kind: 'failed', message: `codex teammate '${req.name}' is not alive`, recoverable: false }

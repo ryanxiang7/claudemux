@@ -25,6 +25,7 @@ export interface SpawnArgs {
   readonly name: TeammateName
   readonly engine: EngineKind
   readonly cwd: string
+  readonly resumeCheckpoint: string | null
   readonly prompt: string | null
   readonly timeoutMs: number | null
   readonly displayName: string | null
@@ -33,26 +34,49 @@ export interface SpawnArgs {
 export async function spawnVerb(args: SpawnArgs, ctx: VerbContext): Promise<TmResult> {
   const engine = ctx.engines.get(args.engine)
   if (engine === undefined) return noEngineRegistered()
+  if (engine.kind !== 'claude' && args.resumeCheckpoint !== null) {
+    return {
+      code: 1,
+      stdout: '',
+      stderr: 'tm: tm spawn: --resume is not supported for codex teammates\n',
+    }
+  }
+  if (engine.kind !== 'claude' && args.displayName !== null) {
+    return {
+      code: 1,
+      stdout: '',
+      stderr: 'tm: tm spawn: --task is not supported for codex teammates\n',
+    }
+  }
 
   const req: SpawnRequest = {
     name: args.name,
     cwd: args.cwd,
+    resumeCheckpoint: args.resumeCheckpoint,
     prompt: args.prompt,
     timeoutMs: args.timeoutMs,
     displayName: args.displayName,
   }
   const result: SpawnResult = await engine.spawn(req, ctx.engineContext)
+  if (result.tmResult !== undefined) return result.tmResult
 
   switch (result.kind) {
     case 'spawned':
       return { code: 0, stdout: `spawned: ${result.name}\n`, stderr: '' }
     case 'already-exists':
+      if (args.engine === 'codex') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: `tm: codex teammate '${args.name}' already exists (engine=${result.existingEngine})\n`,
+        }
+      }
       return {
         code: 1,
         stdout: '',
-        stderr: `tm: spawn: '${args.name}' already exists as a ${result.existingEngine} teammate\n`,
+        stderr: `tm: '${args.name}' already exists as a ${result.existingEngine} teammate\n`,
       }
     case 'failed':
-      return { code: 1, stdout: '', stderr: `tm: spawn: ${result.message}\n` }
+      return { code: 1, stdout: '', stderr: `tm: ${result.message}\n` }
   }
 }
