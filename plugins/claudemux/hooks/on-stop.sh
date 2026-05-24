@@ -107,6 +107,12 @@ rev_lines() {
 #   - real user entry (string content): `halt` — that's the previous turn's
 #     boundary. tool_result user entries have array content, so they fail the
 #     type check and we keep walking back.
+#   - synthetic local-command user entries (`<bash-input>`, `<bash-stdout>`,
+#     `<bash-stderr>`, `<local-command-stdout>`, `<local-command-caveat>`,
+#     `<command-name|message|args>`): Claude Code writes these as
+#     string-content user entries AFTER an assistant turn ends (the `!cmd`
+#     and `/slash` machinery). They are not turn boundaries — skip them and
+#     keep walking back.
 #   - anything else: skip.
 # `halt` makes jq exit cleanly, the upstream reverser gets SIGPIPE and stops,
 # so the file read is bounded by ONE turn's worth of lines (~10s-100s), not
@@ -114,7 +120,10 @@ rev_lines() {
 # chronological order and joined with blank lines.
 extract_last_turn() {
     rev_lines "$1" 2>/dev/null | jq -c '
-        if .type == "user" and (.message.content | type) == "string" then halt
+        if .type == "user" and (.message.content | type) == "string" then
+          if (.message.content | test("^<(bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-caveat|command-name|command-message|command-args)\\b")) then empty
+          else halt
+          end
         elif .type == "assistant" then
           (.message.content // [] | map(select(.type == "text") | .text) | join(""))
           | select(length > 0)

@@ -73,6 +73,56 @@ export function transcriptFile(projectsDir: string, cwd: string, sid: string): s
 }
 
 /**
+ * The most recent assistant turn's joined text from a Claude Code
+ * transcript jsonl, or `''` when no text-bearing assistant entry exists
+ * (unreadable file, malformed entries, tool-only/thinking-only turns).
+ *
+ * Walks the parsed entries from end to start, picks the first assistant
+ * entry whose `message.content` carries at least one non-empty `text`
+ * block, and returns those text blocks joined with `''` — the on-stop
+ * hook's `extract_last_turn` shape for a single assistant entry.
+ *
+ * Used by `tm spawn --resume` to seed `<sid>.last` with the prior turn's
+ * deliverable so the dispatcher has something to re-read after the
+ * relaunch, even before the next turn fires.
+ */
+export function readLastAssistantText(jsonlPath: string): string {
+  let content: string
+  try {
+    content = readFileSync(jsonlPath, 'utf8')
+  } catch {
+    return ''
+  }
+  const lines = content.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (line.trim() === '') continue
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isPlainObject(entry)) continue
+    if (entry['type'] !== 'assistant') continue
+    const message = entry['message']
+    if (!isPlainObject(message)) continue
+    const arr = message['content']
+    if (!Array.isArray(arr)) continue
+    const texts: string[] = []
+    for (const item of arr) {
+      if (!isPlainObject(item)) continue
+      if (item['type'] !== 'text') continue
+      const t = item['text']
+      if (typeof t === 'string') texts.push(t)
+    }
+    const joined = texts.join('')
+    if (joined.length > 0) return joined
+  }
+  return ''
+}
+
+/**
  * Read a teammate's ctx usage from its transcript jsonl — the native
  * form of the `jq -s` pass `tm`'s `_ctx_format_line` ran. Collects
  * every assistant entry's `message.usage`: `used` / `out` come from the

@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node
 import { dirname } from 'node:path'
 
 import { claudeSend } from './send'
+import { readLastAssistantText, transcriptFile } from './ctx'
 import { clearIdle, isDirectory } from './idle'
 import { newSid, randSuffix, sanitizeTaskSlug } from './identifiers'
 import { sleepMs } from './clock'
@@ -319,12 +320,33 @@ async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<
     clearIdle(sid)
   }
 
-  // Fresh-spawn `.last` sentinel — keeps `tm last` reporting "no reply
-  // yet" until the first real Stop. Resume mode skips this: the resumed
-  // session's last-turn text is context the dispatcher may want to re-read.
-  if (resumeSid.length === 0 && !continueLatest) {
+  // `.last` seed. `clearIdle` above just removed the prior file; without
+  // a re-seed here, `tm last` / `tm send`'s "(no text reply…)" sentinel
+  // is the only thing the dispatcher can observe until the on-stop hook
+  // writes a fresh extraction — and that hook can return empty (tool-only
+  // turn, transcript-walk halting on a meta user entry) and `rm` the
+  // file, leaving the dispatcher with nothing.
+  //
+  //   - Fresh spawn: write the empty sentinel. `tm last` reports the
+  //     "no reply yet" state until the first real Stop.
+  //   - Resume: extract the prior turn's assistant text from the
+  //     existing transcript and seed `.last` with it (or the empty
+  //     sentinel when no such text exists). The dispatcher can read the
+  //     pre-relaunch deliverable immediately, and a hook miss on the
+  //     next turn leaves that prior text in place rather than a
+  //     missing file.
+  //   - Continue-latest: sid is unknown until SessionStart fires and
+  //     writes `.sid`, so there is nothing to key the marker by yet.
+  //     The on-stop hook will create `.last` once it has a sid.
+  if (!continueLatest) {
     mkdirSync(idleDir(), { recursive: true })
-    writeFileSync(lastFileFor(sid), '')
+    if (resumeSid.length === 0) {
+      writeFileSync(lastFileFor(sid), '')
+    } else {
+      const jsonl = transcriptFile(env.projectsDir, cwdPhys, sid)
+      const prior = readLastAssistantText(jsonl)
+      writeFileSync(lastFileFor(sid), prior.length > 0 ? `${prior}\n` : '')
+    }
   }
 
   const readyAfter = await pollReady(repo)

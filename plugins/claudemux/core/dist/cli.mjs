@@ -4576,6 +4576,41 @@ function isRegularFile3(path) {
 function transcriptFile(projectsDir, cwd, sid) {
   return join3(projectsDir, encodeProjectDir(cwd), `${sid}.jsonl`);
 }
+function readLastAssistantText(jsonlPath) {
+  let content;
+  try {
+    content = readFileSync3(jsonlPath, "utf8");
+  } catch {
+    return "";
+  }
+  const lines = content.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isPlainObject(entry)) continue;
+    if (entry["type"] !== "assistant") continue;
+    const message = entry["message"];
+    if (!isPlainObject(message)) continue;
+    const arr = message["content"];
+    if (!Array.isArray(arr)) continue;
+    const texts = [];
+    for (const item of arr) {
+      if (!isPlainObject(item)) continue;
+      if (item["type"] !== "text") continue;
+      const t = item["text"];
+      if (typeof t === "string") texts.push(t);
+    }
+    const joined = texts.join("");
+    if (joined.length > 0) return joined;
+  }
+  return "";
+}
 function readCtxUsage(jsonl) {
   let content;
   try {
@@ -6200,9 +6235,16 @@ async function claudeLaunch(req, env) {
 `);
     clearIdle(sid);
   }
-  if (resumeSid.length === 0 && !continueLatest) {
+  if (!continueLatest) {
     mkdirSync4(idleDir(), { recursive: true });
-    writeFileSync4(lastFileFor(sid), "");
+    if (resumeSid.length === 0) {
+      writeFileSync4(lastFileFor(sid), "");
+    } else {
+      const jsonl = transcriptFile(env.projectsDir, cwdPhys, sid);
+      const prior = readLastAssistantText(jsonl);
+      writeFileSync4(lastFileFor(sid), prior.length > 0 ? `${prior}
+` : "");
+    }
   }
   const readyAfter = await pollReady(repo);
   if (readyAfter !== null) {
