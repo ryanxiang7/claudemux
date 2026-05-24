@@ -9,57 +9,9 @@ import { probeStillAlive, waitIdleSignal, waitPaneQuiet } from './wait-signals'
 import { echoCtxToStderr, printLastOrEmpty } from './post-turn'
 import { die } from './tmux'
 import { isNonNegativeInteger } from './clock'
+import { parseWaitArgs } from '../../shared/verb-args'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
-
-/** Parsed arg vector for `tm wait`. */
-export interface WaitArgs {
-  repo: string
-  timeout: string | null
-  fresh: boolean
-  paneQuiet: boolean
-}
-
-/**
- * `cmd_wait`'s arg loop; positional after `<repo>` is a positional
- * timeout. `--timeout` with no value is bash's silent-exit-1 case
- * (`${2:-}; shift 2` trips `set -e`); mirror it so the conformance
- * differential stays clean.
- */
-export function parseWaitArgs(args: readonly string[]): WaitArgs | { error: TmResult } {
-  const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
-  let timeout: string | null = null
-  let fresh = false
-  let paneQuiet = false
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]!
-    if (arg === '--fresh') {
-      fresh = true
-      i++
-    } else if (arg === '--pane-quiet') {
-      paneQuiet = true
-      i++
-    } else if (arg === '--timeout') {
-      if (i + 1 >= args.length) return { error: SILENT }
-      timeout = args[i + 1]!
-      i += 2
-    } else if (arg.startsWith('--timeout=')) {
-      timeout = arg.slice('--timeout='.length)
-      i++
-    } else if (arg.startsWith('-')) {
-      return { error: die(`tm wait: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
-      i++
-    } else {
-      timeout = arg
-      i++
-    }
-  }
-  return { repo, timeout, fresh, paneQuiet }
-}
 
 export async function claudeWait(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
   const parsed = parseWaitArgs(args)

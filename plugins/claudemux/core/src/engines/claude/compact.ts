@@ -21,45 +21,9 @@ import { idleMarkerFor } from '../../persistence/paths'
 import { die, requireSession, resolvePaneTarget } from './tmux'
 import { isNonNegativeInteger, nowSec, sleepMs } from './clock'
 import { probeStillAlive } from './wait-signals'
+import { parseCompactArgs } from '../../shared/verb-args'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
-
-/** Parsed arg vector for `tm compact`. */
-export interface CompactArgs {
-  repo: string
-  timeout: string
-}
-
-/**
- * `cmd_compact`'s arg loop: same positional-then-flag rule as `wait`.
- * `--timeout` with no value is bash's silent-exit-1 case; mirror that.
- */
-export function parseCompactArgs(args: readonly string[]): CompactArgs | { error: TmResult } {
-  const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
-  let timeout = '1800'
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]!
-    if (arg === '--timeout') {
-      if (i + 1 >= args.length) return { error: SILENT }
-      timeout = args[i + 1]!
-      i += 2
-    } else if (arg.startsWith('--timeout=')) {
-      timeout = arg.slice('--timeout='.length)
-      i++
-    } else if (arg.startsWith('-')) {
-      return { error: die(`tm compact: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
-      i++
-    } else {
-      timeout = arg
-      i++
-    }
-  }
-  return { repo, timeout }
-}
 
 /** The bracketed-paste refusal `Claude Code` emits for a too-short transcript. */
 export const COMPACT_REFUSAL_MARK = '⎿  Error: Not enough messages to compact'

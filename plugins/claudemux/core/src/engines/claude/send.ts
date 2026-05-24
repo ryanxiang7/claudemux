@@ -9,8 +9,8 @@
  * Two exported entry points keep the strangler clean:
  *   - `claudeSend(args, env)` — byte-exact `TmResult`, the cli dispatch
  *     and the conformance harness both pin to this shape.
- *   - `parseSendArgs` is reused by `claudeReload` (which fans out by
- *     calling `claudeSend` directly).
+ *   - the shared parser in `shared/verb-args.ts` is reused by `claudeReload`
+ *     (which fans out by calling `claudeSend` directly).
  */
 
 import { sendKeys } from './keys'
@@ -18,85 +18,9 @@ import { probeStillAlive, waitIdleSignal, waitPaneQuiet } from './wait-signals'
 import { echoCtxToStderr, printLastOrEmpty } from './post-turn'
 import { die } from './tmux'
 import { isNonNegativeInteger } from './clock'
+import { parseSendArgs } from '../../shared/verb-args'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
-
-/** Parsed arg vector for `tm send`. */
-export interface SendArgs {
-  repo: string
-  prompt: string
-  hasPrompt: boolean
-  paneQuiet: boolean
-  timeout: string | null
-}
-
-/**
- * Single-quote-escape a string for safe embedding in a bash command
- * line — used by the legacy-form error suggestion below.
- */
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-/**
- * `cmd_send`'s arg loop. Catches the legacy "tm send repo run tests"
- * form with a dedicated error — pre-0.3.0 callers passed prompts as
- * positional args, and this catches that habit explicitly rather than
- * swallowing the trailing positionals as a confusing "unknown arg".
- */
-export function parseSendArgs(args: readonly string[]): SendArgs | { error: TmResult } {
-  let paneQuiet = false
-  let timeout: string | null = null
-  let repo = ''
-  let prompt = ''
-  let hasPrompt = false
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]!
-    if (arg === '--pane-quiet') {
-      paneQuiet = true
-      i++
-    } else if (arg === '--timeout') {
-      if (i + 1 >= args.length) return { error: die('tm send: --timeout requires a value') }
-      timeout = args[i + 1]!
-      i += 2
-    } else if (arg.startsWith('--timeout=')) {
-      timeout = arg.slice('--timeout='.length)
-      i++
-    } else if (arg === '--prompt') {
-      if (i + 1 >= args.length) return { error: die('tm send: --prompt requires a value') }
-      prompt = args[i + 1]!
-      hasPrompt = true
-      i += 2
-    } else if (arg.startsWith('--prompt=')) {
-      prompt = arg.slice('--prompt='.length)
-      hasPrompt = true
-      i++
-    } else if (arg === '--') {
-      i++
-      repo = args[i] ?? ''
-      i++
-      break
-    } else if (arg.startsWith('-')) {
-      return { error: die(`tm send: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
-      i++
-    } else {
-      // Legacy form: `tm send <repo> <free text>`. Echo the whole remaining
-      // argv so the suggested rewrite preserves every token. The escape
-      // uses POSIX-safe shell single-quoting.
-      const tail = args.slice(i).join(' ')
-      return {
-        error: die(
-          'tm send: prompt is now a --prompt flag, not a positional arg. ' +
-            `Did you mean: tm send ${repo} --prompt ${shellSingleQuote(tail)} ?`,
-        ),
-      }
-    }
-  }
-  return { repo, prompt, hasPrompt, paneQuiet, timeout }
-}
 
 /**
  * The Claude-side `tm send` body. The wrapper at the CLI layer handles

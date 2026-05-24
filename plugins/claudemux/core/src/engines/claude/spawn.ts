@@ -23,6 +23,7 @@ import { newSid, randSuffix, sanitizeTaskSlug } from './identifiers'
 import { sleepMs } from './clock'
 import { dieRepoNotFound } from './repo-fs'
 import { die, sessionExists } from './tmux'
+import { parseSpawnArgs } from '../../shared/verb-args'
 import {
   cwdFile,
   idleDir,
@@ -34,16 +35,6 @@ import {
 import { join } from 'node:path'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
-
-/** Parsed arg vector for `tm spawn`. */
-export interface SpawnArgs {
-  engine: 'claude' | 'codex' | null
-  resumeSid: string
-  task: string
-  prompt: string
-  hasPrompt: boolean
-  timeout: string | null
-}
 
 interface ClaudeLaunchArgs {
   readonly repo: string
@@ -60,68 +51,6 @@ interface ClaudeLaunchArgs {
    * never fires inside the window it was scheduled against.
    */
   readonly timeout: string | null
-}
-
-/**
- * `cmd_spawn`'s arg loop. `--prompt` is the only value-bearing flag
- * bash validates explicitly (`[[ $# -ge 2 ]] || die`); `--task` and
- * `--resume` use `"${2:-}"; shift 2`, which under `set -e` exits
- * silently when the value is missing because `shift 2` past the end
- * returns non-zero.
- */
-export function parseSpawnArgs(rest: readonly string[]): SpawnArgs | { error: TmResult } {
-  const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let resumeSid = ''
-  let task = ''
-  let prompt = ''
-  let hasPrompt = false
-  let timeout: string | null = null
-  let engine: 'claude' | 'codex' | null = null
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i]!
-    if (arg === '--resume') {
-      if (i + 1 >= rest.length) return { error: SILENT }
-      resumeSid = rest[i + 1]!
-      i++
-    } else if (arg === '--engine') {
-      if (i + 1 >= rest.length) return { error: die('tm spawn: --engine requires a value') }
-      const value = rest[i + 1]!
-      if (value !== 'claude' && value !== 'codex') {
-        return { error: die(`tm spawn: --engine must be 'claude' or 'codex' (got: '${value}')`) }
-      }
-      engine = value
-      i++
-    } else if (arg.startsWith('--engine=')) {
-      const value = arg.slice('--engine='.length)
-      if (value !== 'claude' && value !== 'codex') {
-        return { error: die(`tm spawn: --engine must be 'claude' or 'codex' (got: '${value}')`) }
-      }
-      engine = value
-    } else if (arg === '--task') {
-      if (i + 1 >= rest.length) return { error: SILENT }
-      task = rest[i + 1]!
-      i++
-    } else if (arg === '--timeout') {
-      if (i + 1 >= rest.length) return { error: die('tm spawn: --timeout requires a value') }
-      timeout = rest[i + 1]!
-      i++
-    } else if (arg.startsWith('--timeout=')) {
-      timeout = arg.slice('--timeout='.length)
-    } else if (arg.startsWith('--task=')) {
-      task = arg.slice('--task='.length)
-    } else if (arg === '--prompt') {
-      if (i + 1 >= rest.length) return { error: die('tm spawn: --prompt requires a value') }
-      prompt = rest[i + 1]!
-      hasPrompt = true
-      i++
-    } else if (arg.startsWith('--prompt=')) {
-      prompt = arg.slice('--prompt='.length)
-      hasPrompt = true
-    } else {
-      return { error: die(`unknown flag: ${arg}`) }
-    }
-  }
-  return { engine, resumeSid, task, prompt, hasPrompt, timeout }
 }
 
 /**

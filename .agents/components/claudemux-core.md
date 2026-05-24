@@ -66,7 +66,7 @@ contracts they hold.
 > Codex names with an explicit thread id, `verbs/resume.ts` uses the rollout
 > filename as the durable routing hint.
 > `tm ask "<prompt>"` uses
-> [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts).
+> [`plugins/claudemux/core/src/engines/codex/ask.ts`](/plugins/claudemux/core/src/engines/codex/ask.ts).
 > Daemon lifecycle lives in
 > [`plugins/claudemux/core/src/engines/codex/supervisor.ts`](/plugins/claudemux/core/src/engines/codex/supervisor.ts),
 > the JSON-RPC client lives in
@@ -95,6 +95,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `cli/parse.ts` | Shared CLI parsing and request derivation: help pre-scan, timeout validation, `ctx` / `reload` target parsing, spawn engine inference, and Codex cwd derivation for resume/history. |
 | `cli/errors.ts` | Shared `{code, stdout, stderr}` error/help result constructors for `tm:` errors, removed verbs, unknown verbs, and `tm help`. |
 | `cli/context.ts` | Production per-invocation wiring: `NativeEnv`, `EngineRegistry`, `ProductionTeammateRouter`, live identity migrators, and `ProductionIdentityStore`. |
+| `shared/verb-args.ts` | Shared teammate-verb argument parsers (`spawn`, `send`, `wait`, `compact`, `resume`) used by the CLI layer and Claude compatibility wrappers. Cross-engine flags such as `--engine` live here, not under `engines/claude/`. |
 | `help.ts` | `HELP_TEXTS`, `OVERVIEW_HELP`, `REMOVED_VERB_MESSAGES` — the user-facing help strings, the single source of truth that `tm <verb> --help` and `tm help <verb>` print. |
 | `verbs.ts` | `TM_VERBS` — the catalog of the 18 `tm` verbs. |
 | `verbs/` | Verb-layer dispatch — `verbs/{ls,states,status,kill,spawn,send,wait,compact,resume,last,ctx,history,mem,reload}.ts` build engine requests, resolve teammate names through `identity/router.ts`, call engine methods, and format discriminated results through `verbs/format.ts`. `verbs/{ask,archive,poll}.ts` are local dispatcher / diagnostic helpers. |
@@ -108,12 +109,12 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `identity/name.ts` | `validateTeammateName` — single-segment + nested-name (`flow/flow-1`) validator. Rejects `__` only when the name also contains `/` (the one case where the `/` → `__` tmux encoding would round-trip ambiguously); legacy flat names like `flow__1` remain reachable. |
 | `identity/router.ts` | `ProductionTeammateRouter` reads the identity JSON. Production wiring may run per-engine identity migrators for live pre-JSON teammates, but routing still happens only after `/tmp/teammate-<name>.json` exists and records an engine. |
 | `proc.ts` | `spawnCapture` — the `node:child_process` spawn primitive every shell-out backend is built on. |
-| `tm.ts` | `TmResult` / `TmRunOptions` types, the `EXIT_SYNC_WAIT_EXPIRED` constant (`124`, GNU `timeout(1)` convention) every wait-bearing verb returns when its `--timeout` elapses without the teammate dying, and `resolveTmBinary` — the live-teammate harness's seam for locating the user-installed `tm` PATH entry (honors `CLAUDEMUX_TM`). |
+| `tm.ts` | `TmResult`, the `EXIT_SYNC_WAIT_EXPIRED` constant (`124`, GNU `timeout(1)` convention) every wait-bearing verb returns when its `--timeout` elapses without the teammate dying, and `resolveTmBinary` — the live-teammate harness's seam for locating the user-installed `tm` PATH entry (honors `CLAUDEMUX_TM`). |
 | `tmux.ts` | The `tmux` backend — `runTmux`, used by every verb that queries tmux. |
 | `column.ts` | The `column` backend — `runColumn` pipes tab-separated rows through `column -t` for table-rendering verbs. |
 | `grep.ts` | The `grep` backend — `runGrep` matches input against a regex with `grep -qE` for the `poll` verb. |
 | [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts) | `CodexEngine implements Engine`: spawn/send/wait/list/status/kill/resume/last/ctx/history, with `resume` relaunching a daemon by explicit thread id or by Codex `thread/list` latest-thread selection, `history` listing rollout-backed thread ids by cwd, `list` and `status` probing daemon health plus Codex thread status, and structured not-supported results for capabilities Codex does not expose. |
-| [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts) | Thin compatibility helpers around `CodexEngine` for Codex-specific callers and tests, plus `codexAsk` for the pool-borrow diagnostic path. The main teammate-targeted CLI dispatch goes through `verbs/<v>.ts` and the Engine registry. |
+| [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts) | Compatibility re-export surface for Codex-specific callers and tests. Implementation lives in `ask.ts`, `verb-lifecycle.ts`, `verb-turns.ts`, `verb-state.ts`, and `verb-common.ts`; the main teammate-targeted CLI dispatch goes through `verbs/<v>.ts` and the Engine registry. |
 | [`plugins/claudemux/core/src/engines/codex/supervisor.ts`](/plugins/claudemux/core/src/engines/codex/supervisor.ts) | Per-teammate daemon lifecycle — `spawnDaemon`, `daemonAlive`, `readDaemonState`, `listDaemons`, `reapDaemon`, and the per-call bookkeeping helpers. Owns spawn-detached, lock-based duplicate-spawn protection, the unix-socket readiness probe, and SIGTERM-then-SIGKILL reap. |
 | [`plugins/claudemux/core/src/engines/codex/rpc.ts`](/plugins/claudemux/core/src/engines/codex/rpc.ts) | The WebSocket JSON-RPC client. Routes incoming frames by envelope shape (`method+id+params` is a server-request, `method+params` is a notification, `id+result\|error` is a response), pinned by [`plugins/claudemux/core/test/codex-schema.test.ts`](/plugins/claudemux/core/test/codex-schema.test.ts). |
 | [`plugins/claudemux/core/src/engines/codex/events.ts`](/plugins/claudemux/core/src/engines/codex/events.ts) | Codex-private event collector. It subscribes to `item/completed` and `turn/completed`, filters by `threadId`, buckets by `turnId`, and returns a merged turn to the engine. |

@@ -13,90 +13,9 @@ import { UUID_RE } from './identifiers'
 import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
 import { die, sessionExists } from './tmux'
 import { tmuxSessionName } from '../../persistence/paths'
+import { parseResumeArgs } from '../../shared/verb-args'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
-
-/** Parsed arg vector for `tm resume`. */
-export interface ResumeArgs {
-  repo: string
-  sid: string
-  task: string
-  prompt: string
-  hasPrompt: boolean
-  engine: 'claude' | 'codex' | null
-}
-
-/**
- * `cmd_resume`'s arg loop; two positionals (`<repo> [<sid>]`) plus
- * flags. Like `cmd_spawn`, `--task` is bash's silent-exit-1 path (no
- * `[[ $# -ge 2 ]]` guard); `--prompt` is the explicit-die path.
- * `--engine` is the explicit-die path too — it carries a required
- * `claude`/`codex` value, parallel to `tm spawn --engine`.
- */
-export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: TmResult } {
-  const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
-  let sid = ''
-  let task = ''
-  let prompt = ''
-  let hasPrompt = false
-  let engine: 'claude' | 'codex' | null = null
-  let i = 0
-  while (i < args.length) {
-    const arg = args[i]!
-    if (arg === '--prompt') {
-      if (i + 1 >= args.length) return { error: die('tm resume: --prompt requires a value') }
-      prompt = args[i + 1]!
-      hasPrompt = true
-      i += 2
-    } else if (arg.startsWith('--prompt=')) {
-      prompt = arg.slice('--prompt='.length)
-      hasPrompt = true
-      i++
-    } else if (arg === '--task') {
-      if (i + 1 >= args.length) return { error: SILENT }
-      task = args[i + 1]!
-      i += 2
-    } else if (arg.startsWith('--task=')) {
-      task = arg.slice('--task='.length)
-      i++
-    } else if (arg === '--engine') {
-      if (i + 1 >= args.length) return { error: die('tm resume: --engine requires a value') }
-      const value = args[i + 1]!
-      if (value !== 'claude' && value !== 'codex') {
-        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) }
-      }
-      engine = value
-      i += 2
-    } else if (arg.startsWith('--engine=')) {
-      const value = arg.slice('--engine='.length)
-      if (value !== 'claude' && value !== 'codex') {
-        return { error: die(`tm resume: --engine must be 'claude' or 'codex' (got: '${value}')`) }
-      }
-      engine = value
-      i++
-    } else if (arg === '--') {
-      i++
-      break
-    } else if (arg.startsWith('-')) {
-      return { error: die(`unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
-      i++
-    } else if (sid === '') {
-      sid = arg
-      i++
-    } else {
-      return {
-        error: die(
-          `tm resume: too many positional args (got '${arg}' after ` +
-            `repo='${repo}' sid='${sid}')`,
-        ),
-      }
-    }
-  }
-  return { repo, sid, task, prompt, hasPrompt, engine }
-}
 
 export async function claudeResume(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
   const parsed = parseResumeArgs(args)

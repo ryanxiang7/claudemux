@@ -26,7 +26,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
@@ -49,17 +48,6 @@ export function readIfPresent(path: string): string | null {
     return readFileSync(path, 'utf8')
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw err
-  }
-}
-
-/** Whether the file exists. Mirrors bash `[[ -e path ]]`. */
-export function exists(path: string): boolean {
-  try {
-    statSync(path)
-    return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw err
   }
 }

@@ -15,6 +15,7 @@
  */
 
 import { join } from 'node:path'
+import type { TeammateName } from '../engines/types'
 
 /** The root directory the Claude engine's extension files live in. */
 const TEAMMATE_ROOT = '/tmp'
@@ -40,22 +41,22 @@ export function lastFileFor(sid: string): string {
 }
 
 /** `/tmp/teammate-<name>.cwd` — written at spawn; read by SessionStart hook. */
-export function cwdFile(name: string): string {
+export function cwdFile(name: TeammateName): string {
   return join(TEAMMATE_ROOT, `teammate-${name}.cwd`)
 }
 
 /** `/tmp/teammate-<name>.sid` — current session id; updated by SessionStart on `/clear`. */
-export function sidFile(name: string): string {
+export function sidFile(name: TeammateName): string {
   return join(TEAMMATE_ROOT, `teammate-${name}.sid`)
 }
 
 /** `/tmp/teammate-<name>.ready` — touched by SessionStart; cleared before spawn. */
-export function readyFile(name: string): string {
+export function readyFile(name: TeammateName): string {
   return join(TEAMMATE_ROOT, `teammate-${name}.ready`)
 }
 
 /** `/tmp/teammate-<name>.send-at` — touched per send; read by the pane-quiet wait fallback. */
-export function sendAtFile(name: string): string {
+export function sendAtFile(name: TeammateName): string {
   return join(TEAMMATE_ROOT, `teammate-${name}.send-at`)
 }
 
@@ -70,7 +71,7 @@ export const TMUX_SESSION_PREFIX = 'teammate-'
  *
  * Example: `flow/flow-1` → `teammate-flow__flow-1`.
  */
-export function tmuxSessionName(name: string): string {
+export function tmuxSessionName(name: TeammateName): string {
   return `${TMUX_SESSION_PREFIX}${name.replace(/\//g, '__')}`
 }
 
@@ -96,7 +97,7 @@ export interface ClaudeTeammateExtension {
 }
 
 /** Materialise the Claude engine's extension paths for one teammate name. */
-export function claudeExtensionFor(name: string): ClaudeTeammateExtension {
+export function claudeExtensionFor(name: TeammateName): ClaudeTeammateExtension {
   return {
     cwd: cwdFile(name),
     sid: sidFile(name),

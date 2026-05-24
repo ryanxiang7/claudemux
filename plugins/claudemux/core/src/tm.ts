@@ -8,8 +8,7 @@
  *
  * Two seams remain useful and keep their home in this module:
  *
- *  - `TmResult` / `TmRunOptions` — the call shape every `NativeVerb` produces
- *    and the optional stdin a verb may consume. Module-public types so the
+ *  - `TmResult` — the call shape every verb produces. Module-public so the
  *    CLI front end and the conformance harness see the same contract.
  *  - `resolveTmBinary` — used by the live-teammate integration harness to
  *    locate the PATH entry it drives. It honors `CLAUDEMUX_TM`, so the same
@@ -27,12 +26,6 @@ export interface TmResult {
   stdout: string
   /** Captured standard error. */
   stderr: string
-}
-
-/** Options for one verb invocation. */
-export interface TmRunOptions {
-  /** Text to feed on stdin — needed by stdin-reading verbs such as `archive`. */
-  stdin?: string
 }
 
 /**

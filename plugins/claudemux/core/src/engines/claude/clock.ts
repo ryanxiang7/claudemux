@@ -23,13 +23,6 @@ export function isNonNegativeInteger(value: string): boolean {
   return /^[0-9]+$/.test(value)
 }
 
-/** The current date as `YYYY-MM-DD` in local time — `tm`'s `date +%Y-%m-%d`. */
-export function fmtLocalDate(): string {
-  const d = new Date()
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
-
 /**
  * Format an epoch-seconds value as `YYYY-MM-DD HH:MM:SS` in local time
  * — the `tm` `history_detail` `last_seen` field. `tm` does this with

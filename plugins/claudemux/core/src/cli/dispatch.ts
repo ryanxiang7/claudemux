@@ -21,12 +21,14 @@ import { ctxVerb } from '../verbs/ctx'
 import { historyVerb } from '../verbs/history'
 import { memVerb } from '../verbs/mem'
 import { reloadVerb } from '../verbs/reload'
-import { parseCompactArgs } from '../engines/claude/compact'
 import { claudeDoctor } from '../engines/claude/doctor'
-import { parseResumeArgs } from '../engines/claude/resume'
-import { parseSendArgs } from '../engines/claude/send'
-import { parseSpawnArgs } from '../engines/claude/spawn'
-import { parseWaitArgs } from '../engines/claude/wait'
+import {
+  parseCompactArgs,
+  parseResumeArgs,
+  parseSendArgs,
+  parseSpawnArgs,
+  parseWaitArgs,
+} from '../shared/verb-args'
 import { formatContext, formatReload, noEngineRegistered } from '../verbs/format'
 import { productionVerbContext } from './context'
 import { die, removedVerb, runHelpVerb, unknownVerb } from './errors'

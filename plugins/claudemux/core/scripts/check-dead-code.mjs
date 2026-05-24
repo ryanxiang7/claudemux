@@ -5,14 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const coreDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-const allowed = new Set([
-  'exports|src/engines/claude/clock.ts|fmtLocalDate',
-  'exports|src/engines/codex/verbs.ts|codexListLines',
-  'exports|src/engines/codex/verbs.ts|codexStatus',
-  'exports|src/persistence/atomic-file.ts|exists',
-  'exports|src/verbs/format.ts|formatText',
-  'types|src/tm.ts|TmRunOptions',
-])
+const allowed = new Set([])
 
 const result = spawnSync(
   'knip',

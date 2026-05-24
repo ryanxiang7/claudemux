@@ -4,19 +4,16 @@
  * The verbs that drive a real codex daemon (`codexSend`, `codexWait`) need
  * a working `codex app-server` and an OpenAI account to do anything useful
  * — those paths land in the live integration suite (#36). What this file
- * pins is the cheap stuff: the target detector, the not-alive guards, the
- * kill idempotency, and a spawn/kill round-trip against the fake codex
- * binary.
+ * pins is the cheap stuff: the not-alive guards, the kill idempotency,
+ * and a spawn/kill round-trip against the fake codex binary.
  */
 
 import {
   closeSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   openSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -31,7 +28,6 @@ import {
   codexSpawn,
   codexStateRows,
   codexWait,
-  isCodexTarget,
   subscribeTurnCollection,
 } from '../src/engines/codex/verbs'
 import type { CodexWsClient } from '../src/engines/codex/rpc'
@@ -43,8 +39,6 @@ import { reapDaemon } from '../src/engines/codex/supervisor'
 import {
   CodexTeammateRecord,
   codexBorrowLockFile,
-  codexPidFile,
-  codexStartedAtFile,
   codexTeammateDir,
   removeBaseRecord,
   writeBaseRecord,
@@ -94,46 +88,6 @@ afterEach(async () => {
   else process.env['CLAUDEMUX_IDENTITY_ROOT'] = savedIdentityRoot
   rmSync(suffixDir, { recursive: true, force: true })
   rmSync(identityDir, { recursive: true, force: true })
-})
-
-describe('isCodexTarget — verb-fork prefix detection', () => {
-  test('a `codex-` prefix routes to the codex driver', () => {
-    expect(isCodexTarget('codex-1')).toBe(true)
-    expect(isCodexTarget('codex-reviewer')).toBe(true)
-    expect(isCodexTarget('codex-')).toBe(true)
-    expect(isCodexTarget('codex/foo')).toBe(true)
-  })
-
-  test('any other repo name stays on the tmux driver', () => {
-    expect(isCodexTarget('my-repo')).toBe(false)
-    expect(isCodexTarget('codex')).toBe(false)
-    expect(isCodexTarget('Codex-1')).toBe(false)
-    expect(isCodexTarget('')).toBe(false)
-  })
-
-  test('a stale daemon registry does not define codex identity', () => {
-    const name = `plain-stale-${Date.now()}`
-    mkdirSync(codexTeammateDir(name), { recursive: true })
-    writeFileSync(codexPidFile(name), `${process.pid}\n`)
-    writeFileSync(codexStartedAtFile(name), `${Math.floor(Date.now() / 1000)}\n`)
-
-    expect(isCodexTarget(name)).toBe(false)
-  })
-
-  test('a base record with engine=codex defines codex identity', () => {
-    const name = `plain-record-${Date.now()}`
-    writeBaseRecord(new CodexTeammateRecord({
-      name,
-      cwd: '/tmp',
-      createdAt: 1,
-      displayName: null,
-    }))
-    try {
-      expect(isCodexTarget(name)).toBe(true)
-    } finally {
-      removeBaseRecord(name)
-    }
-  })
 })
 
 describe('codexKill — idempotency and message shape', () => {

@@ -22,7 +22,6 @@ import type {
   TeammateListing,
   TeammateName,
   TeammateStatus,
-  TextResult,
   TurnResult,
 } from '../engines/types'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../tm'
@@ -143,21 +142,6 @@ export function formatHistory(result: HistoryResult): TmResult {
       return { code: 0, stdout: '', stderr: `  not supported: ${result.reason}\n` }
     case 'failed':
       return { code: 1, stdout: '', stderr: `tm: history: ${result.message}\n` }
-  }
-}
-
-export function formatText(label: string, result: TextResult): TmResult {
-  const raw = rawTmResult(result)
-  if (raw !== null) return raw
-  switch (result.kind) {
-    case 'text':
-      return { code: 0, stdout: result.text.endsWith('\n') ? result.text : `${result.text}\n`, stderr: '' }
-    case 'not-found':
-      return { code: 1, stdout: '', stderr: `tm: ${label}: ${result.reason}\n` }
-    case 'not-supported':
-      return { code: 0, stdout: '', stderr: `  not supported: ${result.reason}\n` }
-    case 'failed':
-      return { code: 1, stdout: '', stderr: `tm: ${label}: ${result.message}\n` }
   }
 }
 

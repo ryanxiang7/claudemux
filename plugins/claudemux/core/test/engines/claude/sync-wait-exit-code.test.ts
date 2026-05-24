@@ -305,7 +305,7 @@ describe('P1-1: tm spawn --prompt propagates --timeout into the inner tm send', 
     // `claudeContinue` or `claudeSpawn` drops the field would fail
     // typecheck; this test is the runtime sanity check that the parser
     // accepts the flag end-to-end.
-    const { parseSpawnArgs } = await import('../../../src/engines/claude/spawn')
+    const { parseSpawnArgs } = await import('../../../src/shared/verb-args')
     const result = parseSpawnArgs(['--prompt', 'hi', '--timeout', '7'])
     expect('error' in result).toBe(false)
     if ('error' in result) throw new Error('unexpected')

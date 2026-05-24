@@ -16,8 +16,8 @@
  *    surface gives the agent a one-line "why", not a stack trace.
  *  - Teammate names may contain `/` (decision multi-engine-tui-architecture §"Nested teammate
  *    names"). Path builders treat the name as opaque; engine-specific
- *    encoding (e.g., the Claude engine's tmux session name) lives in
- *    that engine's `persistence.ts`.
+ *    encoding (e.g., the Claude engine's tmux session name) lives behind
+ *    named path builders.
  *
  * Phase 1 lands this file as a contract. The engine implementations
  * (Phase 2a for Claude, Phase 2b for Codex) consume it without
