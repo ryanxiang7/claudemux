@@ -1,4 +1,4 @@
-# 0021 — `tm` ships as a committed esbuild bundle + thin Node launcher
+# `tm` ships as a committed esbuild bundle + thin Node launcher
 
 - **Status:** Accepted
 - **Date:** 2026-05-23

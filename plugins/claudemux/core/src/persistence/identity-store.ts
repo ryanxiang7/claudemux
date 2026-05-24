@@ -1,6 +1,6 @@
 /**
  * The identity store — the one place that writes and reads
- * `/tmp/teammate-<name>.json`. Decision 0024 §"TeammateRecord" anchors this
+ * `/tmp/teammate-<name>.json`. Decision multi-engine-tui-architecture §"TeammateRecord" anchors this
  * file as the single source of truth for the base `TeammateRecord`, and
  * §"Enforcement against silent regression" pins the constraint: no other
  * file in `plugins/claudemux/core/src/` may touch the JSON marker.
@@ -10,7 +10,7 @@
  *  - `reserve(record)` is the spawn-time write. It uses `O_CREAT | O_EXCL`
  *    against `/tmp/teammate-<name>.json`; a second concurrent `tm spawn`
  *    of the same name fails with `EEXIST`, which the verb formats as a
- *    "name already taken" error. Decision 0024 §"Engine identity is the
+ *    "name already taken" error. Decision multi-engine-tui-architecture §"Engine identity is the
  *    JSON's `engine` field" makes this the authoritative race winner —
  *    whichever engine reserves first owns the name, the loser sees
  *    `already-exists`. The reservation is atomic enough on POSIX rename
@@ -24,7 +24,7 @@
  *    error).
  *
  *  - `list()` enumerates every reserved teammate by reading
- *    `/tmp/teammate-*.json`. Decision 0024 §"Verb is the abstraction"
+ *    `/tmp/teammate-*.json`. Decision multi-engine-tui-architecture §"Verb is the abstraction"
  *    relies on this for `tm ls`'s engine-agnostic listing — the verb
  *    asks for "every teammate identity" without knowing per-engine
  *    persistence shapes.
@@ -138,7 +138,7 @@ export function remove(name: TeammateName): void {
 }
 
 /**
- * Enumerate every reserved teammate. Decision 0024 §"Nested teammate
+ * Enumerate every reserved teammate. Decision multi-engine-tui-architecture §"Nested teammate
  * names" allows `flow/flow-1` as a name; the identity file is then
  * `/tmp/teammate-flow/flow-1.json`. A flat `readdir('/tmp')` would miss
  * the nested case, so this function scans:

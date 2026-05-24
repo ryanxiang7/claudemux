@@ -237,33 +237,32 @@ Three rules surfaced during audit that the codebase already follows (or *wants* 
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
-This audit is one of decision 0009's two back-test cases: it raised four
+This audit is one of decision research-hazard-dispositions's two back-test cases: it raised four
 hazards in one document — three travelled, one stalled — on the same
 imperative-vs-conditional split the decision describes.
 
 ### Project-dir encoding duplicated, one site wrong (Top-3 #1)
-**Promoted** → [decision 0003](/.agents/decisions/0003-tm-quality-hardening.md)
+**Promoted** → [decision tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md)
 (the single `encode_project_dir` encoder) and
-[decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)
+[decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md)
 invariant 3.
 
 ### macOS-only `stat -f` degrading silently on Linux (Top-3 #2)
-**Promoted** → decision 0003 (`stat_size` / `stat_mtime` helpers) and decision
-0004 invariant 2, enforced by the CI OS matrix.
+**Promoted** → decision tm-quality-hardening (`stat_size` / `stat_mtime` helpers) and decision cross-process-cross-platform-invariants invariant 2, enforced by the CI OS matrix.
 
 ### Idle-dir / jsonl path literals scattered, no path builders (Top-3 #3, first half)
-**Promoted** → decision 0003 (`idle_marker_for` / `busy_marker_for` /
-`last_file_for`) and decision 0004 invariant 1.
+**Promoted** → decision tm-quality-hardening (`idle_marker_for` / `busy_marker_for` /
+`last_file_for`) and decision cross-process-cross-platform-invariants invariant 1.
 
 ### No `/tmp` protocol version field (§2, Top-3 #3, second half)
 **Deferred** → reopen before the first `/tmp` protocol schema change. Verified
 2026-05-21: `bin/tm` and the hooks still carry no version field or `.proto`
 file. Written as "acceptable today; locks in friction for the first schema
 change" — a conditional future risk — it stalled while its present-defect
-siblings above travelled. One of decision 0009's confirming cases; also
+siblings above travelled. One of decision research-hazard-dispositions's confirming cases; also
 recorded in [research-report.md](/.agents/research/research-report.md) steal #4.
 
 ### Hook-payload coupling — a field rename breaks three hooks in parallel (§4)
@@ -271,12 +270,11 @@ recorded in [research-report.md](/.agents/research/research-report.md) steal #4.
 Verified 2026-05-21: `on-busy.sh`, `on-stop.sh`, and `on-session-start.sh`
 still extract `session_id` by three different inline methods, with no shared
 `parse_hook_payload` helper. Same conditional-future shape as the protocol
-version field — decision 0009's second confirming case.
+version field — decision research-hazard-dispositions's second confirming case.
 
 ### CLAUDE.md "rejected alternative" anti-pattern (§6)
 **Promoted** → the headline violation — `on-stop.sh` narrating a prior `rm`
-behaviour — was fixed in commit `be884f0`, the rewrite recorded in decision
-0004. §6's secondary `bin/tm` site, which the audit itself rated "borderline",
+behaviour — was fixed in commit `be884f0`, the rewrite recorded in decision cross-process-cross-platform-invariants. §6's secondary `bin/tm` site, which the audit itself rated "borderline",
 was not changed: a low-severity wording item with no breaking trigger.
 
 ### `bin/tm` is a 2000-line monolith (§5)

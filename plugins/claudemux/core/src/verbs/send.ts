@@ -1,5 +1,5 @@
 /**
- * `tm send <name> --prompt p` — atomic round-trip. Decision 0024
+ * `tm send <name> --prompt p` — atomic round-trip. Decision multi-engine-tui-architecture
  * §"Round-trips are atomic by default" makes wait the only path;
  * `--no-wait` is removed. The verb resolves the teammate through the
  * router and dispatches to `Engine.send`; the engine owns the

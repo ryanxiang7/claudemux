@@ -1,8 +1,8 @@
 /**
  * `tm spawn <name> --engine <k>` — atomic teammate spawn. Decision
- * 0024 §"Round-trips are atomic by default" makes a `--prompt` an
+ * multi-engine-tui-architecture §"Round-trips are atomic by default" makes a `--prompt` an
  * atomic first turn; `--no-wait` is gone. Engine selection is the
- * explicit `--engine` flag (decision 0023 §1, carried forward).
+ * explicit `--engine` flag (decision codex-engine-flag §1, carried forward).
  *
  * Phase 1 lands the skeleton: parse a `SpawnRequest`, look the engine
  * up in the registry, dispatch. With the Phase 1 empty registry, the

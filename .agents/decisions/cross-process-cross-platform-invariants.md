@@ -1,4 +1,4 @@
-# 0004 — Cross-process & cross-platform invariants in `CLAUDE.md`
+# Cross-process & cross-platform invariants in `CLAUDE.md`
 
 - **Status:** Accepted
 - **Date:** 2026-05-19
@@ -6,7 +6,7 @@
 
 ## Context
 
-The hardening work in [decision 0003](/.agents/decisions/0003-tm-quality-hardening.md)
+The hardening work in [decision tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md)
 fixed specific bugs. But three of those bugs were not one-off mistakes —
 they were the *same class* of mistake recurring, and each had already
 drifted at least once before being caught. A fixed bug stays fixed; a
@@ -66,4 +66,4 @@ Record three invariants in `CLAUDE.md`, each with its origin.
 - Commit `be884f0` (0.5.7 — `CLAUDE.md` cross-process / cross-platform
   invariants + `on-stop.sh` rewrite).
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md),
-  [decisions/0003-tm-quality-hardening.md](/.agents/decisions/0003-tm-quality-hardening.md).
+  [decisions/tm-quality-hardening.md](/.agents/decisions/tm-quality-hardening.md).

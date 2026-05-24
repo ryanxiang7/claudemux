@@ -100,19 +100,19 @@ allowlist 约束的是**每个**插件能不能注册,不限制同时挂几个�
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
 This note studied whether one session can host several channels. Its design
-implications travelled into decision 0006. One item is recorded here for how
+implications travelled into decision feishu-channel-event-registry. One item is recorded here for how
 it was mis-filed.
 
 ### Events serialize across channels — one session queue, no concurrency (§4)
-**Promoted** → [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)
+**Promoted** → [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)
 and the event scope; the channel makes no concurrency assumption.
 
 ### `meta` keys must be alphanumeric / underscore (§实际影响 6)
-**Promoted** → decision 0006: `buildMeta` uses only compliant keys and carries
+**Promoted** → decision feishu-channel-event-registry: `buildMeta` uses only compliant keys and carries
 a comment recording the constraint.
 
 ### Multi-instance reasoning, mis-attributed (§实际影响 5)
@@ -122,5 +122,5 @@ not *N sessions each running the same Feishu channel* splitting **inbound
 delivery**. The fan-out hazard it did not reach is dispositioned in
 [feishu-channel-notes.md](/.agents/research/feishu-channel-notes.md) §1.2. That
 a document which did multi-instance reasoning still missed fan-out is a data
-point in [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md):
+point in [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md):
 a hazard can be partially recognised and still mis-routed.

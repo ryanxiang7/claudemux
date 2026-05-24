@@ -3,10 +3,10 @@
 > **Status:** architecture spec for the `next` 1.0 line. **Target:** the
 > `next` branch, version line **`1.0.0`** (developed in parallel with
 > `main`'s 0.x). **Decision record:**
-> [0019](/.agents/decisions/0019-node-cli-orchestrator.md), which supersedes the
-> MCP-native design of [0018](/.agents/decisions/0018-mcp-native-orchestration-core.md).
+> [node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md), which supersedes the
+> MCP-native design of [mcp-native-orchestration-core](/.agents/decisions/mcp-native-orchestration-core.md).
 >
-> Read [0019](/.agents/decisions/0019-node-cli-orchestrator.md) first for *why*
+> Read [node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) first for *why*
 > the resident MCP-native core was dropped; this document is the contract for
 > *what replaces it*.
 >
@@ -15,7 +15,7 @@
 > core package metadata comes from
 > [`plugins/claudemux/core/package.json`](/plugins/claudemux/core/package.json).
 > Feature-class changes still carry changeset fragments as described in
-> [decision 0014](/.agents/decisions/0014-changeset-release-versioning.md).
+> [decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md).
 
 ---
 
@@ -28,9 +28,9 @@ message, wait on, inspect, and kill teammates. On the `main` 0.x line `tm` is a
 On the `next` 1.0 line `tm` is **rewritten in TypeScript and run on Node** —
 still a command-line tool, not a resident process and not an MCP server.
 
-[Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) retired the
-resident MCP-native core that [decision 0018](/.agents/decisions/0018-mcp-native-orchestration-core.md)
-had planned; 0019 carries the rationale. 1.0's orchestrator is a CLI: the
+[Decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) retired the
+resident MCP-native core that [decision mcp-native-orchestration-core](/.agents/decisions/mcp-native-orchestration-core.md)
+had planned; node-cli-orchestrator carries the rationale. 1.0's orchestrator is a CLI: the
 dispatcher runs `tm` and reads its result, with no resident process between
 them.
 
@@ -48,7 +48,7 @@ invocations and runs no background process of its own.
 Every verb is a short-lived process: parse arguments → read the world → act →
 print a `{stdout, stderr}` pair and an exit code → exit. This is the 0.x
 contract — the atomic round-trip verbs and the deliberate stdout/stderr split
-of [decision 0002](/.agents/decisions/0002-atomic-tm-verbs.md) — carried
+of [decision atomic-tm-verbs](/.agents/decisions/atomic-tm-verbs.md) — carried
 forward verbatim.
 
 The consequence shapes everything below: all cross-invocation state lives
@@ -69,7 +69,7 @@ those stores; it is never their owner and never their cache.
 | **`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`** | each Codex thread's append-only rollout log, including assistant text, token counts, and recent activity mtime | Codex CLI |
 
 A `tm` invocation reconstructs everything it needs from these stores on every
-call. There is no in-memory teammate registry — 0018's `registry.ts` is removed
+call. There is no in-memory teammate registry — mcp-native-orchestration-core's `registry.ts` is removed
 (§8); the live teammate set is enumerated from tmux for Claude teammates and
 from the daemon process registry for Codex teammates.
 
@@ -85,10 +85,10 @@ bundle that maintains the `/tmp` BUSY/idle signal.
 This is the 0.x mechanism, unchanged. It is described by
 [components/hooks.md](/.agents/components/hooks.md),
 [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md),
-and [decision 0001](/.agents/decisions/0001-hook-driven-busy-idle-signal.md);
+and [decision hook-driven-busy-idle-signal](/.agents/decisions/hook-driven-busy-idle-signal.md);
 1.0 carries it forward verbatim. The hook scripts stay in Bash — Claude Code
 runs them — and the path-builder and cross-platform discipline of
-[decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)
+[decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md)
 still binds every `/tmp` path the rewritten `tm` and the hooks share.
 
 The turn-completion signal this driver produces is the same lossy-but-adequate
@@ -107,12 +107,12 @@ persistence). A Codex teammate uses it directly — no tmux, no screen-scraping.
 - **Transport.** claudemux spawns `codex app-server --listen unix://<path>`
   itself, **detached**, and connects with a **WebSocket JSON-RPC client**. The
   `daemon` and `proxy` subcommands were evaluated and rejected
-  ([0019](/.agents/decisions/0019-node-cli-orchestrator.md)): `daemon` requires
+  ([node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md)): `daemon` requires
   an OpenAI-hosted installation; `proxy` is a raw byte tunnel and cannot carry
   the `app-server` listen socket, which itself speaks WebSocket frames.
 - **`approval_policy: Never`.** A claudemux teammate runs unattended; the
   non-interactive posture is a requirement of being a teammate — the same
-  reasoning as [decision 0007](/.agents/decisions/0007-teammates-launch-without-askuserquestion.md),
+  reasoning as [decision teammates-launch-without-askuserquestion](/.agents/decisions/teammates-launch-without-askuserquestion.md),
   generalized from Claude to Codex.
 - **Process supervision.** The `app-server` is long-lived and outlives any
   single `tm` invocation — the daemon's thread state *is* the Codex teammate.
@@ -189,7 +189,7 @@ the harness's task-notification wakes it when `tm` exits.
   observed by the blocking `tm` process over its WebSocket connection to the
   daemon.
 
-[Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) records why
+[Decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) records why
 this is the model rather than an MCP push notification.
 
 ---
@@ -204,15 +204,15 @@ the harness to committed golden JSON files (see
 
 | Stage | Work | Status |
 |---|---|---|
-| **1 — pivot** | Record [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md); rewrite this spec. | landed |
+| **1 — pivot** | Record [decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md); rewrite this spec. | landed |
 | **2 — structure cleanup** | Stand up the Node CLI front end; remove the MCP modules and tool surface; complete the Bun → Node runtime move. | landed |
 | **3 — hot-path verbs + bash retirement** | Migrate `spawn`/`send`/`wait`/`compact`/`resume`/`doctor` into native code under the live-teammate net (3a, 3b), then retire the Bash [`bin/tm`](/plugins/claudemux/bin/tm) (3c). | landed |
-| **4 — Codex driver** | Add the Codex driver — the self-spawned `app-server`, the WebSocket JSON-RPC client, the daemon process registry, both interaction modes (§6), and the `tm doctor` orphan reap. See [decision 0022](/.agents/decisions/0022-codex-driver.md). | landed |
+| **4 — Codex driver** | Add the Codex driver — the self-spawned `app-server`, the WebSocket JSON-RPC client, the daemon process registry, both interaction modes (§6), and the `tm doctor` orphan reap. See [decision codex-driver](/.agents/decisions/codex-driver.md). | landed |
 
 Stage 3 landed in three sub-stages:
 
 - **3a:** the live-teammate integration harness — see
-  [decision 0020](/.agents/decisions/0020-live-teammate-integration-harness.md).
+  [decision live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md).
   The harness drives a real teammate through `tm` so the verb migration in
   3b proceeded under a working regression net rather than ahead of one.
 - **3b:** the six hot-path verbs became native TypeScript and the Node CLI
@@ -232,9 +232,9 @@ After stage 4 lands, this roadmap section is pruned in the same change.
 
 ## See also
 
-- [decisions/0019-node-cli-orchestrator.md](/.agents/decisions/0019-node-cli-orchestrator.md) — the decision and the *why*.
-- [decisions/0018-mcp-native-orchestration-core.md](/.agents/decisions/0018-mcp-native-orchestration-core.md) — the superseded MCP-native design.
+- [decisions/node-cli-orchestrator.md](/.agents/decisions/node-cli-orchestrator.md) — the decision and the *why*.
+- [decisions/mcp-native-orchestration-core.md](/.agents/decisions/mcp-native-orchestration-core.md) — the superseded MCP-native design.
 - [components/tm.md](/.agents/components/tm.md) — the `tm` CLI.
 - [components/claudemux-core.md](/.agents/components/claudemux-core.md) — the `core/` TypeScript package and its current modules.
 - [components/hooks.md](/.agents/components/hooks.md), [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the Claude driver's `/tmp` protocol.
-- [decision 0002](/.agents/decisions/0002-atomic-tm-verbs.md), [0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md), [0007](/.agents/decisions/0007-teammates-launch-without-askuserquestion.md) — the 0.x design carried forward into 1.0.
+- [decision atomic-tm-verbs](/.agents/decisions/atomic-tm-verbs.md), [cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md), [teammates-launch-without-askuserquestion](/.agents/decisions/teammates-launch-without-askuserquestion.md) — the 0.x design carried forward into 1.0.

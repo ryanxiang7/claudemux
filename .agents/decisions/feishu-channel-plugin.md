@@ -1,4 +1,4 @@
-# 0005 — Feishu channel as a separate TypeScript+Bun plugin
+# Feishu channel as a separate TypeScript+Bun plugin
 
 - **Status:** In progress (branch `feishu-channel-plugin`, not yet merged to `main`)
 - **Date:** 2026-05

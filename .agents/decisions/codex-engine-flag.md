@@ -1,6 +1,6 @@
-# 0023 — The codex teammate kind moves from a name prefix to an explicit `--engine` flag
+# The codex teammate kind moves from a name prefix to an explicit `--engine` flag
 
-- **Status:** Superseded by [0024](/.agents/decisions/0024-multi-engine-tui-architecture.md) (§1 and §4 carry forward unchanged; §2 and §3 retired)
+- **Status:** Superseded by [multi-engine-tui-architecture](/.agents/decisions/multi-engine-tui-architecture.md) (§1 and §4 carry forward unchanged; §2 and §3 retired)
 - **Date:** 2026-05-23
 - **Affects:** the `next` line (`1.0.0-beta.0`) — `tm spawn`'s arg surface,
   the four hot-path verbs' fork (`spawn`, `send`, `wait`, `kill`), the
@@ -9,7 +9,7 @@
 
 ## Context
 
-[Decision 0022 §1](/.agents/decisions/0022-codex-driver.md) chose a **name
+[Decision codex-driver §1](/.agents/decisions/codex-driver.md) chose a **name
 prefix** as the fork: a teammate whose first positional matches `^codex-`
 routes into [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts);
 every other name stays on the tmux + hooks path. The contract is enforced by
@@ -29,7 +29,7 @@ new state — but the cost has accumulated:
 - **A reserved-prefix landmine.** A teammate named `codex-reviewer` whose
   *job* is "review a codex change" is a perfectly natural human choice; the
   system silently demotes that choice by stealing the name space. The
-  decision 0022 closing point — "future verb logic that has to know 'this
+  decision codex-driver closing point — "future verb logic that has to know 'this
   is a codex teammate' reads `isCodexTarget(name)`" — is a stability
   promise for the *implementation*, not a defence of the surface.
 - **Extension drag.** A future engine (gemini-cli, cursor, …) under the
@@ -194,26 +194,25 @@ selector — and is the point of the change.
   prefix become eligible. This is intentional per §5; a release-notes
   bullet calls it out so an operator does not see surprise borrowing.
 - **No new `/tmp` files.** The two existing registries are the source of
-  truth for engine identity. Decision 0004's path-builder discipline
+  truth for engine identity. Decision cross-process-cross-platform-invariants's path-builder discipline
   (named functions, no string concatenation at use sites) is preserved —
   the resolver lives in `paths.ts` next to the builders it consults.
 
 ## Out of scope
 
-- **`tm ls` / `tm states` listing codex teammates.** Decision 0022 §2 left
+- **`tm ls` / `tm states` listing codex teammates.** Decision codex-driver §2 left
   this open; this record neither fixes nor regresses it. A follow-up
   record will decide whether the views merge or stay separate.
 - **A `tm spawn --engine gemini` (or similar) implementation.** §1's
   string-typed flag accepts the *shape* of a future engine; the engine
   *itself* is a separate record.
-- **Locking `tm send` against `tm ask` on the same teammate.** Decision
-  0022 §3 leaves this open and this record does not change the
+- **Locking `tm send` against `tm ask` on the same teammate.** Decision codex-driver §3 leaves this open and this record does not change the
   trade-off — the surface change does not affect the locking story.
 
 ## References
 
-- [decisions/0022-codex-driver.md](/.agents/decisions/0022-codex-driver.md) — the prefix-fork decision this record supersedes in part (§1).
-- [decisions/0019-node-cli-orchestrator.md](/.agents/decisions/0019-node-cli-orchestrator.md) — the Node CLI contract the new flag lives on.
-- [decisions/0004-cross-process-cross-platform-invariants.md](/.agents/decisions/0004-cross-process-cross-platform-invariants.md) — the path-builder discipline §2's resolver respects.
+- [decisions/codex-driver.md](/.agents/decisions/codex-driver.md) — the prefix-fork decision this record supersedes in part (§1).
+- [decisions/node-cli-orchestrator.md](/.agents/decisions/node-cli-orchestrator.md) — the Node CLI contract the new flag lives on.
+- [decisions/cross-process-cross-platform-invariants.md](/.agents/decisions/cross-process-cross-platform-invariants.md) — the path-builder discipline §2's resolver respects.
 - [components/claudemux-core.md](/.agents/components/claudemux-core.md) — the module table the resolver will be added to.
 - [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) — the §8 stage map updated when this lands.

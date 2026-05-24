@@ -1,4 +1,4 @@
-# 0016 — Feishu doc-comment text is fetched with `batchQuery`, not `get`
+# Feishu doc-comment text is fetched with `batchQuery`, not `get`
 
 - **Status:** Accepted
 - **Date:** 2026-05-22
@@ -6,7 +6,7 @@
 
 ## Context
 
-[Decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md)
+[Decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md)
 landed doc-comment enrichment: because a `drive.notice.comment_add_v1`
 payload carries no comment text, the handler fetches the comment through the
 Feishu drive file-comment API. `fetchDocComment` called the SDK's
@@ -17,7 +17,7 @@ body: the channel filled in its placeholder, `(comment text unavailable — the
 channel could not fetch it; read it on the document)`. The comment text
 plainly existed — a human had just typed it.
 
-0011's Consequences section attributed exactly this degradation to a missing
+feishu-doc-comment-enrichment's Consequences section attributed exactly this degradation to a missing
 scope: *"The bot needs the document-comment and document-metadata read
 scopes. Without them, a comment is delivered but its text and title are
 placeholders."* That framing points at the Feishu Open Platform console, not
@@ -77,7 +77,7 @@ fixture in the real `batchQuery` response shape.
   for an `add_reply` whose new reply paged off, the delivered text is a
   best-effort guess. Threads that large are rare enough not to warrant a
   second paged call on every event.
-- 0011's enrichment design stands; this record corrects only its attribution
+- feishu-doc-comment-enrichment's enrichment design stands; this record corrects only its attribution
   of the empty-body symptom to a missing scope. The bot does need a
   comment-read scope to fetch at all — but when a comment is delivered with an
   empty body, the endpoint, not the scope, is the thing to check first.
@@ -90,7 +90,7 @@ fixture in the real `batchQuery` response shape.
 - `plugins/feishu-channel/src/feishu.ts` — `fetchDocComment`,
   `commentFromBatchQuery`.
 - `plugins/feishu-channel/test/feishu.test.ts` — the decoder's tests.
-- [decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md),
+- [decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md),
   [components/feishu-channel.md](/.agents/components/feishu-channel.md).
 - Feishu API reference: drive-v1 `file-comment/get` (获取全文评论, 不支持局部评论)
   and `file-comment/batch_query` (批量获取评论).

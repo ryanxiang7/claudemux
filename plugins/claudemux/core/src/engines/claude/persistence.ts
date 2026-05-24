@@ -1,7 +1,7 @@
 /**
  * `ClaudeTeammateRecord` and the Claude engine's file-path builders.
  *
- * Decision 0024 §"TeammateRecord" pins the Claude engine's extension
+ * Decision multi-engine-tui-architecture §"TeammateRecord" pins the Claude engine's extension
  * surface to four flat files under `/tmp/teammate-<name>.<ext>`:
  *
  *  - `.cwd` — the teammate's physical cwd; written by `tm spawn`,
@@ -19,10 +19,10 @@
  * `persistence/identity-store.ts`; this file owns the engine-private
  * extension paths and the tmux session-name encoding for nested names.
  *
- * Path-builder discipline (decision 0004): every Claude-engine path
+ * Path-builder discipline (decision cross-process-cross-platform-invariants): every Claude-engine path
  * comes from a named function here, never a literal at a use site.
  *
- * Nested teammate names (decision 0024 §"Nested teammate names"):
+ * Nested teammate names (decision multi-engine-tui-architecture §"Nested teammate names"):
  * `tm spawn flow/flow-1` is valid. tmux session names cannot contain
  * `/`, so this file encodes `/` → `__` via `tmuxSessionName`. The
  * inverse holds because `identity/name.ts` rejects raw names that
@@ -90,7 +90,7 @@ export const TMUX_SESSION_PREFIX = 'teammate-'
 
 /**
  * Encode a (possibly nested) teammate name into a tmux session name.
- * Decision 0024 §"Nested teammate names" — the only place `/` becomes
+ * Decision multi-engine-tui-architecture §"Nested teammate names" — the only place `/` becomes
  * `__`. `identity/name.ts`'s validator rejects raw names that already
  * contain `__`, so the encoding is round-trippable.
  *

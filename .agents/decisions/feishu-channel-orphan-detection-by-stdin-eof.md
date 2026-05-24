@@ -1,4 +1,4 @@
-# 0015 — Feishu channel: orphan detection by stdin EOF, not parent-PID polling
+# Feishu channel: orphan detection by stdin EOF, not parent-PID polling
 
 - **Status:** Accepted
 - **Date:** 2026-05-22

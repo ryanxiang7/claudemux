@@ -1,6 +1,6 @@
-# 0018 — The `next` line replaces `tm` with an MCP-native orchestration core hosting multiple agent families
+# The `next` line replaces `tm` with an MCP-native orchestration core hosting multiple agent families
 
-- **Status:** Superseded by [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md)
+- **Status:** Superseded by [decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md)
 - **Date:** 2026-05-22
 - **Affects:** the whole claudemux orchestrator — [`bin/tm`](/plugins/claudemux/bin/tm) (retired), the [`hooks/`](/plugins/claudemux/hooks/hooks.json) bundle (kept, behind a driver), a new resident orchestration core. Lands on the **`next`** branch, version line **`1.0.0-beta.0`** (parallel to `main`'s 0.x).
 
@@ -23,7 +23,7 @@ and a Codex-side), each round reviewed by an independent architecture-review
 agent, plus a final review of the spec, converged on the architecture below.
 This record states *that* it was chosen and the load-bearing rulings. The full
 MCP-native design contract was a domain spec retired with this decision — see
-[decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) and
+[decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) and
 [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md)
 for the architecture that replaced it.
 
@@ -84,7 +84,7 @@ with **per-agent teammate drivers**. The load-bearing rulings:
 - **The hook scripts stay in Bash** (Claude Code runs them). The `/tmp` marker
   protocol between a resident TS core and the Bash hooks becomes an explicit,
   versioned cross-language IPC contract — the path-builder discipline of
-  [decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)
+  [decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md)
   binds every path in it.
 - **The Claude driver's turn-completion signal is lossy, not merely late** —
   [`on-stop.sh`](/plugins/claudemux/hooks/on-stop.sh) carries a documented
@@ -103,7 +103,7 @@ with **per-agent teammate drivers**. The load-bearing rulings:
   criteria. There is no `scripts/check.sh`-style mechanical guard for an
   architecture this size — the conformance harness is the guard.
 - **Versioning:** this record and the spec are pure docs — no version bump
-  ([decision 0014](/.agents/decisions/0014-changeset-release-versioning.md);
+  ([decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md);
   the `1.0.0-beta.0` number is realized by the release flow when
   implementation lands). The implementation will be feature-class and will
   carry its own changesets.
@@ -112,8 +112,8 @@ with **per-agent teammate drivers**. The load-bearing rulings:
 
 ## References
 
-- [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) — the pivot that supersedes this decision: the MCP-native design recorded here was retired in favor of a pure Node CLI, specified in [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md).
+- [decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) — the pivot that supersedes this decision: the MCP-native design recorded here was retired in favor of a pure Node CLI, specified in [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md).
 - [components/tm.md](/.agents/components/tm.md), [components/hooks.md](/.agents/components/hooks.md) — the components this supersedes / re-homes.
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the `/tmp` marker protocol that becomes a versioned cross-language contract.
-- [decision 0001](/.agents/decisions/0001-hook-driven-busy-idle-signal.md), [0002](/.agents/decisions/0002-atomic-tm-verbs.md), [0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md), [0007](/.agents/decisions/0007-teammates-launch-without-askuserquestion.md) — the Claude-side design this builds on and carries forward.
-- [decision 0014](/.agents/decisions/0014-changeset-release-versioning.md) — why this pure-docs change touches no `version` field.
+- [decision hook-driven-busy-idle-signal](/.agents/decisions/hook-driven-busy-idle-signal.md), [atomic-tm-verbs](/.agents/decisions/atomic-tm-verbs.md), [cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md), [teammates-launch-without-askuserquestion](/.agents/decisions/teammates-launch-without-askuserquestion.md) — the Claude-side design this builds on and carries forward.
+- [decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md) — why this pure-docs change touches no `version` field.

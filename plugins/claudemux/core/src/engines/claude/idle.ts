@@ -3,7 +3,7 @@
  * write `/tmp/claude-idle/<sid>{,.busy,.last}` markers, and several
  * hot-path verbs need to clear or wait on those markers around a turn.
  *
- * Decision 0004 (path-builder discipline) keeps the marker paths in
+ * Decision cross-process-cross-platform-invariants (path-builder discipline) keeps the marker paths in
  * `persistence.ts`; this module composes them into the runtime
  * operations the verb bodies use.
  */

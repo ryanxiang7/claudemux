@@ -3,10 +3,10 @@
  * registers itself, and every verb-layer default implementation pulls
  * the engines it needs to fan out over.
  *
- * Decision 0024 §"Verb is the abstraction" leans on this seam: `tm ls`
+ * Decision multi-engine-tui-architecture §"Verb is the abstraction" leans on this seam: `tm ls`
  * iterates `registered()` and concatenates `Engine.list()` rows; the
  * status / kill verbs resolve a teammate's engine through the identity
- * router (decision 0024 §"Engine identity is the JSON's `engine` field")
+ * router (decision multi-engine-tui-architecture §"Engine identity is the JSON's `engine` field")
  * and the registry hands back the implementation. Phase 1 ships the
  * empty registry; Phase 2a registers the Claude engine, Phase 2b
  * registers the Codex engine.

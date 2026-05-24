@@ -1,7 +1,7 @@
 /**
  * The codex app-server WebSocket JSON-RPC client.
  *
- * Decision 0019 §5: claudemux spawns `codex app-server --listen unix://<path>`
+ * Decision node-cli-orchestrator §5: claudemux spawns `codex app-server --listen unix://<path>`
  * itself, detached, and connects to it from each `tm` invocation that targets
  * a codex teammate. This module is the connection.
  *
@@ -74,7 +74,7 @@ type ParamsFor<M extends ClientRequest['method']> = Extract<
 export interface CodexWsClientOptions {
   /**
    * Unix socket path the codex daemon listens on. The production transport
-   * per decision 0019: claudemux spawns `codex app-server --listen unix://<path>`
+   * per decision node-cli-orchestrator: claudemux spawns `codex app-server --listen unix://<path>`
    * and the client connects to the same path. The `ws` npm package routes
    * the WebSocket upgrade through a unix-domain socket connection when the
    * URL uses the `ws+unix://` scheme.

@@ -1,4 +1,4 @@
-# 0014 — Versioning moves to changeset fragments consumed by a release step
+# Versioning moves to changeset fragments consumed by a release step
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -103,9 +103,9 @@ weakening it:
   back-filled.
 - CI updates: `shellcheck` now lints `bin/changeset` and `bin/release`; a
   `bats tests/cli/` step covers the two scripts end to end.
-- Decision [0003](/.agents/decisions/0003-tm-quality-hardening.md) introduced
+- Decision [tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md) introduced
   `bin/bump-version`; that script is retired here. The lint/test/hook
-  machinery 0003 established otherwise stands.
+  machinery tm-quality-hardening established otherwise stands.
 - A PR already open against the old rule still carries a `version` bump in its
   diff. To stop conflicting it should drop that bump and add a changeset with
   `bin/changeset` instead; `bin/release` will apply the bump at release time.

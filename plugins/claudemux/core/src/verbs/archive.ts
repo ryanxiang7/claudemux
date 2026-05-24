@@ -1,6 +1,6 @@
 /**
  * `tm archive <id>` — move a finished task from the dispatcher's active
- * ledger to its archive. Decision 0024 §"Target shape" puts `archive`
+ * ledger to its archive. Decision multi-engine-tui-architecture §"Target shape" puts `archive`
  * in `verbs/` because it touches no teammate process; it edits two
  * dispatcher-local markdown files under
  * `~/.claude/projects/<encoded-dispatcher-dir>/memory/`. No engine is

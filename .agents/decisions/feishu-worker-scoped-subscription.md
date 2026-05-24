@@ -1,4 +1,4 @@
-# 0017 — Feishu Worker-scoped subscription: single-app holder routing on a pure-derived identity
+# Feishu Worker-scoped subscription: single-app holder routing on a pure-derived identity
 
 - **Status:** Accepted
 - **Date:** 2026-05-22
@@ -111,6 +111,6 @@ The debate left exactly two crossed details; both are ruled in the spec:
 ## References
 
 - [domains/feishu-worker-routing.md](/.agents/domains/feishu-worker-routing.md) — the full design contract: protocol layout, lifecycle, the resolved under-specified points, the open verify items, and the architecture-review log.
-- [decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md) — the `drive.notice.comment_add_v1` payload shape and SDK decode the holder's key extraction relies on.
-- [decision 0005](/.agents/decisions/0005-feishu-channel-plugin.md), [0006](/.agents/decisions/0006-feishu-channel-event-registry.md), [0008](/.agents/decisions/0008-feishu-channel-launch-without-session-proxy.md) — the feishu-channel plugin this feature extends.
+- [decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md) — the `drive.notice.comment_add_v1` payload shape and SDK decode the holder's key extraction relies on.
+- [decision feishu-channel-plugin](/.agents/decisions/feishu-channel-plugin.md), [feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md), [feishu-channel-launch-without-session-proxy](/.agents/decisions/feishu-channel-launch-without-session-proxy.md) — the feishu-channel plugin this feature extends.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md) — the current plugin.

@@ -1,4 +1,4 @@
-# 0013 — Feishu channel: a received-reaction indicator on inbound chat messages
+# Feishu channel: a received-reaction indicator on inbound chat messages
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -105,6 +105,6 @@ later reply.
 - `plugins/feishu-channel/src/server.ts` — `markReceived`, `clearReceived`,
   `RECEIVED_REACTION_EMOJI`, the `pendingReactions` map.
 - `plugins/feishu-channel/src/feishu.ts` — `addReaction` / `removeReaction`.
-- [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md) —
+- [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md) —
   the event registry and chat_id reply routing this builds on.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md).

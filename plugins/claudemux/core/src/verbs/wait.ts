@@ -1,5 +1,5 @@
 /**
- * `tm wait <name>` — the recovery seam. Decision 0024 §"Round-trips
+ * `tm wait <name>` — the recovery seam. Decision multi-engine-tui-architecture §"Round-trips
  * are atomic by default" keeps this verb for the case where a previous
  * `send` / `spawn` aborted before reading the reply; a follow-up wait
  * picks up the next completion. Not the default path.

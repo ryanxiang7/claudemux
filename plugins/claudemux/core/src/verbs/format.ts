@@ -1,7 +1,7 @@
 /**
  * Verb-layer formatting helpers — turn structured engine results into
  * the `TmResult` (`{code, stdout, stderr}`) shape the CLI dispatcher
- * emits. Decision 0024 §"Verb is the abstraction" makes the verb own
+ * emits. Decision multi-engine-tui-architecture §"Verb is the abstraction" makes the verb own
  * exit codes and formatting; engines never decide either.
  *
  * Phase 1 lands minimal formatters good enough for the verb skeletons

@@ -2,7 +2,7 @@
  * `encodeProjectDir` — the one-and-only mapping from a filesystem path to
  * Claude Code's on-disk project-dir segment under `~/.claude/projects/`.
  *
- * Decision 0004 §"One source of truth for the project-dir encoding" pins
+ * Decision cross-process-cross-platform-invariants §"One source of truth for the project-dir encoding" pins
  * this as the single seam: every site that needs to locate a Claude Code
  * project directory routes through here, or two callers end up addressing
  * the same repo by two different strings.

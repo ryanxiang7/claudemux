@@ -1,5 +1,5 @@
 /**
- * `tm kill <name>` — release the teammate. Decision 0024 amend lines
+ * `tm kill <name>` — release the teammate. Decision multi-engine-tui-architecture amend lines
  * 163-169 fix the default impl: resolve through the router, ask the
  * engine to kill, remove the identity JSON on success. The "remove
  * identity" step is what frees the name for a subsequent `tm spawn`.

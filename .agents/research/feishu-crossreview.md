@@ -340,7 +340,7 @@ git ls-files plugins/feishu-channel/   # 确认 node_modules 未入库、无 ski
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
 This is the plugin's first independent cross-review. Its Top-6 must-fix
@@ -353,7 +353,7 @@ record of what the review caught, not as an open defect list (see the note in
 **Disposition: all findings Promoted / resolved.**
 
 One observation belongs to
-[decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md): this
+[decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md): this
 review was thorough and adversarial, yet did not catch the fan-out hazard —
 because it reviewed against the spec, and the spec had already dropped it. An
 adversarial review inherits the blind spot of the document it anchors on. That

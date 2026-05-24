@@ -1,5 +1,5 @@
 /**
- * The single source of truth for a teammate's identity. Decision 0024
+ * The single source of truth for a teammate's identity. Decision multi-engine-tui-architecture
  * §"TeammateRecord — one base JSON, engine-private extensions, hooks-
  * managed files left alone" collapses what `tm` itself writes and reads
  * (engine, cwd, createdAt, …) into one JSON at `/tmp/teammate-<name>.json`;
@@ -11,7 +11,7 @@
  * `TeammateRecord` is the abstract base every per-engine record extends.
  * It owns the JSON-serialised base fields plus the `markerPath(name)`
  * builder (one named function, so the file shape is changed in one
- * place — decision 0004's path-builder discipline). A subclass declares
+ * place — decision cross-process-cross-platform-invariants's path-builder discipline). A subclass declares
  * its engine-private extension files via `engineExtensionFiles()`, which
  * `tm doctor` consumes to enumerate everything to reap for a given
  * teammate.

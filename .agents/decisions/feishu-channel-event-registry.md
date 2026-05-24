@@ -1,4 +1,4 @@
-# 0006 — Feishu channel: event registry and core design choices
+# Feishu channel: event registry and core design choices
 
 - **Status:** In progress (branch `feishu-channel-plugin`, not yet merged to `main`)
 - **Date:** 2026-05-21
@@ -6,7 +6,7 @@
 
 ## Context
 
-[Decision 0005](/.agents/decisions/0005-feishu-channel-plugin.md) settled
+[Decision feishu-channel-plugin](/.agents/decisions/feishu-channel-plugin.md) settled
 that the Feishu channel ships as a separate TypeScript+Bun plugin. It left
 open how the channel is shaped *inside*. Four questions had to be answered
 before the plugin could be more than a single-event prototype:
@@ -80,4 +80,4 @@ the event in their app console before relying on it.
   `im.message.receive_v1` and `drive.notice.comment_add_v1` handlers under
   `src/handlers/`, and the `configure` / `access` skills.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md),
-  [decisions/0005-feishu-channel-plugin.md](/.agents/decisions/0005-feishu-channel-plugin.md).
+  [decisions/feishu-channel-plugin.md](/.agents/decisions/feishu-channel-plugin.md).

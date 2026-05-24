@@ -1,4 +1,4 @@
-# 0009 — Every research hazard reaches a recorded disposition
+# Every research hazard reaches a recorded disposition
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -12,7 +12,7 @@
 Feishu channel. Their fates diverged completely:
 
 - **Process leak.** A long-lived WebSocket plus an MCP stdio server leaks if
-  shutdown is an afterthought. → spec hard-requirement #3 → decision 0006
+  shutdown is an afterthought. → spec hard-requirement #3 → decision feishu-channel-event-registry
   (`ShutdownCoordinator`) → `shutdown.test.ts`. The full pipeline.
 - **Cluster delivery, not broadcast.** Feishu delivers each inbound event to
   exactly one of an app's connections — "do not assume fan-out" (§1.2, under a
@@ -40,7 +40,7 @@ A back-test confirmed the mechanism is general, not a one-off.
 `research/architecture-review.md` raised four hazards in one document: a
 project-dir encoding bug, BSD-only `stat -f`, scattered path-builder literals,
 and the absence of a `/tmp` protocol version field. The first three — each a
-present, active defect — travelled into decisions 0003 / 0004 and the repo
+present, active defect — travelled into decisions tm-quality-hardening / cross-process-cross-platform-invariants and the repo
 `CLAUDE.md`. The fourth, written as "acceptable today; locks in friction for
 the first schema change", did not: `bin/tm` and the hooks still carry no
 version field. The `parse_hook_payload` hazard from the same audit's §4 — a
@@ -113,7 +113,7 @@ decision.
 When a decision record promotes a hazard into a binding constraint, its
 Consequences names the enforcement that prevents silent regression — a guard
 test, a hook, or a `check.sh` rule — or states why none is mechanically
-possible. This is the practice decision 0008 already followed voluntarily for
+possible. This is the practice decision feishu-channel-launch-without-session-proxy already followed voluntarily for
 `test/mcp-config.test.ts`; it is now the expectation. Recorded in
 `decisions/README.md`.
 
@@ -163,6 +163,6 @@ fails on.
 - [rules/knowledge-maintenance.md](/.agents/rules/knowledge-maintenance.md),
   [research/index.md](/.agents/research/index.md),
   [scripts/check.sh](/.agents/scripts/check.sh).
-- [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md),
-  [decision 0008](/.agents/decisions/0008-feishu-channel-launch-without-session-proxy.md)
+- [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md),
+  [decision feishu-channel-launch-without-session-proxy](/.agents/decisions/feishu-channel-launch-without-session-proxy.md)
   — the process-leak hazard's carrier and the enforcement-naming precedent.

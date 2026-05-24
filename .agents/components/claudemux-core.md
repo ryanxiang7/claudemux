@@ -5,7 +5,7 @@ line — the `1.0.0` line developed in parallel with `main`'s 0.x. It
 lives at [`/plugins/claudemux/core/`](/plugins/claudemux/core), alongside the
 Bash plugin, and runs on **Node** (the test suite uses `vitest`).
 
-[Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) set the
+[Decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) set the
 shape: the `next` line's orchestrator is a **pure Node CLI** — `tm` rewritten
 from the Bash script into TypeScript, invoked once per command, with no
 resident process and no MCP server. The architecture and the migration roadmap
@@ -26,7 +26,7 @@ contracts they hold.
 > compares native output to committed golden JSON files under
 > [`core/test/goldens/`](/plugins/claudemux/core/test/goldens).
 >
-> [Decision 0024](/.agents/decisions/0024-multi-engine-tui-architecture.md)
+> [Decision multi-engine-tui-architecture](/.agents/decisions/multi-engine-tui-architecture.md)
 > shapes the core around an `Engine` interface, a single `TeammateRecord`
 > JSON keyed by name, and a verb layer that fans out across engines. The
 > load-bearing infrastructure is shared persistence + identity modules
@@ -77,7 +77,7 @@ contracts they hold.
 > The wire schema is vendored as the output of
 > `codex app-server generate-ts --experimental` under
 > [`codex-protocol/`](/plugins/claudemux/core/src/codex-protocol) and pinned
-> by a CI drift gate; see [decision 0022](/.agents/decisions/0022-codex-driver.md).
+> by a CI drift gate; see [decision codex-driver](/.agents/decisions/codex-driver.md).
 
 ## Module layout
 
@@ -91,12 +91,12 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `help.ts` | `HELP_TEXTS`, `OVERVIEW_HELP`, `REMOVED_VERB_MESSAGES` — the user-facing help strings, the single source of truth that `tm <verb> --help` and `tm help <verb>` print. |
 | `verbs.ts` | `TM_VERBS` — the catalog of the 18 `tm` verbs. |
 | `verbs/` | Verb-layer dispatch — `verbs/{ls,states,status,kill,spawn,send,wait,compact,resume,last,ctx,history,mem,reload}.ts` build engine requests, resolve teammate names through `identity/router.ts`, call engine methods, and format discriminated results through `verbs/format.ts`. `verbs/{ask,archive,poll}.ts` are local dispatcher / diagnostic helpers. |
-| `engines/engine.ts`, `engines/types.ts`, `engines/registry.ts`, `engines/teammate-record.ts` | The `Engine` interface, the shared request/result/value types (decision 0024 §"Engine interface" and §"Capabilities"), the invocation-scoped `EngineRegistry`, and the abstract `TeammateRecord` base whose subclasses live under `engines/<kind>/persistence.ts`. |
-| `engines/claude/` | The Claude engine. `claude-engine.ts` implements `Engine`; `persistence.ts` owns the `.cwd` / `.sid` / `.ready` / `.send-at` builders and the `tmuxSessionName` encoding for nested teammate names (decision 0024 §"Nested teammate names"). The verb bodies live in `engines/claude/<verb>.ts` and are reached through the verb layer. |
+| `engines/engine.ts`, `engines/types.ts`, `engines/registry.ts`, `engines/teammate-record.ts` | The `Engine` interface, the shared request/result/value types (decision multi-engine-tui-architecture §"Engine interface" and §"Capabilities"), the invocation-scoped `EngineRegistry`, and the abstract `TeammateRecord` base whose subclasses live under `engines/<kind>/persistence.ts`. |
+| `engines/claude/` | The Claude engine. `claude-engine.ts` implements `Engine`; `persistence.ts` owns the `.cwd` / `.sid` / `.ready` / `.send-at` builders and the `tmuxSessionName` encoding for nested teammate names (decision multi-engine-tui-architecture §"Nested teammate names"). The verb bodies live in `engines/claude/<verb>.ts` and are reached through the verb layer. |
 | `engines/codex/` | The Codex engine. `engine.ts` implements `Engine`; `persistence.ts` owns the base record plus `/tmp/teammate-codex/<name>/` registry-directory builders; `rollout.ts` reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` for last replies, token usage, activity fallback, and killed-name explicit resume routing; `history.ts` lists and expands rollout-backed thread ids for `tm history`. Codex-supported verbs use the app-server daemon; unsupported teammate verbs return structured `not-supported` results through the same Engine method surface. |
 | `persistence/atomic-file.ts` | Atomic write primitives (`atomicWrite`, `reserveExclusive`, `readIfPresent`) — every teammate-record write goes through these so a concurrent verb never observes a torn file. |
-| `persistence/identity-store.ts` | The only file that writes / reads `/tmp/teammate-<name>.json` — decision 0024 §"TeammateRecord" enforcement. `reserve` is the `O_CREAT \| O_EXCL` spawn-time race winner; `list()` recursively scans `/tmp/teammate*` (including the Codex registry root, since `codex/foo`'s base record lives at `/tmp/teammate-codex/foo.json`) and relies on schema parse + path-segment reconstruction to keep daemon-private files out of the listing. Identity root is overridable via `CLAUDEMUX_IDENTITY_ROOT` for tests. |
-| `persistence/project-dir.ts` | `encodeProjectDir` — Claude Code's on-disk projects-dir encoding ([decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md) one-source-of-truth). |
+| `persistence/identity-store.ts` | The only file that writes / reads `/tmp/teammate-<name>.json` — decision multi-engine-tui-architecture §"TeammateRecord" enforcement. `reserve` is the `O_CREAT \| O_EXCL` spawn-time race winner; `list()` recursively scans `/tmp/teammate*` (including the Codex registry root, since `codex/foo`'s base record lives at `/tmp/teammate-codex/foo.json`) and relies on schema parse + path-segment reconstruction to keep daemon-private files out of the listing. Identity root is overridable via `CLAUDEMUX_IDENTITY_ROOT` for tests. |
+| `persistence/project-dir.ts` | `encodeProjectDir` — Claude Code's on-disk projects-dir encoding ([decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md) one-source-of-truth). |
 | `persistence/identity-writer.ts` | `ProductionIdentityStore` — the verb-layer-facing `IdentityStore.remove()` seam (`killVerb` uses it after a successful kill). |
 | `identity/name.ts` | `validateTeammateName` — single-segment + nested-name (`flow/flow-1`) validator. Rejects `__` only when the name also contains `/` (the one case where the `/` → `__` tmux encoding would round-trip ambiguously); legacy flat names like `flow__1` remain reachable. |
 | `identity/router.ts` | `ProductionTeammateRouter` reads the identity JSON; `LegacyClaudeTmuxRouter` falls back to a tmux session probe for Claude teammates that predate the base JSON record; `CompositeTeammateRouter` chains them. |
@@ -105,7 +105,7 @@ single-purpose; routing, verb code, and process wiring each have their own home.
 | `tmux.ts` | The `tmux` backend — `runTmux`, used by every verb that queries tmux. |
 | `column.ts` | The `column` backend — `runColumn` pipes tab-separated rows through `column -t` for table-rendering verbs. |
 | `grep.ts` | The `grep` backend — `runGrep` matches input against a regex with `grep -qE` for the `poll` verb. |
-| `paths.ts` | Path builders for the shared Claude `/tmp` protocol files and `~/.claude/projects` paths — the path-builder discipline ([decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)) on the TypeScript side. |
+| `paths.ts` | Path builders for the shared Claude `/tmp` protocol files and `~/.claude/projects` paths — the path-builder discipline ([decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md)) on the TypeScript side. |
 | [`plugins/claudemux/core/src/engines/codex/engine.ts`](/plugins/claudemux/core/src/engines/codex/engine.ts) | `CodexEngine implements Engine`: spawn/send/wait/list/status/kill/resume/last/ctx/history, with `resume` relaunching a daemon by explicit thread id or by Codex `thread/list` latest-thread selection, `history` listing rollout-backed thread ids by cwd, `list` and `status` probing daemon health plus Codex thread status, and structured not-supported results for capabilities Codex does not expose. |
 | [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts) | Thin compatibility helpers around `CodexEngine` for Codex-specific callers and tests, plus `codexAsk` for the pool-borrow diagnostic path. The main teammate-targeted CLI dispatch goes through `verbs/<v>.ts` and the Engine registry. |
 | [`plugins/claudemux/core/src/engines/codex/supervisor.ts`](/plugins/claudemux/core/src/engines/codex/supervisor.ts) | Per-teammate daemon lifecycle — `spawnDaemon`, `daemonAlive`, `readDaemonState`, `listDaemons`, `reapDaemon`, and the per-call bookkeeping helpers. Owns spawn-detached, lock-based duplicate-spawn protection, the unix-socket readiness probe, and SIGTERM-then-SIGKILL reap. |
@@ -264,15 +264,15 @@ CLAUDEMUX_TM=$(pwd)/bin/tm npx vitest run --config vitest.integration.config.ts
 ```
 
 Why trust is seeded by a targeted write rather than an isolated config dir
-is [decision 0020](/.agents/decisions/0020-live-teammate-integration-harness.md);
+is [decision live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md);
 the run instructions are the suite's own
 [README](/plugins/claudemux/core/test/integration/README.md).
 
 ## See also
 
 - [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) — the CLI architecture and the migration roadmap.
-- [decisions/0019-node-cli-orchestrator.md](/.agents/decisions/0019-node-cli-orchestrator.md) — why the `next` line is a Node CLI.
-- [decisions/0020-live-teammate-integration-harness.md](/.agents/decisions/0020-live-teammate-integration-harness.md) — how the live-teammate suite seeds trust and gates stage 3.
-- [decisions/0018-mcp-native-orchestration-core.md](/.agents/decisions/0018-mcp-native-orchestration-core.md) — the superseded MCP-native design.
+- [decisions/node-cli-orchestrator.md](/.agents/decisions/node-cli-orchestrator.md) — why the `next` line is a Node CLI.
+- [decisions/live-teammate-integration-harness.md](/.agents/decisions/live-teammate-integration-harness.md) — how the live-teammate suite seeds trust and gates stage 3.
+- [decisions/mcp-native-orchestration-core.md](/.agents/decisions/mcp-native-orchestration-core.md) — the superseded MCP-native design.
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the `/tmp` marker protocol the Claude-teammate verbs read and write.
 - [components/tm.md](/.agents/components/tm.md) — the Bash `tm` the core fronts and progressively hollows.

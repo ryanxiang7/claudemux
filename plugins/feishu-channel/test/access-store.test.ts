@@ -106,7 +106,7 @@ describe('normalizeAccess', () => {
   })
 
   test('an access.json predating groupPolicy loads with the allowlist default', () => {
-    // A file written before this field existed keeps the decision-0010
+    // A file written before this field existed keeps the decision feishu-channel-group-pairing
     // behavior: groups and any group-kind pending entry survive unchanged.
     const a = normalizeAccess({
       dmPolicy: 'pairing',

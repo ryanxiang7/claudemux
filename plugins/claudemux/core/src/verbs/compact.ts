@@ -1,5 +1,5 @@
 /**
- * `tm compact <name>` — manual context compaction. Decision 0024
+ * `tm compact <name>` — manual context compaction. Decision multi-engine-tui-architecture
  * §"Engine interface" uses this verb as the load-bearing example for
  * the discriminated-result design: the Codex engine returns
  * `{ kind: 'not-supported', reason: ... }` and the verb formatter

@@ -1,4 +1,4 @@
-# 0024 — Multi-engine `tm` architecture (claude-side draft)
+# Multi-engine `tm` architecture (claude-side draft)
 
 A target shape for `claudemux/plugins/claudemux/core/` once `tm` is no
 longer a single monoblob. This draft answers the user's brief: where
@@ -18,20 +18,20 @@ cross-reader does not have to mine them out of the body.
 
 **Position A — Engine identity is an explicit `.engine` file, not
 inferred from registry-directory presence.**
-[Decision 0023](/.agents/decisions/0023-codex-engine-flag.md) §2 chose
+[Decision codex-engine-flag](/.agents/decisions/codex-engine-flag.md) §2 chose
 to derive engine identity from "which of the two existing registries
 holds the name" (the Claude side's `/tmp/teammate-<n>.{sid,cwd,ready}`
 versus the codex side's `/tmp/teammate-codex/<n>/`). This draft
-**supersedes 0023 §2** with a single-source-of-truth file
+**supersedes codex-engine-flag §2** with a single-source-of-truth file
 `/tmp/teammate-<n>.engine` written atomically by `Engine.spawn` and
 removed by `Engine.kill`. The inference-from-registry shape works for
 two engines whose persistence happens to be disjoint; the third engine
 breaks it the moment it wants to write a `.cwd` for diagnostic
 reasons, or wants to share the per-sid idle marker dir with claude.
 The user's brief explicitly names this file (`#5`), and the brief also
-authorises dropping the one-minor deprecation window 0023 baked in
-(`#6` — "0.8.x 是本地未发布,清断"). Net effect: 0023 lands as
-*Superseded by 0024* when 0024 lands; its §1 (`--engine` flag at spawn)
+authorises dropping the one-minor deprecation window codex-engine-flag baked in
+(`#6` — "0.8.x 是本地未发布,清断"). Net effect: codex-engine-flag lands as
+*Superseded by multi-engine-tui-architecture* when multi-engine-tui-architecture lands; its §1 (`--engine` flag at spawn)
 and §4 (cross-engine name reuse forbidden) carry forward, §2 and §3
 do not.
 
@@ -96,7 +96,7 @@ The shape that broke down:
 | **Verb-level engine fork in 4 places** | `isCodexTarget(repo)` at native.ts:1149 (kill), :2051 (spawn), :2310 (send), :2445 (wait). | Each verb head re-decides the engine. A bug fix has to land at the right one of four near-identical sites. |
 | **Two parallel verb trees** | Claude-side verbs in `native.ts`, codex-side in `codex-verbs.ts`. No shared interface. | The next engine forks a third tree. By the fourth engine you have N×M files where M is the verb set. |
 | **Path builders mixed by engine** | `paths.ts` carries `idleDir / sidFile / cwdFile / encodeProjectDir` (claude) **and** `codexRegistryRoot / codexSocketPath / codexThreadFile` (codex) side by side. | Engine ownership of state is invisible — the reader has to know which builder is for which side. |
-| **`verbs.ts` is stale** | Documents the "MCP tool" surface from a superseded decision (0018). | Misleads; no current verb dispatch reads it. |
+| **`verbs.ts` is stale** | Documents the "MCP tool" surface from a superseded decision (mcp-native-orchestration-core). | Misleads; no current verb dispatch reads it. |
 
 The fix is not "split `native.ts` into smaller files of the same shape"
 (that just makes the next-shape decision later). It's to introduce the
@@ -184,7 +184,7 @@ claudemux/plugins/claudemux/core/
 ├── tsconfig.json
 ├── README.md                                # build / test instructions (unchanged)
 ├── dist/
-│   └── cli.mjs                              # esbuild output (committed bundle, decision 0021)
+│   └── cli.mjs                              # esbuild output (committed bundle, decision node-cli-committed-bundle)
 ├── src/
 │   ├── main.ts                              # process entrypoint: argv → router → exit code; reads stdin only for archive
 │   ├── cli/
@@ -244,7 +244,7 @@ claudemux/plugins/claudemux/core/
 │   ├── persistence/
 │   │   ├── engine-file.ts                   # readEngine(name): EngineKind | null; writeEngine(name, kind); removeEngine(name) — Position A's load-bearing module
 │   │   ├── idle-markers.ts                  # idleDir, idleMarkerFor, busyMarkerFor, lastFileFor — claude-engine consumers, but lives here because fleet aggregators read these too (the ledger doesn't care which engine wrote them)
-│   │   ├── project-dir.ts                   # encodeProjectDir + repo-to-project-dir helpers — the Claude Code on-disk convention (decision 0004's "one source of truth")
+│   │   ├── project-dir.ts                   # encodeProjectDir + repo-to-project-dir helpers — the Claude Code on-disk convention (decision cross-process-cross-platform-invariants's "one source of truth")
 │   │   └── task-ledger.ts                   # archive verb's jsonl reader/writer (engine-agnostic)
 │   ├── transport/
 │   │   ├── proc.ts                          # spawnCapture, the one process primitive (current proc.ts)
@@ -283,14 +283,14 @@ What collapses, what moves, what is new:
 | `codex-verbs.ts` (594 LoC) | `verbs/{spawn,send,wait,kill,ask}.ts` (the engine-bound part) + `engines/codex/*.ts` (the codex-flavored part) | The current file is "codex-flavored verbs". Tomorrow the verb layer is engine-agnostic and the codex flavor lives in `engines/codex/`. |
 | `codex-supervisor.ts`, `codex-ws.ts` | `engines/codex/{supervisor,ws,turn-collector}.ts` | Same code, ownership made explicit. |
 | `paths.ts` (claude + codex mixed) | `persistence/{engine-file,idle-markers,project-dir,task-ledger}.ts` (engine-agnostic) + `engines/<eng>/persistence.ts` (engine-specific) | A reader who wants to see "what files does the codex engine touch" reads one place. |
-| `verbs.ts` (stale 0018 MCP-tool catalog) | deleted | Superseded by 0019; no current code reads it. |
+| `verbs.ts` (stale mcp-native-orchestration-core MCP-tool catalog) | deleted | Superseded by node-cli-orchestrator; no current code reads it. |
 | `tm.ts` (`TmResult` + `resolveTmBinary`) | `cli/result.ts` + integration harness keeps `resolveTmBinary` near its consumer | `resolveTmBinary` is only used by the live-teammate suite — let it live next to the test that owns it. |
 | `isCodexTarget` (5 call sites, predicate) | deleted; replaced by `resolveEngine(name)` reading `/tmp/teammate-<n>.engine` (Position A) | The forks vanish; the verb layer just calls `resolveEngine(name).send(...)`. |
 
 What does **not** move:
 
 - `bin/tm` (Bash launcher) — its job is "find dist/cli.mjs and exec node". Engine plurality does not touch it.
-- `dist/cli.mjs` — committed bundle stays committed (decision 0021).
+- `dist/cli.mjs` — committed bundle stays committed (decision node-cli-committed-bundle).
 - `protocol/codex/` — the vendored TS bindings are a frozen contract; they keep their tree shape and get re-generated by `codex app-server generate-ts` exactly as today.
 - The Claude-side hooks (`hooks/on-session-start.sh`, `hooks/on-stop.sh`, `hooks/on-busy.sh`) — they remain the source of the `.ready` / `.busy` / `<sid>.last` / `_on-stop.log` writes. The Engine abstraction lives **inside** the Node core; the hooks are upstream of it and continue to write the files the `ClaudeEngine` reads.
 
@@ -548,7 +548,7 @@ sequenceDiagram
 
   V->>V: parseSpawnArgs → {name, kind, opts}
   V->>Reg: spawn(name, kind, opts)
-  Reg->>Reg: assert no existing .engine for name (cross-engine name reuse forbidden — 0023 §4 stands)
+  Reg->>Reg: assert no existing .engine for name (cross-engine name reuse forbidden — codex-engine-flag §4 stands)
   Reg->>EF: writeEngine(name, kind)
   Reg->>Eng: spawnImpl(name, opts)
   Eng-->>Reg: TeammateDescriptor
@@ -685,9 +685,9 @@ and "脑溢血逻辑". The shape above closes both:
 
 ## References
 
-- [Decision 0022](/.agents/decisions/0022-codex-driver.md) — the codex driver record this draft inherits (modulo the `codex-` prefix routing it deletes).
-- [Decision 0023](/.agents/decisions/0023-codex-engine-flag.md) — the `--engine` flag record this draft partially supersedes (§2 inference rule, §3 deprecation window).
-- [Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) — the Node CLI contract this architecture lives on.
-- [Decision 0021](/.agents/decisions/0021-node-cli-committed-bundle.md) — the committed-bundle rule the dist/ output continues to honor.
-- [Decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md) — the path-builder discipline `persistence/` codifies.
+- [Decision codex-driver](/.agents/decisions/codex-driver.md) — the codex driver record this draft inherits (modulo the `codex-` prefix routing it deletes).
+- [Decision codex-engine-flag](/.agents/decisions/codex-engine-flag.md) — the `--engine` flag record this draft partially supersedes (§2 inference rule, §3 deprecation window).
+- [Decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) — the Node CLI contract this architecture lives on.
+- [Decision node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md) — the committed-bundle rule the dist/ output continues to honor.
+- [Decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md) — the path-builder discipline `persistence/` codifies.
 - [Phase 1 audit](/.agents/proposals/phase-1-bug-audit.md) — the bug list that produced the appetite for this rework.

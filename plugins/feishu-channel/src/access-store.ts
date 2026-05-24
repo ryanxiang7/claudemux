@@ -19,7 +19,7 @@ export const GROUP_POLICIES: readonly GroupPolicy[] = ['block', 'allowlist', 'fo
 
 /**
  * A fresh access state — pairing required for direct messages, the
- * decision-0010 per-group pairing for groups, nothing allowed yet.
+ * decision feishu-channel-group-pairing per-group pairing for groups, nothing allowed yet.
  */
 export function defaultAccess(): Access {
   return { dmPolicy: 'pairing', groupPolicy: 'allowlist', allowFrom: [], groups: {}, pending: {} }

@@ -4,8 +4,8 @@
 **channel** for Feishu (飞书). It bridges Feishu events into a running Claude
 Code session and replies back, over a long-lived WebSocket — so no public
 webhook URL is needed. Its rationale is in
-[decision 0005](/.agents/decisions/0005-feishu-channel-plugin.md) and
-[decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md).
+[decision feishu-channel-plugin](/.agents/decisions/feishu-channel-plugin.md) and
+[decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md).
 
 ## Why it lives here
 
@@ -46,7 +46,7 @@ A delivered chat message is also given a 👀 reaction on Feishu the moment it
 reaches the session — a receipt signal for the sender — and the reaction is
 cleared automatically when Claude replies into that chat. The `message_id →
 reaction_id` map this needs is held in memory in `createChannelCore`, not on
-disk. See [decision 0013](/.agents/decisions/0013-feishu-channel-received-reaction-indicator.md).
+disk. See [decision feishu-channel-received-reaction-indicator](/.agents/decisions/feishu-channel-received-reaction-indicator.md).
 
 ## The event registry — the extensibility seam
 
@@ -61,7 +61,7 @@ change. Two handlers exist:
 - `drive.notice.comment_add_v1` — document comments and replies
   (`src/handlers/doc-comment.ts`).
 
-See [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)
+See [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)
 for the rationale.
 
 ## Layout
@@ -101,25 +101,25 @@ so it unit-tests without a running server or connection.
   `normalizeComment` — the authoritative payload reference — and the handler
   fetches the comment text and document title from Feishu, because a comment
   event payload carries only the comment's identifiers. See
-  [decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md).
+  [decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md).
   The comment is fetched with `fileComment.batchQuery`, not the single-comment
   `fileComment.get` — `get` serves only whole-document comments and 404s on a
   comment anchored to a text selection, which is most of them. When a comment
   arrives with an empty body, the endpoint is the thing to check before the
   bot's scopes; see
-  [decision 0016](/.agents/decisions/0016-feishu-doc-comment-fetch-via-batch-query.md).
+  [decision feishu-doc-comment-fetch-via-batch-query](/.agents/decisions/feishu-doc-comment-fetch-via-batch-query.md).
 - Group messages are gated by `access.json`'s `groupPolicy`, set by
   `/feishu-channel:configure`: `block` (the bot ignores groups), `allowlist`
-  (each group authorized as a unit by pairing — decision 0010), or
+  (each group authorized as a unit by pairing — decision feishu-channel-group-pairing), or
   `follow-user` (a group message is gated on the sender's `allowFrom` allowlist
   alone, no per-group setup). See
-  [decision 0012](/.agents/decisions/0012-feishu-channel-group-policy-modes.md).
+  [decision feishu-channel-group-policy-modes](/.agents/decisions/feishu-channel-group-policy-modes.md).
 - The channel connects to Feishu **directly**, not through the session's HTTP
   proxy. `.mcp.json` clears `HTTP_PROXY` / `HTTPS_PROXY` (upper and lower case)
   in the MCP server's environment, so a proxy set for the Claude Code session
   does not apply to this server. The empty `env` values in `.mcp.json` are
   load-bearing — `test/mcp-config.test.ts` fails if they are dropped. See
-  [decision 0008](/.agents/decisions/0008-feishu-channel-launch-without-session-proxy.md).
+  [decision feishu-channel-launch-without-session-proxy](/.agents/decisions/feishu-channel-launch-without-session-proxy.md).
 - `src/feishu.ts` wires the `WSClient`'s `onError` / `onReconnecting` /
   `onReconnected` callbacks and a startup-grace watchdog, so a failed or
   dropped connection is logged instead of retrying silently. The log wording
@@ -127,8 +127,8 @@ so it unit-tests without a running server or connection.
 
 ## See also
 
-- [decisions/0005-feishu-channel-plugin.md](/.agents/decisions/0005-feishu-channel-plugin.md) — why a second plugin, why a separate TypeScript project.
-- [decisions/0006-feishu-channel-event-registry.md](/.agents/decisions/0006-feishu-channel-event-registry.md) — the event registry and core design choices.
-- [decisions/0013-feishu-channel-received-reaction-indicator.md](/.agents/decisions/0013-feishu-channel-received-reaction-indicator.md) — the received-reaction indicator on inbound chat messages.
+- [decisions/feishu-channel-plugin.md](/.agents/decisions/feishu-channel-plugin.md) — why a second plugin, why a separate TypeScript project.
+- [decisions/feishu-channel-event-registry.md](/.agents/decisions/feishu-channel-event-registry.md) — the event registry and core design choices.
+- [decisions/feishu-channel-received-reaction-indicator.md](/.agents/decisions/feishu-channel-received-reaction-indicator.md) — the received-reaction indicator on inbound chat messages.
 - [components/repo-tooling.md](/.agents/components/repo-tooling.md) — the CI `feishu-channel` job.
 - [root.md](/.agents/root.md) — repo layout.

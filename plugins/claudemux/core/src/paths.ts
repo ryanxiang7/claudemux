@@ -1,7 +1,7 @@
 /**
  * Path builders for every cross-process file the core touches.
  *
- * Path-builder discipline (repo CLAUDE.md, decision 0004): every path under
+ * Path-builder discipline (repo CLAUDE.md, decision cross-process-cross-platform-invariants): every path under
  * `/tmp/teammate-*`, `/tmp/claude-idle/*`, and the core's own state directory
  * is constructed by a named function here — never by string concatenation at
  * a use site. The `/tmp` protocol is the coupling layer between `tm`, the
@@ -65,7 +65,7 @@ export function readyFile(repo: string): string {
  * containing `_`, `+`, `.`, `,`, `:`, `!`, `@`, `;`, or a literal space all
  * land at the same `-bar` directory; only `A-Z`, `a-z`, `0-9`, and `-` survive
  * verbatim. This is an Anthropic-controlled contract, and this is its one
- * source of truth on the TypeScript side (decision 0004): every site that
+ * source of truth on the TypeScript side (decision cross-process-cross-platform-invariants): every site that
  * locates a project dir routes through here, or the same repo ends up
  * addressed by two different strings.
  */

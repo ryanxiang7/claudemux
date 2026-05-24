@@ -55,7 +55,7 @@ network access. Each run costs a handful of model turns.
 - It does not modify `~/.claude/settings.json`, the plugin install, or any
   production code.
 
-See [decision 0020](/.agents/decisions/0020-live-teammate-integration-harness.md)
+See [decision live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md)
 for why trust is seeded this way rather than via an isolated config dir.
 
 ## codex.itest.ts — live codex driver

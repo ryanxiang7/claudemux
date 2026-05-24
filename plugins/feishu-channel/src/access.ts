@@ -128,7 +128,7 @@ function gateGroup(input: GateInput, access: Access, changed: boolean): GateResu
   if (access.groupPolicy === 'follow-user') {
     return gateGroupFollowUser(input, access, changed)
   }
-  // 'allowlist' — a group is authorized as a unit, by pairing (decision 0010).
+  // 'allowlist' — a group is authorized as a unit, by pairing (decision feishu-channel-group-pairing).
   return gateGroupAllowlist(input, access, changed)
 }
 
@@ -162,7 +162,7 @@ function gateGroupFollowUser(input: GateInput, access: Access, changed: boolean)
 
 /**
  * Decide a group message under the `allowlist` policy — a group is authorized
- * as a unit (decision 0010). A configured group is gated by its own
+ * as a unit (decision feishu-channel-group-pairing). A configured group is gated by its own
  * `requireMention` / `allowFrom` entry; an unconfigured group is brought in by
  * pairing.
  */

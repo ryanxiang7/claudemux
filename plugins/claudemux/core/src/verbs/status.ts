@@ -1,5 +1,5 @@
 /**
- * `tm status <name>` — per-teammate snapshot. Decision 0024 amend
+ * `tm status <name>` — per-teammate snapshot. Decision multi-engine-tui-architecture amend
  * lines 157-161 fix the default impl: resolve the teammate name
  * through the router, hand the engine the request, format the result.
  * A teammate that has no tmux session (a Codex daemon teammate)

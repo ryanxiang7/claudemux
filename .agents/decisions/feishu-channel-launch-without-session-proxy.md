@@ -1,4 +1,4 @@
-# 0008 — Feishu channel: launch the MCP server without the session HTTP proxy
+# Feishu channel: launch the MCP server without the session HTTP proxy
 
 - **Status:** Accepted
 - **Date:** 2026-05-21

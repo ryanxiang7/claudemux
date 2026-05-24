@@ -124,7 +124,7 @@
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
 This is a survey of reference channel implementations and their testing
@@ -133,7 +133,7 @@ requirement; both travelled.
 
 ### Reference channels leak their process on exit (§2b — the m1heng / retrodigio comparison)
 **Promoted** → spec hard-requirement #3 →
-[decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)
+[decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)
 (`ShutdownCoordinator`). Same hazard as
 [feishu-channel-notes.md](/.agents/research/feishu-channel-notes.md) §3.
 

@@ -1,4 +1,4 @@
-# 0011 — Feishu doc-comment handler: SDK-verified decode and best-effort enrichment
+# Feishu doc-comment handler: SDK-verified decode and best-effort enrichment
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -6,7 +6,7 @@
 
 ## Context
 
-[Decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)
+[Decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)
 landed the `drive.notice.comment_add_v1` handler with the event treated as
 *unverified*: its `event_type` and payload field names were corroborated only
 by third-party integrations, so the handler decoded defensively — trying
@@ -66,9 +66,9 @@ the fetch is skipped rather than attempted and caught.
 - The bot needs the document-comment and document-metadata **read** scopes.
   Without them, a comment is delivered but its text and title are
   placeholders — a visible, non-fatal degradation rather than a silent one.
-- This revises [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)'s
+- This revises [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)'s
   treatment of the document-comment event as unverified. The event is now
-  decoded against the Feishu SDK; 0006's other choices — the event registry,
+  decoded against the Feishu SDK; feishu-channel-event-registry's other choices — the event registry,
   chat_id reply routing, graceful shutdown — are unchanged.
 - The plugin's declared floor for `@larksuiteoapi/node-sdk` was raised to
   `^1.64.0`, the version that exports `normalizeComment`.
@@ -81,5 +81,5 @@ the fetch is skipped rather than attempted and caught.
 - `plugins/feishu-channel/src/handlers/doc-comment.ts` — the handler and
   `normalizeCommentEvent`.
 - `plugins/feishu-channel/src/feishu.ts` — `fetchDocComment` / `fetchDocMeta`.
-- [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md),
+- [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md),
   [components/feishu-channel.md](/.agents/components/feishu-channel.md).

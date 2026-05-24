@@ -1,6 +1,6 @@
 /**
  * Claude-engine tmux helpers — the session-probe and pane-target lookups
- * the hot-path verbs share. Decision 0024 §"Verb is the abstraction" pins
+ * the hot-path verbs share. Decision multi-engine-tui-architecture §"Verb is the abstraction" pins
  * the session-name encoding to `engines/claude/persistence.ts`; this
  * module is the thin runtime layer on top of that, so a verb that needs
  * to ask "is this teammate's tmux session alive?" or "what pane should I

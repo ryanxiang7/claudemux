@@ -102,7 +102,7 @@ Sources:
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
 This is a desk-research comparison against industry practice. Its "Top-5
@@ -116,10 +116,10 @@ the same hazard as
 [architecture-review.md](/.agents/research/architecture-review.md) §2 / Top-3
 #3; see that document's appendix for the verified status. The hazard is
 recorded twice across the research archive and was dispositioned nowhere until
-decision 0009.
+decision research-hazard-dispositions.
 
 ### Cross-platform `stat` (steal #2)
-**Promoted** → [decision 0003](/.agents/decisions/0003-tm-quality-hardening.md)
+**Promoted** → [decision tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md)
 (`stat_size` / `stat_mtime`). The remaining steals — #1 `BASH_SOURCE` guard,
 #3 UID-scoped runtime dir, #5 `claude-code-action` — are enhancements with no
 breaking trigger and are not tracked as hazards.

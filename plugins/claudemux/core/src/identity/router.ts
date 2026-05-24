@@ -1,5 +1,5 @@
 /**
- * Resolve a teammate name to the engine that owns it. Decision 0024
+ * Resolve a teammate name to the engine that owns it. Decision multi-engine-tui-architecture
  * §"Engine identity is the JSON's `engine` field" sets the rule: the
  * router reads `/tmp/teammate-<name>.json` and routes by the `engine`
  * field — no "infer from which registry directory exists" path, no

@@ -1,5 +1,5 @@
 /**
- * The cross-engine TUI contract. Decision 0024 §"Engine interface" sets
+ * The cross-engine TUI contract. Decision multi-engine-tui-architecture §"Engine interface" sets
  * the shape: every engine implements every method (no `?` optionals),
  * and an operation an engine genuinely cannot perform returns a
  * discriminated result whose `kind` says so. The verb layer formats the
@@ -51,7 +51,7 @@ import type {
  * Every `tm` engine implements this interface. The fleet-facing methods
  * (`list`, `status`, `kill`) make `tm ls` / `tm states` / `tm status` /
  * `tm kill` reachable for a teammate that has no tmux session — that
- * line is the load-bearing change in decision 0024's amend.
+ * line is the load-bearing change in decision multi-engine-tui-architecture's amend.
  */
 export interface Engine {
   /** Which engine this is. Mirrors the JSON-recorded identity. */
@@ -65,7 +65,7 @@ export interface Engine {
   wait(req: WaitRequest, ctx: EngineContext): Promise<TurnResult>
   kill(req: KillRequest, ctx: EngineContext): Promise<KillResult>
 
-  // Fleet visibility — decision 0024 amend §"Fleet-visibility verbs"
+  // Fleet visibility — decision multi-engine-tui-architecture amend §"Fleet-visibility verbs"
   list(ctx: EngineContext): Promise<readonly TeammateListing[]>
   status(req: StatusRequest, ctx: EngineContext): Promise<TeammateStatus>
 

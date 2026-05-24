@@ -16,7 +16,7 @@ codex prefix > SessionStart hook > MCP > anything else.
   [`plugins/claudemux/core/src/engines/codex/verbs.ts`](/plugins/claudemux/core/src/engines/codex/verbs.ts) and
   used at four sites in `native.ts` (`1149`, `2051`, `2310`, `2445`) plus
   the `codexAsk` pool filter in `plugins/claudemux/core/src/engines/codex/verbs.ts`.
-- **Root cause.** [Decision 0022 §1](/.agents/decisions/0022-codex-driver.md)
+- **Root cause.** [Decision codex-driver §1](/.agents/decisions/codex-driver.md)
   committed to the prefix as a one-helper-four-call-sites stage-4
   shortcut. The shortcut is now load-bearing surface contract — the cost
   is in the four-character namespace carve-out, the silent demotion of
@@ -27,7 +27,7 @@ codex prefix > SessionStart hook > MCP > anything else.
   per-teammate registries (no new files), a resolver that supersedes
   `isCodexTarget`, and a one-minor deprecation window for the prefix.
   Full rationale + alternatives in
-  [decision 0023 (draft)](/.agents/decisions/0023-codex-engine-flag.md).
+  [decision codex-engine-flag (draft)](/.agents/decisions/codex-engine-flag.md).
 
 ---
 
@@ -146,8 +146,8 @@ The user asked for *bug list + codex redesign* before any implementation.
 The deliverables for this gate are:
 
 1. **This file** — Phase 1 bug audit (`.agents/proposals/phase-1-bug-audit.md`).
-2. **Decision 0023 draft** — the `--engine` flag design
-   (`.agents/decisions/0023-codex-engine-flag.md`, status: `Proposed`).
+2. **Decision codex-engine-flag draft** — the `--engine` flag design
+   (`.agents/decisions/codex-engine-flag.md`, status: `Proposed`).
 
 Nothing in `plugins/claudemux/` has been edited. The proposal does not
 ship.

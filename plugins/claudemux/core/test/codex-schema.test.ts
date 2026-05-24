@@ -13,7 +13,7 @@
  *      generated bindings describe the inside of each `params` / `result`,
  *      not the envelope around them, so the envelope cannot drift through
  *      the diff check above — it has to be pinned by an explicit fixture.
- *      That is this file's job (decision 0019 §5).
+ *      That is this file's job (decision node-cli-orchestrator §5).
  *
  * The fixture under `test/fixtures/codex/` is a real envelope captured
  * once from a running `codex app-server --listen ws://127.0.0.1:<port>`.
@@ -40,7 +40,7 @@ describe('codex app-server response envelope', () => {
   const initEnvelope = readFixture('initialize-response.json') as Record<string, unknown>
 
   test('the envelope keys are exactly { id, result } — no `jsonrpc` field', () => {
-    // Decision 0019 §5: the codex protocol omits the `jsonrpc` version field.
+    // Decision node-cli-orchestrator §5: the codex protocol omits the `jsonrpc` version field.
     // A future codex release adding it would shift our client's parsing
     // contract; pin the absence explicitly so we see it the moment it changes.
     expect(Object.keys(initEnvelope).sort()).toEqual(['id', 'result'])

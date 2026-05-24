@@ -1,6 +1,6 @@
 /**
  * `VerbContext` — the dependency bundle every verb-layer default impl
- * takes. Decision 0024 §"Verb is the abstraction" calls out the four
+ * takes. Decision multi-engine-tui-architecture §"Verb is the abstraction" calls out the four
  * verb-side primitives:
  *
  *  - `engines` — the read-only registry view; `lsVerb` / `statesVerb`
@@ -26,7 +26,7 @@ import type { EngineContext, TeammateName } from '../engines/types'
 import type { TeammateRouter } from '../identity/router'
 
 /**
- * Writer for the base TeammateRecord JSON. Decision 0024's "identity-
+ * Writer for the base TeammateRecord JSON. Decision multi-engine-tui-architecture's "identity-
  * by-JSON" enforcement rule pins this as the only place that mutates
  * `/tmp/teammate-<name>.json`; Phase 2 lands the production
  * implementation under `persistence/identity-store.ts`.

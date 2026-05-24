@@ -1,4 +1,4 @@
-# 0007 — Teammates launch with the AskUserQuestion tool disabled
+# Teammates launch with the AskUserQuestion tool disabled
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -65,4 +65,4 @@ the flag with no separate code path.
 
 - `plugins/claudemux/bin/tm` — `teammate_launch_flags`, `cmd_spawn`.
 - [components/tm.md](/.agents/components/tm.md),
-  [decisions/0002-atomic-tm-verbs.md](/.agents/decisions/0002-atomic-tm-verbs.md).
+  [decisions/atomic-tm-verbs.md](/.agents/decisions/atomic-tm-verbs.md).

@@ -1,7 +1,7 @@
 /**
  * Atomic file primitives.
  *
- * Decision 0024 §"TeammateRecord" gives the registry layer one rule: writes
+ * Decision multi-engine-tui-architecture §"TeammateRecord" gives the registry layer one rule: writes
  * to `/tmp/teammate-<name>.json` are atomic, so a verb that reads the file
  * mid-write never sees a half-written record. Atomic on POSIX is
  * write-tmp-then-rename(2): a rename onto an existing path is a single
@@ -11,8 +11,8 @@
  * `reserveExclusive` is the matching primitive for the spawn path: create
  * the marker with `O_CREAT | O_EXCL` so a second concurrent `tm spawn` of
  * the same name fails immediately. The registry layer uses this to enforce
- * the "cross-engine name reuse is forbidden" rule (decision 0023 §4 carried
- * forward by 0024).
+ * the "cross-engine name reuse is forbidden" rule (decision codex-engine-flag §4 carried
+ * forward by multi-engine-tui-architecture).
  *
  * Both functions go through this module rather than scattering
  * `writeFileSync` calls at the use sites — the next refactor that wants to

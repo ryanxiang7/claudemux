@@ -4,7 +4,7 @@
 > debate and one independent architecture review, **not yet implemented**. The
 > contract below is what an implementation must satisfy. The settled
 > trade-offs and the two residual rulings are recorded in
-> [decision 0017](/.agents/decisions/0017-feishu-worker-scoped-subscription.md).
+> [decision feishu-worker-scoped-subscription](/.agents/decisions/feishu-worker-scoped-subscription.md).
 
 This document specifies how a Feishu event reaches **only** the one Claude Code
 Worker that subscribed to its resource — a document's comments to the Worker
@@ -44,8 +44,7 @@ on the data path.
   pinned toward the dispatcher session by holder affinity (`connection.lock`
   carries a `role`; a dispatcher-role server preempts a teammate-role holder).
   A standalone long-lived daemon was rejected: a process that outlives session
-  cycling becomes a version-upgrade liability with no offsetting gain (decision
-  0017, §Consequences).
+  cycling becomes a version-upgrade liability with no offsetting gain (decision feishu-worker-scoped-subscription, §Consequences).
 - **The router is pure process-level code — zero Claude turns.** In the WS
   callback it does only: extract the routing key, look it up in the route
   table, append the raw event to the resource inbox, then let the SDK ACK
@@ -192,7 +191,7 @@ indirection and a separate lock for no gain.
 1. Extract the routing key: `im.message.receive_v1` → `chat_id`;
    `drive.notice.comment_add_v1` → `file_token`. The comment event carries the
    file token in its payload (`notice_meta`, decoded by the SDK — see
-   [decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md));
+   [decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md));
    extraction is a pure local decode, **no network I/O**, to stay inside
    Feishu's ~3 s ack budget.
 2. Resolve the target inbox:
@@ -246,7 +245,7 @@ holder's receive time and is the intended drain order, but under a burst the
 `rename` order need not match `<ts_ns>` order, and a redelivered event arrives
 late. The endpoint and handlers must tolerate out-of-order arrival — e.g. a
 `comment_reply` before its parent `comment_add`. Doc-comment enrichment already
-fetches the whole thread (decision 0011), so a reply event is self-sufficient;
+fetches the whole thread (decision feishu-doc-comment-enrichment), so a reply event is self-sufficient;
 strict causal ordering is **not** a guarantee this protocol makes.
 
 ## 6. Liveness
@@ -614,7 +613,7 @@ the no-holder gap.
   replay window; whether that window covers a realistic handoff gap is an open
   item (§13). The handoff window is a **known exposure**, not a solved problem;
   shrinking it (clean-handoff signalling, faster standby detection) is the
-  follow-up named in decision 0017.
+  follow-up named in decision feishu-worker-scoped-subscription.
 
 ### 10.7 Named residuals
 
@@ -679,7 +678,7 @@ a small pure function; that unit-test surface is the guarantee's enforcement.
   `CLAUDE_PROJECT_DIR` to a plugin stdio MCP server process. This decides the
   single anchor source (§3). Must be settled before implementation; there is no
   runtime fallback either way.
-- **Comment-event `file_token` path.** [Decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md)
+- **Comment-event `file_token` path.** [Decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md)
   established that the `drive.notice.comment_add_v1` payload carries the file
   token under `notice_meta`, decoded by the SDK's `normalizeComment`. Confirm
   the holder can extract it through a **pure local decode** (no network call),
@@ -733,7 +732,7 @@ No finding was rejected.
 
 ## See also
 
-- [decision 0017](/.agents/decisions/0017-feishu-worker-scoped-subscription.md) — the decision record: trade-offs, the two rulings, consequences.
+- [decision feishu-worker-scoped-subscription](/.agents/decisions/feishu-worker-scoped-subscription.md) — the decision record: trade-offs, the two rulings, consequences.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md) — the current feishu-channel plugin this feature extends.
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — the `tm`↔hook `/tmp` protocol; the routes/inbox protocol here is a second, independent cross-process file protocol under `~/.claude/channels/feishu/`.
-- [decision 0011](/.agents/decisions/0011-feishu-doc-comment-enrichment.md) — the doc-comment payload shape and SDK decode.
+- [decision feishu-doc-comment-enrichment](/.agents/decisions/feishu-doc-comment-enrichment.md) — the doc-comment payload shape and SDK decode.

@@ -245,7 +245,7 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       persistent conversation thread is not polluted). Prints the
       turn's JSON to stdout.
 
-      Pool semantics (decision 0019 §6, pool decision A): the named
+      Pool semantics (decision node-cli-orchestrator §6, pool decision A): the named
       \`codex-<n>\` teammates are the pool. ask picks any idle one,
       borrows it for one turn, and returns it. "Idle" means it has no
       active borrow lock; the lock is a file under

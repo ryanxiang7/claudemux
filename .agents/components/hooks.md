@@ -21,7 +21,7 @@ The event sets for `on-busy.sh` and `on-stop.sh` are chosen to cover *every*
 transition in each direction. Why this matters: if `tm wait` only woke on
 `Stop`, a `/compact` turn (which ends on `PostCompact`) or an API-error turn
 (`StopFailure`) would hang the wait forever. See
-[decision 0001](/.agents/decisions/0001-hook-driven-busy-idle-signal.md).
+[decision hook-driven-busy-idle-signal](/.agents/decisions/hook-driven-busy-idle-signal.md).
 
 ## Design constraints when editing a hook
 
@@ -77,4 +77,4 @@ Each real rotation is appended to `/tmp/claudemux-sid-changes.log`.
 
 - [domains/cross-process-protocol.md](/.agents/domains/cross-process-protocol.md) — every protocol file the hooks read and write.
 - [components/tm.md](/.agents/components/tm.md) — the consumer side of the signal.
-- [decisions/0001-hook-driven-busy-idle-signal.md](/.agents/decisions/0001-hook-driven-busy-idle-signal.md) — why the signal is hook-driven.
+- [decisions/hook-driven-busy-idle-signal.md](/.agents/decisions/hook-driven-busy-idle-signal.md) — why the signal is hook-driven.

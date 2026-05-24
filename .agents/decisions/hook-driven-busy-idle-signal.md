@@ -1,4 +1,4 @@
-# 0001 — Hook-driven BUSY/idle signal
+# Hook-driven BUSY/idle signal
 
 - **Status:** Accepted
 - **Date:** Foundational; the settle predicate and timing were refined through 2026-05-20
@@ -53,7 +53,7 @@ on timeout.
 - A teammate not launched by `tm spawn` (no `CLAUDEMUX_TEAMMATE_REPO` env)
   still produces idle/busy markers but gets no sid-rotation bookkeeping.
 - `tm` and the hooks now share an on-disk protocol that must evolve in
-  lockstep — this is what motivates [decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md).
+  lockstep — this is what motivates [decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md).
 
 ## References
 

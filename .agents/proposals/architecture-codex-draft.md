@@ -1,6 +1,6 @@
 # Architecture draft: multi-engine TUI core
 
-This draft intentionally diverges from one part of decision 0023: engine
+This draft intentionally diverges from one part of decision codex-engine-flag: engine
 identity should not be inferred from "which backing registry happens to
 exist". The stable identity record is an explicit
 `/tmp/teammate-<name>.engine` file. Liveness then belongs to the engine's own

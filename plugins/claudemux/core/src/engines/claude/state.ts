@@ -2,7 +2,7 @@
  * Claude-engine state helpers — derive the per-teammate `extras` row the
  * verb layer ingests for the `tm states` table.
  *
- * Decision 0024 §"Engines extend row shape, not the verb" puts the
+ * Decision multi-engine-tui-architecture §"Engines extend row shape, not the verb" puts the
  * engine-private state fields on `TeammateListing.extras`. The verb
  * formatter reads keys it knows; an engine that does not fill a key
  * surfaces the `"-"` placeholder the legacy `tm states` produced.

@@ -62,7 +62,7 @@ spawned, so ad-hoc and orphaned sessions would otherwise accumulate forever.
 ## The two invariants this protocol depends on
 
 These are repo-`CLAUDE.md` invariants; they exist *because of* this
-protocol, and [decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md)
+protocol, and [decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md)
 records the drift each one came from.
 
 1. **Path-builder discipline.** Every path above is constructed by a named
@@ -91,7 +91,7 @@ idle marker without the matching reply already in place.
 four working→idle events. The sets are exhaustive on purpose: a `tm wait`
 that only woke on `Stop` would hang forever on a `/compact` turn (ends on
 `PostCompact`) or an API-error turn (`StopFailure`). See
-[decision 0001](/.agents/decisions/0001-hook-driven-busy-idle-signal.md).
+[decision hook-driven-busy-idle-signal](/.agents/decisions/hook-driven-busy-idle-signal.md).
 
 ## See also
 

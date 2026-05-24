@@ -1,5 +1,5 @@
 /**
- * `tm mem <name>` — project memory dump. Decision 0024 §"`history`
+ * `tm mem <name>` — project memory dump. Decision multi-engine-tui-architecture §"`history`
  * and `mem` stay" keeps the verb alive across engines. The Claude
  * engine reads `~/.claude/projects/<encoded>/memory/`; the Codex
  * engine returns `not-supported`.

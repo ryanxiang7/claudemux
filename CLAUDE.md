@@ -64,7 +64,7 @@ A feature commit does **not** edit the `version` field. Instead it declares the 
 - `minor` — new feature, backward-compatible
 - `major` — breaking change to a documented contract (CLI flag removal, file path change, on-disk format change)
 
-The version is bumped only at **release time**: `bin/release <plugin>` consumes every pending fragment for that plugin, bumps the manifest `version` by the highest level among them, prepends a dated section to `plugins/<plugin>/CHANGELOG.md`, and deletes the consumed fragments. `bin/release` is the only command that edits a `version` field. Because each feature commit adds a *new, uniquely-named* file rather than editing the one shared `version` line, two parallel branches never collide over versioning; the version line is touched only by serialized release commits. See [decision 0014](/.agents/decisions/0014-changeset-release-versioning.md).
+The version is bumped only at **release time**: `bin/release <plugin>` consumes every pending fragment for that plugin, bumps the manifest `version` by the highest level among them, prepends a dated section to `plugins/<plugin>/CHANGELOG.md`, and deletes the consumed fragments. `bin/release` is the only command that edits a `version` field. Because each feature commit adds a *new, uniquely-named* file rather than editing the one shared `version` line, two parallel branches never collide over versioning; the version line is touched only by serialized release commits. See [decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md).
 
 What counts as feature-class differs per plugin, because the plugins have different shapes:
 

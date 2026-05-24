@@ -1,5 +1,5 @@
 /**
- * `tm history <name> [index]` — turn-by-turn history. Decision 0024
+ * `tm history <name> [index]` — turn-by-turn history. Decision multi-engine-tui-architecture
  * §"`history` and `mem` stay" keeps the verb alive on both engines.
  * The Claude engine reads `~/.claude/projects/<encoded>/*.jsonl`;
  * the Codex engine reads rollout JSONL files from `~/.codex/sessions`.

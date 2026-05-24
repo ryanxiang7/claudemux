@@ -89,7 +89,7 @@ Adopt **Path C (statusline sidecar)**. It replaces Path A (declarative flag — 
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
 No implementer-facing hazard. This document is a feature-capability probe —

@@ -1,4 +1,4 @@
-# 0010 — Feishu channel: groups are authorized by pairing
+# Feishu channel: groups are authorized by pairing
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -61,7 +61,7 @@ gesture.
 - An operator authorizes a group without ever seeing or typing a `chat_id` —
   the access model the feature set out to fix.
 - Mention detection needs the bot's own `open_id`, resolved at startup and able
-  to fail (the existing degradation behind decision 0008's connection work).
+  to fail (the existing degradation behind decision feishu-channel-launch-without-session-proxy's connection work).
   While it is unknown, an unconfigured group cannot be paired through the
   channel; a hand-edited `groups` entry remains the documented fallback.
 - Declining a group means letting its `pending` entry expire. If that group is
@@ -84,5 +84,5 @@ gesture.
   `PendingEntry.kind` field and its normalization.
 - `plugins/feishu-channel/skills/access/SKILL.md` — the `kind`-aware approval.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md).
-- [0006](/.agents/decisions/0006-feishu-channel-event-registry.md) — the event
+- [feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md) — the event
   handler the access gate runs inside.

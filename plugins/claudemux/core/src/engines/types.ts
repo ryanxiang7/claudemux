@@ -2,7 +2,7 @@
  * The shared request / result / value types that the `Engine` interface
  * and every verb-layer default implementation speak in.
  *
- * Decision 0024 §"Engine interface" and §"Capabilities are structured,
+ * Decision multi-engine-tui-architecture §"Engine interface" and §"Capabilities are structured,
  * not stringly-typed" anchor this file. Three rules carry through:
  *
  *  - Every operation result is a discriminated union keyed by `kind`, so
@@ -14,7 +14,7 @@
  *    `reason` string. An engine that genuinely cannot perform a verb
  *    still implements the method and returns this variant — the CLI
  *    surface gives the agent a one-line "why", not a stack trace.
- *  - Teammate names may contain `/` (decision 0024 §"Nested teammate
+ *  - Teammate names may contain `/` (decision multi-engine-tui-architecture §"Nested teammate
  *    names"). Path builders treat the name as opaque; engine-specific
  *    encoding (e.g., the Claude engine's tmux session name) lives in
  *    that engine's `persistence.ts`.

@@ -3991,7 +3991,7 @@ var HELP_TEXTS = {
       persistent conversation thread is not polluted). Prints the
       turn's JSON to stdout.
 
-      Pool semantics (decision 0019 \xA76, pool decision A): the named
+      Pool semantics (decision node-cli-orchestrator \xA76, pool decision A): the named
       \`codex-<n>\` teammates are the pool. ask picks any idle one,
       borrows it for one turn, and returns it. "Idle" means it has no
       active borrow lock; the lock is a file under

@@ -1,6 +1,6 @@
 /**
  * `IdentityStoreWriter` — the verb-layer-facing seam for the identity
- * file. Decision 0024 §"Verb is the abstraction" pulls `VerbContext`'s
+ * file. Decision multi-engine-tui-architecture §"Verb is the abstraction" pulls `VerbContext`'s
  * `identity` field out as an interface so the verb code does not import
  * the persistence module directly; the Phase 1 `NoopIdentityStore` lives
  * in `verbs/context.ts`, and Phase 2a's production implementation lives

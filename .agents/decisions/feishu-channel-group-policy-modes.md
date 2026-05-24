@@ -1,4 +1,4 @@
-# 0012 — Feishu channel: group access is a three-mode policy switch
+# Feishu channel: group access is a three-mode policy switch
 
 - **Status:** Accepted
 - **Date:** 2026-05-21
@@ -8,7 +8,7 @@
 
 ## Context
 
-[Decision 0010](/.agents/decisions/0010-feishu-channel-group-pairing.md) made
+[Decision feishu-channel-group-pairing](/.agents/decisions/feishu-channel-group-pairing.md) made
 one group behavior the only group behavior: a group is authorized as a unit,
 by pairing — an @-mention in an unconfigured group posts a code the operator
 approves into `access.groups`. Operating it surfaced that a single fixed
@@ -21,7 +21,7 @@ behavior cannot serve every deployment:
   trust**, with no per-group approval step — they @-mention it wherever a
   conversation needs it, and the per-person allowlist that already gates direct
   messages is the only gate they want.
-- The 0010 per-group model still fits operators who want each group vetted
+- The feishu-channel-group-pairing per-group model still fits operators who want each group vetted
   before the bot answers there.
 
 These are three different policies, not refinements of one. A switch is the
@@ -33,7 +33,7 @@ Group access becomes a `groupPolicy` field in `access.json`, beside `dmPolicy`,
 with three modes:
 
 - **`block`** — every group message is dropped; the bot ignores groups.
-- **`allowlist`** — decision 0010, unchanged: a group is authorized as a unit
+- **`allowlist`** — decision feishu-channel-group-pairing, unchanged: a group is authorized as a unit
   by pairing. This is the existing `gateGroupAllowlist` / `gateUnconfiguredGroup`
   / `kind: 'group'` machinery, now reached only in this mode.
 - **`follow-user`** — no group is authorized. A group message is delivered when
@@ -43,7 +43,7 @@ with three modes:
   dropped; no pairing code is posted into a group.
 
 `gate` branches on `groupPolicy`: `block` drops, `follow-user` runs the new
-`gateGroupFollowUser`, `allowlist` runs the 0010 path (`gateGroupAllowlist`).
+`gateGroupFollowUser`, `allowlist` runs the feishu-channel-group-pairing path (`gateGroupAllowlist`).
 
 ### configure asks for it
 
@@ -58,7 +58,7 @@ pending pairings.
 An `access.json` written before this field existed has no `groupPolicy`.
 `normalizeAccess` defaults a missing or invalid value to `allowlist` — so an
 existing deployment upgrades with **no behavior change**: it keeps the
-decision-0010 group pairing it already had, and its `groups` and group-`kind`
+decision-feishu-channel-group-pairing group pairing it already had, and its `groups` and group-`kind`
 pending entries load untouched. `defaultAccess` (a fresh install) uses the same
 `allowlist` default; configure then overwrites it with the operator's explicit
 choice. `allowlist` is the conservative default — it keeps every group behind
@@ -77,9 +77,9 @@ key: there is no on-disk change.
 - An operator picks the group behavior that fits their use, at configure time,
   and changes it later by editing `access.json` — the channel re-reads it on
   every message, no restart.
-- Decision 0010 is **not superseded**. Its group-pairing design is mode
+- Decision feishu-channel-group-pairing is **not superseded**. Its group-pairing design is mode
   `allowlist`, alive and unchanged; none of its code was removed. `follow-user`
-  and `block` were added beside it. 0010 remains the reference for how mode
+  and `block` were added beside it. feishu-channel-group-pairing remains the reference for how mode
   `allowlist` works.
 - `configure` now writes `access.json` as well as `.env`. Its third positional
   argument is required; the command always supplies it, asking the user from a
@@ -94,9 +94,9 @@ key: there is no on-disk change.
   pairing or a hand-edit. This is intentional: it keeps pairing codes out of
   group chats.
 - Mention detection still needs the bot's own `open_id`, resolved at startup
-  and able to fail (decision 0008's connection work). While it is unknown, a
+  and able to fail (decision feishu-channel-launch-without-session-proxy's connection work). While it is unknown, a
   `follow-user` group and a mention-gated `allowlist` group drop every message.
-  Unchanged from 0010.
+  Unchanged from feishu-channel-group-pairing.
 - Regression guard: `test/access.test.ts` covers all three modes — `block`
   drops; `follow-user` delivers an allowlisted mention and drops a
   non-allowlisted one, a non-mention, and an unknown-bot-id case; `allowlist`
@@ -112,6 +112,6 @@ key: there is no on-disk change.
   `GroupEntry` rename.
 - `plugins/feishu-channel/scripts/configure.ts`,
   `plugins/feishu-channel/commands/configure.md` — the configure question.
-- [decision 0010](/.agents/decisions/0010-feishu-channel-group-pairing.md) —
+- [decision feishu-channel-group-pairing](/.agents/decisions/feishu-channel-group-pairing.md) —
   mode `allowlist`'s design.
 - [components/feishu-channel.md](/.agents/components/feishu-channel.md).

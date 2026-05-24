@@ -1,7 +1,7 @@
 /**
  * Teammate name parser + nested-name validation.
  *
- * Decision 0024 §"Nested teammate names" opens up names containing `/` —
+ * Decision multi-engine-tui-architecture §"Nested teammate names" opens up names containing `/` —
  * the CLI accepts `tm spawn flow/flow-1`, the file builders treat the name
  * as opaque, and each engine encodes the name into whatever identifier its
  * runtime needs (tmux session, Codex registry directory, …). This module

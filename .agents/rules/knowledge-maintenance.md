@@ -33,11 +33,15 @@ enforced, in an executable contract (a hook, `bin/check-author`,
 ## Decision records
 
 When a task settles a design question — a trade-off, a reversal, a contract
-that the next agent would otherwise re-debate — add a numbered record under
-`decisions/`. Follow the format in
-[decisions/README.md](/.agents/decisions/README.md). A decision record is
-append-only history: do not delete an old record when the decision is later
-superseded; add a new record and mark the old one `Superseded by …`.
+that the next agent would otherwise re-debate — add a record under
+`decisions/`, named with a descriptive kebab-case topic slug. The
+[Adding a new record](/.agents/decisions/README.md) section of the
+decisions README is the step-by-step checklist (slug uniqueness, index
+row, supersede link, and the `scripts/check.sh` validation that catches
+drift). A decision record is append-only history: do not delete an old
+record when the decision is later superseded; add a new record and mark
+the old one with a Markdown link to the new record (`Superseded by
+[topic-slug](path)`).
 
 ## Research hazards
 
@@ -48,7 +52,7 @@ doc. A hazard left as loose prose is dropped silently at the next hand-off.
 The disposition vocabulary, the mandatory deployment-model cross step, and the
 appendix rule for already-frozen docs are in
 [CONTRIBUTING.md](/.agents/CONTRIBUTING.md); the reason is
-[decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+[the research-hazard-dispositions decision](/.agents/decisions/research-hazard-dispositions.md).
 
 ## Verification
 

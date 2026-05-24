@@ -1,5 +1,5 @@
 /**
- * `ClaudeEngine implements Engine`. Decision 0024 §"Engine interface"
+ * `ClaudeEngine implements Engine`. Decision multi-engine-tui-architecture §"Engine interface"
  * makes this the layer the verb dispatcher routes to; every method is
  * present, every result is a discriminated union.
  *
@@ -9,7 +9,7 @@
  * `verbs/<verb>.ts` and the Engine registry.
  *
  * The capabilities record below is what verbs branch on. `atomicSend`
- * is the type literal `true` (decision 0024 §"Capabilities are
+ * is the type literal `true` (decision multi-engine-tui-architecture §"Capabilities are
  * structured, not stringly-typed") — Claude Code's `tm send` already
  * blocks for the next Stop hook fire, so the atomic-round-trip rule
  * holds on the Claude side without further work.

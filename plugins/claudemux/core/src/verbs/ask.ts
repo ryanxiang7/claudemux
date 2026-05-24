@@ -4,7 +4,7 @@
  * spawned `codex-<n>` set; this verb does not name a teammate. Always
  * routes into the codex driver, never into the tmux path.
  *
- * Codex-only by definition (decision 0024): a claude teammate is named,
+ * Codex-only by definition (decision multi-engine-tui-architecture): a claude teammate is named,
  * so a "borrow from the pool" verb belongs to the engine whose
  * teammates are pool-shaped.
  */

@@ -25,7 +25,7 @@ exploration**. A good entry is:
 | `CONTRIBUTING.md` | This file — KB rules and the knowledge-delta protocol | Before editing `.agents/` |
 | `components/*.md` | One per component: what it owns, entry points, local foot-guns | When a task touches that component |
 | `domains/*.md` | Cross-cutting contracts that span components | When a task crosses a component seam |
-| `decisions/*.md` | Numbered decision records — context, decision, consequences | When you need the *why* behind a design |
+| `decisions/*.md` | Topic-slug decision records — context, decision, consequences | When you need the *why* behind a design |
 | `research/*.md` | Frozen point-in-time research snapshots, indexed by `research/index.md` | When you need the legwork behind a decision |
 | `rules/*.md` | Durable process rules for working in this repo | As referenced |
 | `scripts/check.sh` | Structural self-check (broken links, orphan docs) | Run before finishing a KB change |
@@ -71,7 +71,7 @@ platform fact that breaks the product if mishandled — must not be able to
 reach the end of the document and simply stop there. Every research doc
 reconciles the hazards it raised to an explicit disposition, in a closing
 `## Hazard dispositions` section. The reason and the full case are in
-[decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+[the research-hazard-dispositions decision](/.agents/decisions/research-hazard-dispositions.md).
 
 For each implementer-facing hazard the document raised, give exactly one:
 

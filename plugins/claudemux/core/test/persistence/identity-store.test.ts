@@ -2,7 +2,7 @@
  * Coverage for `identity-store.list`.
  *
  * Phase 2a-1's first cut excluded the entire `<root>/teammate-codex/`
- * subtree, which broke decision 0024 §"Nested teammate names" for any
+ * subtree, which broke decision multi-engine-tui-architecture §"Nested teammate names" for any
  * `codex/*` teammate — its base record at
  * `<root>/teammate-codex/<name>.json` was reachable by direct `read` but
  * invisible to `list`. The current `list` walks every `teammate-*`

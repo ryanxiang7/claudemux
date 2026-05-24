@@ -1248,7 +1248,7 @@ describe('resume engine-probing — no checkpoint + no base record', () => {
 })
 
 describe('engine-routed verbs (Phase 2a-1 fleet visibility)', () => {
-  // Decision 0024 §"Fleet-visibility verbs" routes `tm ls` / `tm states` /
+  // Decision multi-engine-tui-architecture §"Fleet-visibility verbs" routes `tm ls` / `tm states` /
   // `tm status` through `EngineRegistry` instead of straight to tmux. The
   // tests here cover the dispatch wiring; per-engine output shape is
   // covered by ClaudeEngine's own unit tests + the conformance file

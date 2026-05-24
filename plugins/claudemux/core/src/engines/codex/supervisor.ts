@@ -1,7 +1,7 @@
 /**
  * Process supervision for the codex app-server daemons.
  *
- * Decision 0019 §5 puts daemon lifecycle on claudemux: the codex
+ * Decision node-cli-orchestrator §5 puts daemon lifecycle on claudemux: the codex
  * `app-server` is a long-lived process that outlives any single `tm`
  * invocation, and with no resident core to hold it, `tm` owns spawning,
  * liveness checking, and reaping. The state lives on the filesystem under

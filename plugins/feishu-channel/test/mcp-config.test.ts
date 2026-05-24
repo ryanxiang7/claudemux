@@ -6,7 +6,7 @@
  * the four proxy variables to the empty string, and Claude Code merges that
  * over the inherited environment when it spawns the server — an empty value
  * overrides the inherited one (verified empirically against Claude Code
- * 2.1.146; see decision 0008).
+ * 2.1.146; see decision feishu-channel-launch-without-session-proxy).
  *
  * The block carries no comment, and CI runs with no proxy set, so deleting it
  * leaves every other test green. This test fails instead.

@@ -22,7 +22,7 @@
  *   *targeted* read-modify-write that only ever adds/removes the harness's own
  *   `projects.<fixture-path>` keys, never a wholesale save/restore (that would
  *   clobber the concurrent writes every other Claude Code process makes to
- *   that file). See decision 0020.
+ *   that file). See decision live-teammate-integration-harness.
  * - **The claudemux plugin.** A teammate's hooks come from the claudemux
  *   plugin being installed and enabled for the machine. The harness does not
  *   inject the plugin; it treats it as a precondition — `probeLiveTeammate`
@@ -140,7 +140,7 @@ function readClaudeJson(): ClaudeJson {
  * read→transform→write window is kept to a few milliseconds because every
  * other Claude Code process on the machine writes this file too; a targeted
  * RMW can still lose a write that lands inside that window, which is the
- * accepted cost of seeding trust without a private config dir (decision 0020).
+ * accepted cost of seeding trust without a private config dir (decision live-teammate-integration-harness).
  */
 function writeClaudeJson(claudeJson: ClaudeJson): void {
   const path = claudeJsonPath()
@@ -193,7 +193,7 @@ let netFired = false
  * run this is a no-op. Best-effort: every step is guarded, since a signal
  * handler must not throw. Unlike the async `cleanup` it cannot wait out a
  * dying teammate's last `~/.claude.json` write, so a rare inert trust key may
- * survive an interrupt — harmless, it points at a deleted dir (decision 0020).
+ * survive an interrupt — harmless, it points at a deleted dir (decision live-teammate-integration-harness).
  */
 function cleanupAllSync(): void {
   if (netFired) return
@@ -213,7 +213,7 @@ function cleanupAllSync(): void {
     try {
       unseedTrust(state.physPaths)
     } catch {
-      // A leftover inert trust key is harmless (decision 0020).
+      // A leftover inert trust key is harmless (decision live-teammate-integration-harness).
     }
     for (const phys of state.physPaths) {
       try {

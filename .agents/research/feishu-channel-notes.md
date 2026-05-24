@@ -296,10 +296,10 @@ China 站点 `open.feishu.cn`;Lark 国际站把 host 换成 `open.larksuite.com`
 ## Hazard dispositions
 
 > Appended 2026-05-21, after this snapshot was frozen, per
-> [decision 0009](/.agents/decisions/0009-research-hazard-dispositions.md).
+> [decision research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md).
 > The snapshot body above is unchanged; this appendix is append-only.
 
-This note is decision 0009's motivating document: §1.2 raised the fan-out
+This note is decision research-hazard-dispositions's motivating document: §1.2 raised the fan-out
 hazard, and that is the one that stalled.
 
 ### Cluster delivery, not broadcast — inbound events split across instances (§1.2)
@@ -311,20 +311,20 @@ operator. This hazard was written as a platform fact and left the research
 layer with no spec requirement, no decision, and no test. It surfaced as a
 production bug and was fixed in `626c6b3` (single-instance lock plus a
 parent-death watchdog) on branch `fix/feishu-channel-single-instance`. The
-silent drop is the case that motivated decision 0009.
+silent drop is the case that motivated decision research-hazard-dispositions.
 
 ### The 50-connection-per-app limit (§1.2)
 **Promoted** → the same `626c6b3` single-instance lock: one inbound WebSocket
 per machine keeps a teammate fleet well under the limit.
 
 ### A `reply` routed by `message_id` can be redirected to an unrelated chat (§1.4)
-**Promoted** → [decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md):
+**Promoted** → [decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md):
 the `reply` tool sends by `chat_id` and never derives the destination from a
 `message_id`.
 
 ### A persistent WebSocket plus an MCP stdio server leaks on exit (§3)
 **Promoted** → spec hard-requirement #3 →
-[decision 0006](/.agents/decisions/0006-feishu-channel-event-registry.md)
+[decision feishu-channel-event-registry](/.agents/decisions/feishu-channel-event-registry.md)
 (`ShutdownCoordinator`), guarded by `test/shutdown.test.ts`. This is the
 hazard from the same document that travelled the full pipeline.
 

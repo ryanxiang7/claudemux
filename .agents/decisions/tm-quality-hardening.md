@@ -1,4 +1,4 @@
-# 0003 — `tm` quality hardening
+# `tm` quality hardening
 
 - **Status:** Accepted
 - **Date:** 2026-05-19 – 2026-05-20
@@ -51,7 +51,7 @@ Treat `tm` and the hooks as production code and put guardrails under them.
   the single source of truth.
 - The recurring drift patterns were abstracted into three durable rules and
   promoted into the repo `CLAUDE.md` — recorded separately in
-  [decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md).
+  [decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md).
 - CI covers the **claudemux** plugin only; the `feishu-channel` plugin's
   `bun test` suite is not yet wired in.
 

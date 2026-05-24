@@ -40,7 +40,7 @@ collide over versioning. The `version` line moves only in release commits,
 which are cut one plugin at a time. The per-change semver intent is not lost:
 the fragment records it, and `bin/release` aggregates it (`major` > `minor` >
 `patch`) and writes it into the CHANGELOG. See
-[decision 0014](/.agents/decisions/0014-changeset-release-versioning.md).
+[decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md).
 
 `patch` = bug fix, no visible behavior change; `minor` = new
 backward-compatible feature; `major` = breaking change to a documented
@@ -84,7 +84,7 @@ rejects an unparseable address or an mDNS/LAN suffix (`.local`,
 `.localdomain`, `.lan`, `.home`, `.internal`) — the shape git fabricates as
 `whoami@hostname` when `user.email` is unset. Any valid public email
 passes; there is no per-person allowlist. See
-[decision 0003](/.agents/decisions/0003-tm-quality-hardening.md).
+[decision tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md).
 
 To stop machine-default identities at the root, set once per machine:
 `git config --global user.useConfigOnly true`.
@@ -115,6 +115,6 @@ The `feishu-channel` job covers a plugin that is still on a branch — see
 
 ## See also
 
-- [decisions/0003-tm-quality-hardening.md](/.agents/decisions/0003-tm-quality-hardening.md) — how CI, tests, and the lint hooks were introduced.
-- [decisions/0014-changeset-release-versioning.md](/.agents/decisions/0014-changeset-release-versioning.md) — why versioning moved to changeset fragments and a release step.
+- [decisions/tm-quality-hardening.md](/.agents/decisions/tm-quality-hardening.md) — how CI, tests, and the lint hooks were introduced.
+- [decisions/changeset-release-versioning.md](/.agents/decisions/changeset-release-versioning.md) — why versioning moved to changeset fragments and a release step.
 - [components/tm.md](/.agents/components/tm.md) — what shellcheck and the bats suite guard.

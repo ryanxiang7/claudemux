@@ -1,4 +1,4 @@
-# 0002 — Atomic `tm` verbs with a stdout/stderr split
+# Atomic `tm` verbs with a stdout/stderr split
 
 - **Status:** Accepted
 - **Date:** 2026-05-16 – 2026-05-19

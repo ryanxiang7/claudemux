@@ -1,7 +1,7 @@
 /**
  * Codex teammate persistence.
  *
- * Decision 0024 splits teammate state into the base JSON
+ * Decision multi-engine-tui-architecture splits teammate state into the base JSON
  * `/tmp/teammate-<name>.json` and engine-private extension files. Codex owns
  * the daemon registry directory under `/tmp/teammate-codex/<name>/`; hooks do
  * not write any of these files.

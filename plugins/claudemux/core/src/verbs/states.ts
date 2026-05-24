@@ -2,7 +2,7 @@
  * `tm states` — rich fleet listing.
  *
  * Each row carries five cells: `REPO SID BUSY LAST PREVIEW`. The cells
- * come from `Engine.list()`'s per-row `extras` map (decision 0024
+ * come from `Engine.list()`'s per-row `extras` map (decision multi-engine-tui-architecture
  * §"Engines extend row shape, not the verb"); an engine that omits a
  * key surfaces a `-` placeholder, matching legacy `cmd_states`.
  *

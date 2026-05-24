@@ -1,4 +1,4 @@
-# 0020 — Live-teammate integration tests seed trust by a targeted `~/.claude.json` write
+# Live-teammate integration tests seed trust by a targeted `~/.claude.json` write
 
 - **Status:** Accepted
 - **Date:** 2026-05-23
@@ -89,5 +89,5 @@ them. The suite is test-only — it adds no production code.
 
 - [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) — the migration roadmap; the hot-path verbs are stage 3, gated on this harness.
 - [components/claudemux-core.md](/.agents/components/claudemux-core.md) — the `core/` package and its two test surfaces (conformance and live-teammate).
-- [decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) — the Node-CLI pivot whose stage-3 verb migration this harness exists to gate.
+- [decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) — the Node-CLI pivot whose stage-3 verb migration this harness exists to gate.
 - [`core/test/integration/README.md`](/plugins/claudemux/core/test/integration/README.md) — how to run the suite and its prerequisites.

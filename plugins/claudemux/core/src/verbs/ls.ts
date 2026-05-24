@@ -1,11 +1,11 @@
 /**
- * `tm ls` — fleet-wide teammate listing. Decision 0024 amend
+ * `tm ls` — fleet-wide teammate listing. Decision multi-engine-tui-architecture amend
  * §"Fleet-visibility verbs" makes this verb engine-agnostic: it
  * iterates every registered engine, calls `Engine.list()` in parallel,
  * and concatenates the rows. A Codex daemon teammate with no tmux
  * session is therefore visible to `tm ls` for the first time.
  *
- * The default impl below is the one decision 0024 amend lines 150-155
+ * The default impl below is the one decision multi-engine-tui-architecture amend lines 150-155
  * lock in. Engines do not override `tm ls` unless their listing output
  * needs to differ from the shared format — and even then they extend
  * the row shape, not the verb.

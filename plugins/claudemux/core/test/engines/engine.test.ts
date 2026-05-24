@@ -1,7 +1,7 @@
 /**
  * Phase 1 Engine-contract tests. These tests do not exercise any real
  * engine behavior (Phase 2a / 2b land that). They verify the contract
- * shape decision 0024 §"Engine interface" sets:
+ * shape decision multi-engine-tui-architecture §"Engine interface" sets:
  *
  *  - A `class implements Engine` with every method (no `?` optionals)
  *    type-checks. The minimal `NoopEngine` defined below would fail to

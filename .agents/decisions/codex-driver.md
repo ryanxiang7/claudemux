@@ -1,4 +1,4 @@
-# 0022 — Codex teammates ship as a separate `codex-` prefixed driver
+# Codex teammates ship as a separate `codex-` prefixed driver
 
 - **Status:** Accepted
 - **Date:** 2026-05-23
@@ -9,17 +9,17 @@
 
 ## Context
 
-[Decision 0019](/.agents/decisions/0019-node-cli-orchestrator.md) names *what*
+[Decision node-cli-orchestrator](/.agents/decisions/node-cli-orchestrator.md) names *what*
 the codex driver does at a high level — claudemux spawns
 `codex app-server --listen unix://<path>` itself, owns the daemon lifecycle
 through an FS-backed registry, and connects with a WebSocket JSON-RPC client
 against a schema pinned by tests. The roadmap stage 4 — landing in the same
-PR as this record — fills in the concrete decisions 0019 left under-specified:
+PR as this record — fills in the concrete decisions node-cli-orchestrator left under-specified:
 
 - **Verb fork shape.** `tm` already has 17 verbs against tmux teammates.
   Should codex be a parallel verb namespace (`tm codex-spawn`, `tm codex-send`),
   share verbs with a name-discriminator, or land as its own CLI?
-- **Schema pin.** 0019 mandates a schema test against the experimental
+- **Schema pin.** node-cli-orchestrator mandates a schema test against the experimental
   protocol envelope. *Which* schema — hand-typed? Generated? Vendored?
 - **Ask-mode pool.** The brief promises "pool borrow/return". Two readings
   fit the words: the named `codex-<n>` teammates *are* the pool (ask
@@ -121,7 +121,7 @@ report-only character of doctor is preserved for everything else.
 
 ### 5. CI guards on the bundle and the vendored schema
 
-- **Bundle drift.** Already in place from [decision 0021](/.agents/decisions/0021-node-cli-committed-bundle.md):
+- **Bundle drift.** Already in place from [decision node-cli-committed-bundle](/.agents/decisions/node-cli-committed-bundle.md):
   `npm run build` + `git diff --exit-code -- dist/`. Adding `ws` as a runtime
   dep grows the bundle to ~221 kB, which the gate continues to catch.
 - **ESM-bundle `require` shim.** The esbuild banner now emits
@@ -148,8 +148,7 @@ report-only character of doctor is preserved for everything else.
   "codex behaved weirdly" should be diagnosed first at the envelope
   level — does the wire shape still match `codex-schema.test.ts`'s
   fixture? — before deeper layers.
-- **Daemon supervision is an explicit, on-disk protocol.** Decision
-  0019's intent (no in-memory registry) is realized in
+- **Daemon supervision is an explicit, on-disk protocol.** Decision node-cli-orchestrator's intent (no in-memory registry) is realized in
   [`plugins/claudemux/core/src/engines/codex/persistence.ts`](/plugins/claudemux/core/src/engines/codex/persistence.ts)'s named builders
   and [`plugins/claudemux/core/src/engines/codex/supervisor.ts`](/plugins/claudemux/core/src/engines/codex/supervisor.ts).
   A spawn that fails its readiness probe rolls the entry back; a process
@@ -167,7 +166,7 @@ report-only character of doctor is preserved for everything else.
   CI cannot run either — no codex install, no auth — so the merge bar
   for codex-touching PRs is **CI green + a reported live run**, matching
   the live-claude pattern already established by
-  [decision 0020](/.agents/decisions/0020-live-teammate-integration-harness.md).
+  [decision live-teammate-integration-harness](/.agents/decisions/live-teammate-integration-harness.md).
 - **The vendored schema is large.** 587 files / 2.4 MB on the source
   tree. esbuild only bundles what is reached from `src/main.ts`, so the
   production `dist/cli.mjs` includes only the handful of types the
@@ -176,8 +175,8 @@ report-only character of doctor is preserved for everything else.
 
 ## References
 
-- [decisions/0019-node-cli-orchestrator.md](/.agents/decisions/0019-node-cli-orchestrator.md) — the high-level contract; this record fills in stage 4.
-- [decisions/0020-live-teammate-integration-harness.md](/.agents/decisions/0020-live-teammate-integration-harness.md) — the live-teammate pattern; codex.itest.ts mirrors it.
-- [decisions/0021-node-cli-committed-bundle.md](/.agents/decisions/0021-node-cli-committed-bundle.md) — why `dist/cli.mjs` is committed; this record adds the require-shim wrinkle.
+- [decisions/node-cli-orchestrator.md](/.agents/decisions/node-cli-orchestrator.md) — the high-level contract; this record fills in stage 4.
+- [decisions/live-teammate-integration-harness.md](/.agents/decisions/live-teammate-integration-harness.md) — the live-teammate pattern; codex.itest.ts mirrors it.
+- [decisions/node-cli-committed-bundle.md](/.agents/decisions/node-cli-committed-bundle.md) — why `dist/cli.mjs` is committed; this record adds the require-shim wrinkle.
 - [components/claudemux-core.md](/.agents/components/claudemux-core.md) — module table now lists the codex-* modules.
 - [domains/node-cli-orchestrator.md](/.agents/domains/node-cli-orchestrator.md) — §8 marks stage 4 as landed in the same change.

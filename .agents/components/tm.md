@@ -42,7 +42,7 @@ behavior from memory or this doc.
   `wait`, `compact`. Each sends or triggers a turn, blocks on the Stop-hook
   idle signal, and prints the teammate's reply on **stdout**; status lines
   and the post-turn ctx echo go to **stderr**. This stdout/stderr split is
-  deliberate — see [decision 0002](/.agents/decisions/0002-atomic-tm-verbs.md).
+  deliberate — see [decision atomic-tm-verbs](/.agents/decisions/atomic-tm-verbs.md).
 - **Read-only / fast verbs** — `ls`, `states`, `last`, `ctx`, `history`,
   `mem`, `doctor`, `kill`, `reload`, `archive`. Sub-second; safe foreground.
 - **Diagnostic verbs** — `status` (capture the live pane), `poll` (regex-poll
@@ -53,7 +53,7 @@ behavior from memory or this doc.
 These mirror the repo-root `CLAUDE.md` "Cross-Process & Cross-Platform
 Invariants"; they bite hardest in the verbs that drive the `/tmp` file
 protocol. Each has its own decision record — see
-[decision 0004](/.agents/decisions/0004-cross-process-cross-platform-invariants.md).
+[decision cross-process-cross-platform-invariants](/.agents/decisions/cross-process-cross-platform-invariants.md).
 
 - **Never concatenate a protocol path by hand.** Every `/tmp/teammate-*`,
   `/tmp/claude-idle/*`, or `~/.claude/projects/<encoded>/...` path is built
