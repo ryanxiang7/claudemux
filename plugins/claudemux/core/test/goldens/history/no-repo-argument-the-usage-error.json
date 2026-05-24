@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm history <repo> [<sid-or-prefix>]\n"
+  "stderr": "tm: usage: tm history <repo> [<sid-or-thread-prefix>]\n"
 }

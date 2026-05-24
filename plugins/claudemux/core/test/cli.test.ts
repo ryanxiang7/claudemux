@@ -82,11 +82,19 @@ function fakeEnv(over: Partial<NativeEnv> = {}): NativeEnv {
   }
 }
 
-function writeCliRollout(sessionsRoot: string, threadId: string): string {
+function writeCliRollout(
+  sessionsRoot: string,
+  threadId: string,
+  rolloutCwd = realpathSync('/tmp'),
+): string {
   const dir = join(sessionsRoot, '2026', '05', '24')
   mkdirSync(dir, { recursive: true })
   const file = join(dir, `rollout-2026-05-24T00-00-00-${threadId}.jsonl`)
-  writeFileSync(file, '\n')
+  writeFileSync(file, `${JSON.stringify({
+    timestamp: '2026-05-24T00:00:00.000Z',
+    type: 'session_meta',
+    payload: { id: threadId, cwd: rolloutCwd },
+  })}\n`)
   const mtime = new Date()
   utimesSync(file, mtime, mtime)
   return file
@@ -465,7 +473,6 @@ describe('native dispatch', () => {
 
   test.each([
     ['compact', (name: string) => ['compact', name], 'codex compacts its own context automatically'],
-    ['history', (name: string) => ['history', name], 'codex thread history enumeration is not exposed'],
     ['mem', (name: string) => ['mem', name], 'codex does not use Claude project memory files'],
     ['reload', (name: string) => ['reload', name], 'codex has no reload prompt command'],
   ])('%s routes an existing codex teammate through CodexEngine not-supported', async (_verb, argvFor, reason) => {
@@ -534,6 +541,39 @@ describe('native dispatch', () => {
       const result = await runCli(['resume', name, threadId], fakeEnv({ engines: registry }))
       expect(result).toEqual({ code: 0, stdout: `resumed: ${threadId}\n`, stderr: '' })
       expect(seen).toEqual([{ name, cwd: realpathSync('/tmp'), checkpoint: threadId }])
+    } finally {
+      if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+      else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot
+      rmSync(sessionsRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('history routes a killed non-prefix codex teammate by rollout cwd', async () => {
+    const name = `history-router-${Date.now()}`
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789ac1'
+    const sessionsRoot = mkdtempSync('/tmp/cmxcli-sessions-')
+    const savedSessionsRoot = process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+    const seen: Array<{ name: string; cwd: string | null; index: string | null }> = []
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; cwd: string | null; index: string | null }) => {
+        seen.push({ name: req.name, cwd: req.cwd, index: req.index })
+        return {
+          kind: 'list',
+          turns: [],
+          tmResult: { code: 0, stdout: 'codex history\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeCodex)
+    process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = sessionsRoot
+    writeCliRollout(sessionsRoot, threadId)
+
+    try {
+      const result = await runCli(['history', name], fakeEnv({ engines: registry }))
+      expect(result).toEqual({ code: 0, stdout: 'codex history\n', stderr: '' })
+      expect(seen).toEqual([{ name, cwd: realpathSync('/tmp'), index: null }])
     } finally {
       if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
       else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot

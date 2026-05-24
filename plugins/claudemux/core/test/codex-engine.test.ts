@@ -65,6 +65,10 @@ function ctxWithEnv(env: NodeJS.ProcessEnv): EngineContext {
   return { now: () => Date.now(), env }
 }
 
+function ctxAt(nowMs: number): EngineContext {
+  return { now: () => nowMs, env: process.env }
+}
+
 function nameUnder(): string {
   return `codex/engine-${counter++}`
 }
@@ -122,6 +126,30 @@ function writeRollout(threadId: string, lines: readonly unknown[], mtimeMs = Dat
   const mtime = new Date(mtimeMs)
   utimesSync(file, mtime, mtime)
   return file
+}
+
+function codexHistoryLines(historyCwd: string, firstPrompt: string, lastAssistant: string): readonly unknown[] {
+  return [
+    {
+      timestamp: '2026-05-24T00:00:00.000Z',
+      type: 'session_meta',
+      payload: { id: 'session', cwd: historyCwd },
+    },
+    {
+      timestamp: '2026-05-24T00:00:01.000Z',
+      type: 'event_msg',
+      payload: { type: 'user_message', message: firstPrompt },
+    },
+    {
+      timestamp: '2026-05-24T00:00:02.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'agent_message',
+        message: lastAssistant,
+        phase: 'final_answer',
+      },
+    },
+  ]
 }
 
 function connectionCounts(file: string): { opens: number; closes: number } {
@@ -528,6 +556,83 @@ describe('CodexEngine — core lifecycle', () => {
     await waitFor(() => connectionCounts(connectionLog).closes >= before.closes + 1)
     const after = connectionCounts(connectionLog)
     expect(after.opens).toBe(after.closes)
+  })
+
+  test('history list reads codex rollouts for the teammate cwd', async () => {
+    const name = nameUnder()
+    const activeThreadId = '019e5f5f-2e57-7abc-8def-123456789abc'
+    const oldThreadId = '019e5f5f-2e57-7abc-8def-123456789abd'
+    const otherThreadId = '019e5f5f-2e57-7abc-8def-123456789abe'
+    const otherCwd = mkdtempSync('/tmp/cmxe-other-cwd-')
+    const nowMs = 1_800_000_000_000
+    writeDaemonFiles(name, activeThreadId)
+    writeRollout(
+      activeThreadId,
+      codexHistoryLines(cwd, 'Implement codex history', 'active answer'),
+      nowMs - 5_000,
+    )
+    writeRollout(
+      oldThreadId,
+      codexHistoryLines(cwd, 'Older codex thread', 'old answer'),
+      nowMs - 70_000,
+    )
+    writeRollout(
+      otherThreadId,
+      codexHistoryLines(otherCwd, 'Other repo thread', 'other answer'),
+      nowMs - 1_000,
+    )
+
+    try {
+      const result = await engine.history({ name, cwd, index: null }, ctxAt(nowMs))
+
+      expect(result.kind).toBe('list')
+      expect(result.tmResult?.code).toBe(0)
+      expect(result.tmResult?.stdout).toContain('THREAD')
+      expect(result.tmResult?.stdout).toContain('*  019e5f5f  5s')
+      expect(result.tmResult?.stdout).toContain('Implement codex history')
+      expect(result.tmResult?.stdout).toContain('Older codex thread')
+      expect(result.tmResult?.stdout).not.toContain('Other repo thread')
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true })
+    }
+  })
+
+  test('history detail expands a codex thread id prefix', async () => {
+    const name = nameUnder()
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789abf'
+    const nowMs = 1_800_000_000_000
+    const rollout = writeRollout(
+      threadId,
+      codexHistoryLines(cwd, 'Resume this codex thread', 'last codex assistant text'),
+      nowMs - 125_000,
+    )
+
+    const result = await engine.history({ name, cwd, index: threadId.slice(0, 8) }, ctxAt(nowMs))
+
+    expect(result.kind).toBe('detail')
+    expect(result.tmResult?.code).toBe(0)
+    expect(result.tmResult?.stdout).toContain(`thread:     ${threadId}`)
+    expect(result.tmResult?.stdout).toContain(`rollout:    ${rollout}`)
+    expect(result.tmResult?.stdout).toContain('Resume this codex thread')
+    expect(result.tmResult?.stdout).toContain('last codex assistant text')
+    expect(result.tmResult?.stdout).toContain(`resume: tm resume ${name} ${threadId}`)
+  })
+
+  test('history list marks the live codex thread', async () => {
+    const name = nameUnder()
+    const liveThreadId = '019e5f5f-2e57-7abc-8def-123456789ac0'
+    const nowMs = 1_800_000_000_000
+    writeDaemonFiles(name, liveThreadId)
+    writeRollout(
+      liveThreadId,
+      codexHistoryLines(cwd, 'Live codex topic', 'live answer'),
+      nowMs - 10_000,
+    )
+
+    const result = await engine.history({ name, cwd, index: null }, ctxAt(nowMs))
+
+    expect(result.kind).toBe('list')
+    expect(result.tmResult?.stdout).toMatch(/^\*  019e5f5f/m)
   })
 
   test('doctor reaps a crashed daemon registry entry', async () => {

@@ -28,7 +28,7 @@ USAGE  (most common first)
   tm ls                                  list running teammate sessions
   tm states                              one-line fleet snapshot
   tm ctx <repo>... | --all               real ctx-window usage from jsonl
-  tm history <repo> [<sid-prefix>]       inspect past sessions for this repo
+  tm history <repo> [<sid/thread-prefix>] inspect past sessions for this repo
   tm mem <repo>                          cat sibling repo's auto-memory index
   tm archive <id>                        move finished task active→archive (stdin)
   tm ask "<prompt>"                      one-shot turn on an idle codex teammate (pool)
@@ -264,17 +264,19 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       proves a 1M window; otherwise 200k is assumed (labelled
       accordingly). --window forces the assumption.
 `,
-  history: `tm history <repo> [<sid-or-prefix>]
+  history: `tm history <repo> [<sid-or-thread-prefix>]
 
-      Inspect this repo's past Claude sessions (live or dead). No
-      <sid>: list mode, newest-first table (SID, AGE, SIZE, TOPIC =
-      first user prompt). '*' marks the current live teammate's
-      session. With <sid> or 8+ char prefix: detail mode (full sid,
-      file path, created/last-seen, ctx usage, first prompt, last
-      assistant text up to 1500 chars, ready-to-paste 'tm resume'
-      command). Boundary vs 'tm last': last covers only the current
-      live teammate's reply; history covers any jsonl on disk
-      including killed sessions.
+      Inspect this repo's past Claude sessions or Codex threads
+      (live or dead). No id: list mode, newest-first table. Claude
+      lists SID, AGE, SIZE, TOPIC; Codex lists THREAD, AGE, SIZE,
+      TOPIC, where THREAD is the first 8 chars of the Codex thread
+      id recorded in a rollout filename. '*' marks the current live
+      teammate's session / thread. With a sid, thread id, or prefix:
+      detail mode (full id, transcript / rollout path, size / line
+      count, first prompt, last assistant text up to 1500 chars,
+      ready-to-paste 'tm resume' command). Boundary vs 'tm last':
+      last covers only the current live teammate's reply; history
+      covers any jsonl on disk including killed sessions.
 `,
   archive: `tm archive <id> [--status '<tag>']
 

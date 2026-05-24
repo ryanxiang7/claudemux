@@ -3712,7 +3712,7 @@ var require_websocket_server = __commonJS({
 });
 
 // src/cli.ts
-import { realpathSync as realpathSync4, statSync as statSync15 } from "node:fs";
+import { realpathSync as realpathSync5, statSync as statSync16 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join13 } from "node:path";
 
@@ -3776,7 +3776,7 @@ USAGE  (most common first)
   tm ls                                  list running teammate sessions
   tm states                              one-line fleet snapshot
   tm ctx <repo>... | --all               real ctx-window usage from jsonl
-  tm history <repo> [<sid-prefix>]       inspect past sessions for this repo
+  tm history <repo> [<sid/thread-prefix>] inspect past sessions for this repo
   tm mem <repo>                          cat sibling repo's auto-memory index
   tm archive <id>                        move finished task active\u2192archive (stdin)
   tm ask "<prompt>"                      one-shot turn on an idle codex teammate (pool)
@@ -4010,17 +4010,19 @@ var HELP_TEXTS = {
       proves a 1M window; otherwise 200k is assumed (labelled
       accordingly). --window forces the assumption.
 `,
-  history: `tm history <repo> [<sid-or-prefix>]
+  history: `tm history <repo> [<sid-or-thread-prefix>]
 
-      Inspect this repo's past Claude sessions (live or dead). No
-      <sid>: list mode, newest-first table (SID, AGE, SIZE, TOPIC =
-      first user prompt). '*' marks the current live teammate's
-      session. With <sid> or 8+ char prefix: detail mode (full sid,
-      file path, created/last-seen, ctx usage, first prompt, last
-      assistant text up to 1500 chars, ready-to-paste 'tm resume'
-      command). Boundary vs 'tm last': last covers only the current
-      live teammate's reply; history covers any jsonl on disk
-      including killed sessions.
+      Inspect this repo's past Claude sessions or Codex threads
+      (live or dead). No id: list mode, newest-first table. Claude
+      lists SID, AGE, SIZE, TOPIC; Codex lists THREAD, AGE, SIZE,
+      TOPIC, where THREAD is the first 8 chars of the Codex thread
+      id recorded in a rollout filename. '*' marks the current live
+      teammate's session / thread. With a sid, thread id, or prefix:
+      detail mode (full id, transcript / rollout path, size / line
+      count, first prompt, last assistant text up to 1500 chars,
+      ready-to-paste 'tm resume' command). Boundary vs 'tm last':
+      last covers only the current live teammate's reply; history
+      covers any jsonl on disk including killed sessions.
 `,
   archive: `tm archive <id> [--status '<tag>']
 
@@ -6665,6 +6667,449 @@ var ClaudeEngine = class {
   }
 };
 
+// src/engines/codex/history.ts
+import { readFileSync as readFileSync13, realpathSync as realpathSync4, statSync as statSync14 } from "node:fs";
+
+// src/engines/codex/rollout.ts
+import { homedir } from "node:os";
+import { join as join11 } from "node:path";
+import { readdirSync as readdirSync5, readFileSync as readFileSync12, statSync as statSync13 } from "node:fs";
+var CODEX_ROLLOUT_BUSY_WINDOW_MS = 2e4;
+function isPlainObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringProp(obj, key) {
+  const value = obj[key];
+  return typeof value === "string" ? value : null;
+}
+function numberProp(obj, key) {
+  const value = obj[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function codexHome(env) {
+  return env["CLAUDEMUX_CODEX_HOME"] || env["CODEX_HOME"] || join11(homedir(), ".codex");
+}
+function codexSessionsRoot(env) {
+  return env["CLAUDEMUX_CODEX_SESSIONS_ROOT"] || join11(codexHome(env), "sessions");
+}
+function sortedNumericDirs(root) {
+  let entries;
+  try {
+    entries = readdirSync5(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map((entry) => entry.name).sort((a, b) => Number(b) - Number(a));
+}
+var ROLLOUT_THREAD_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+function rolloutThreadId(name) {
+  const match = ROLLOUT_THREAD_RE.exec(name);
+  return match === null ? null : match[1];
+}
+function findInDay(dayDir, suffix, exactThreadId) {
+  let entries;
+  try {
+    entries = readdirSync5(dayDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let newest = null;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    if (!name.startsWith("rollout-") || !name.endsWith(suffix)) continue;
+    const path = join11(dayDir, name);
+    let mtimeMs;
+    try {
+      mtimeMs = statSync13(path).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (newest === null || mtimeMs > newest.mtimeMs) {
+      newest = { path, mtimeMs, threadId: exactThreadId };
+    }
+  }
+  return newest;
+}
+function findCodexRolloutFile(threadId, env) {
+  const suffix = `-${threadId}.jsonl`;
+  const root = codexSessionsRoot(env);
+  for (const year of sortedNumericDirs(root)) {
+    const yearDir = join11(root, year);
+    for (const month of sortedNumericDirs(yearDir)) {
+      const monthDir = join11(yearDir, month);
+      for (const day of sortedNumericDirs(monthDir)) {
+        const found = findInDay(join11(monthDir, day), suffix, threadId);
+        if (found !== null) return found;
+      }
+    }
+  }
+  return null;
+}
+function listInDay(dayDir) {
+  let entries;
+  try {
+    entries = readdirSync5(dayDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const threadId = rolloutThreadId(entry.name);
+    if (threadId === null || !entry.name.startsWith("rollout-")) continue;
+    const path = join11(dayDir, entry.name);
+    try {
+      files.push({ path, mtimeMs: statSync13(path).mtimeMs, threadId });
+    } catch {
+      continue;
+    }
+  }
+  return files;
+}
+function listCodexRolloutFiles(env) {
+  const root = codexSessionsRoot(env);
+  const files = [];
+  for (const year of sortedNumericDirs(root)) {
+    const yearDir = join11(root, year);
+    for (const month of sortedNumericDirs(yearDir)) {
+      const monthDir = join11(yearDir, month);
+      for (const day of sortedNumericDirs(monthDir)) {
+        files.push(...listInDay(join11(monthDir, day)));
+      }
+    }
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return files;
+}
+function phaseAllowed(phase) {
+  return phase === "final_answer" || phase === "commentary";
+}
+function textFromContent(content) {
+  if (!Array.isArray(content)) return null;
+  const parts = [];
+  for (const item of content) {
+    if (!isPlainObject3(item)) continue;
+    if (item["type"] !== "output_text") continue;
+    const text = stringProp(item, "text");
+    if (text !== null) parts.push(text);
+  }
+  return parts.length === 0 ? null : parts.join("");
+}
+function assistantTextFromEntry(entry) {
+  if (!isPlainObject3(entry)) return null;
+  const payload = entry["payload"];
+  if (!isPlainObject3(payload)) return null;
+  if (payload["type"] === "agent_message" && phaseAllowed(payload["phase"])) {
+    return stringProp(payload, "message");
+  }
+  if (payload["type"] === "agentMessage" && phaseAllowed(payload["phase"])) {
+    return stringProp(payload, "text");
+  }
+  if (payload["type"] === "message" && payload["role"] === "assistant" && phaseAllowed(payload["phase"])) {
+    return textFromContent(payload["content"]);
+  }
+  const item = payload["item"];
+  if (isPlainObject3(item) && item["type"] === "agentMessage" && phaseAllowed(item["phase"])) {
+    return stringProp(item, "text");
+  }
+  return null;
+}
+function tokenCountFromSnake(info) {
+  const last = info["last_token_usage"];
+  if (!isPlainObject3(last)) return null;
+  const window = numberProp(info, "model_context_window");
+  if (window === null || window <= 0) return null;
+  const input = numberProp(last, "input_tokens");
+  const total = numberProp(last, "total_tokens");
+  const used = total ?? input;
+  if (used === null) return null;
+  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
+}
+function tokenCountFromCamel(tokenUsage) {
+  const last = tokenUsage["last"];
+  if (!isPlainObject3(last)) return null;
+  const window = numberProp(tokenUsage, "modelContextWindow");
+  if (window === null || window <= 0) return null;
+  const input = numberProp(last, "inputTokens");
+  const total = numberProp(last, "totalTokens");
+  const used = total ?? input;
+  if (used === null) return null;
+  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
+}
+function tokenUsageFromEntry(entry) {
+  if (!isPlainObject3(entry)) return null;
+  const payload = entry["payload"];
+  if (isPlainObject3(payload)) {
+    if (payload["type"] === "token_count" && isPlainObject3(payload["info"])) {
+      return tokenCountFromSnake(payload["info"]);
+    }
+    if (payload["method"] === "thread/tokenUsage/updated" && isPlainObject3(payload["params"]) && isPlainObject3(payload["params"]["tokenUsage"])) {
+      return tokenCountFromCamel(payload["params"]["tokenUsage"]);
+    }
+  }
+  if (entry["type"] === "thread/tokenUsage/updated" && isPlainObject3(entry["params"]) && isPlainObject3(entry["params"]["tokenUsage"])) {
+    return tokenCountFromCamel(entry["params"]["tokenUsage"]);
+  }
+  return null;
+}
+function readCodexRolloutSnapshot(threadId, env) {
+  const rollout = findCodexRolloutFile(threadId, env);
+  if (rollout === null) return null;
+  let content;
+  try {
+    content = readFileSync12(rollout.path, "utf8");
+  } catch {
+    return null;
+  }
+  let lastAssistantText = null;
+  let tokenUsage = null;
+  for (const line of content.split("\n")) {
+    if (line.trim() === "") continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    lastAssistantText = assistantTextFromEntry(entry) ?? lastAssistantText;
+    tokenUsage = tokenUsageFromEntry(entry) ?? tokenUsage;
+  }
+  return { ...rollout, lastAssistantText, tokenUsage };
+}
+function rolloutRecentlyActive(snapshot, nowMs) {
+  if (snapshot === null) return false;
+  return nowMs - snapshot.mtimeMs <= CODEX_ROLLOUT_BUSY_WINDOW_MS;
+}
+
+// src/engines/codex/history.ts
+function isPlainObject4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringProp2(obj, key) {
+  const value = obj[key];
+  return typeof value === "string" ? value : null;
+}
+function comparablePath(path) {
+  try {
+    return realpathSync4(path);
+  } catch {
+    return path;
+  }
+}
+function cwdMatches(recorded, target) {
+  return recorded === target || comparablePath(recorded) === comparablePath(target);
+}
+function toFixed1HalfEven2(value) {
+  const tenths = value * 10;
+  const floor = Math.floor(tenths);
+  const frac = tenths - floor;
+  let rounded;
+  if (frac < 0.5) rounded = floor;
+  else if (frac > 0.5) rounded = floor + 1;
+  else rounded = floor % 2 === 0 ? floor : floor + 1;
+  return (rounded / 10).toFixed(1);
+}
+function fmtSize2(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1048576) return `${Math.trunc(bytes / 1024)}K`;
+  if (bytes < 1073741824) return `${toFixed1HalfEven2(bytes / 1048576)}M`;
+  return `${toFixed1HalfEven2(bytes / 1073741824)}G`;
+}
+function fmtAge3(age) {
+  if (age < 60) return `${age}s`;
+  if (age < 3600) return `${Math.floor(age / 60)}m`;
+  if (age < 86400) return `${Math.floor(age / 3600)}h`;
+  return `${Math.floor(age / 86400)}d`;
+}
+function indent2(text) {
+  return text.split("\n").map((line) => `  ${line}`).join("\n");
+}
+function textFromContent2(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const parts = [];
+  for (const item of content) {
+    if (!isPlainObject4(item)) continue;
+    const type = item["type"];
+    if (type !== "input_text" && type !== "output_text" && type !== "text") continue;
+    const text = stringProp2(item, "text");
+    if (text !== null) parts.push(text);
+  }
+  return parts.length === 0 ? null : parts.join(" ");
+}
+function promptFromEntry(entry) {
+  if (!isPlainObject4(entry)) return null;
+  const payload = entry["payload"];
+  if (!isPlainObject4(payload)) return null;
+  if (payload["type"] === "user_message" || payload["type"] === "userMessage") {
+    return stringProp2(payload, "message") ?? stringProp2(payload, "text");
+  }
+  if (entry["type"] === "response_item" && payload["type"] === "message" && payload["role"] === "user") {
+    return textFromContent2(payload["content"]);
+  }
+  return null;
+}
+function cwdFromEntry(entry) {
+  if (!isPlainObject4(entry)) return null;
+  const payload = entry["payload"];
+  if (!isPlainObject4(payload)) return null;
+  return stringProp2(payload, "cwd");
+}
+function readHistoryEntry(file) {
+  let content;
+  try {
+    content = readFileSync13(file.path, "utf8");
+  } catch {
+    return null;
+  }
+  let cwd = null;
+  let firstUserEventPrompt = null;
+  let firstUserRolePrompt = null;
+  for (const line of content.split("\n")) {
+    if (line.trim() === "") continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    cwd = cwd ?? cwdFromEntry(entry);
+    const prompt = promptFromEntry(entry);
+    if (prompt !== null) {
+      if (isPlainObject4(entry) && entry["type"] === "event_msg") {
+        firstUserEventPrompt = firstUserEventPrompt ?? prompt;
+      } else {
+        firstUserRolePrompt = firstUserRolePrompt ?? prompt;
+      }
+    }
+  }
+  if (cwd === null) return null;
+  let size = 0;
+  try {
+    size = statSync14(file.path).size;
+  } catch {
+    size = 0;
+  }
+  return {
+    threadId: file.threadId,
+    path: file.path,
+    mtimeMs: file.mtimeMs,
+    size,
+    lineCount: content.match(/\n/g)?.length ?? 0,
+    cwd,
+    firstPrompt: firstUserEventPrompt ?? firstUserRolePrompt
+  };
+}
+function historyEntriesForCwd(cwd, env) {
+  return listCodexRolloutFiles(env).map((file) => readHistoryEntry(file)).filter((entry) => entry !== null && cwdMatches(entry.cwd, cwd));
+}
+function hasCodexHistoryForCwd(cwd, env) {
+  for (const file of listCodexRolloutFiles(env)) {
+    const entry = readHistoryEntry(file);
+    if (entry !== null && cwdMatches(entry.cwd, cwd)) return true;
+  }
+  return false;
+}
+function historyTopic2(entry) {
+  if (entry.firstPrompt === null || entry.firstPrompt.length === 0) return "(no user prompt)";
+  const firstLine = entry.firstPrompt.split("\n")[0] ?? "";
+  const stripped = [...firstLine].filter((ch) => (ch.codePointAt(0) ?? 0) > 31);
+  const topic = stripped.slice(0, 60).join("");
+  return topic.length > 0 ? topic : "(no user prompt)";
+}
+function alignRows(rows) {
+  const widths = rows[0]?.map(
+    (_cell, index) => Math.max(...rows.map((row) => row[index]?.length ?? 0))
+  ) ?? [];
+  return rows.map(
+    (row) => row.map(
+      (cell2, index) => index === row.length - 1 ? cell2 : cell2.padEnd(widths[index] ?? 0)
+    ).join("  ").trimEnd()
+  ).join("\n") + "\n";
+}
+function listHistory(name, entries, activeThreadId, nowMs) {
+  if (entries.length === 0) {
+    return { code: 0, stdout: `(no codex threads for ${name})
+`, stderr: "" };
+  }
+  const rows = [[" ", "THREAD", "AGE", "SIZE", "TOPIC"]];
+  for (const entry of entries) {
+    rows.push([
+      activeThreadId === entry.threadId ? "*" : " ",
+      entry.threadId.slice(0, 8),
+      fmtAge3(Math.max(0, Math.floor((nowMs - entry.mtimeMs) / 1e3))),
+      fmtSize2(entry.size),
+      historyTopic2(entry)
+    ]);
+  }
+  return { code: 0, stdout: alignRows(rows), stderr: "" };
+}
+function truncateAssistant(text) {
+  const cps = [...text];
+  if (cps.length <= 1500) return text;
+  return `${cps.slice(0, 1500).join("")}
+... (${cps.length - 1500} chars truncated; full text in jsonl)`;
+}
+function detailHistory(name, selector, entries, ctx) {
+  if (!/^[0-9a-f-]{1,36}$/i.test(selector)) {
+    return { code: 1, stdout: "", stderr: `tm: history: invalid thread-id prefix '${selector}'
+` };
+  }
+  const prefix = selector.toLowerCase();
+  const matches = entries.filter((entry2) => entry2.threadId.toLowerCase().startsWith(prefix));
+  if (matches.length === 0) {
+    return { code: 1, stdout: "", stderr: `tm: history: no codex thread matching '${selector}' in ${name}
+` };
+  }
+  if (matches.length > 1) {
+    const cands = `${matches.map((entry2) => entry2.threadId).join(" ")} `;
+    return {
+      code: 1,
+      stdout: "",
+      stderr: `tm: history: prefix '${selector}' matches ${matches.length} codex threads - be more specific: ${cands}
+`
+    };
+  }
+  const entry = matches[0];
+  const snapshot = readCodexRolloutSnapshot(entry.threadId, ctx.env);
+  const firstPrompt = entry.firstPrompt ?? "(no user prompt)";
+  const lastAssistant = snapshot?.lastAssistantText === null || snapshot?.lastAssistantText === void 0 ? "(no assistant text)" : truncateAssistant(snapshot.lastAssistantText);
+  const stdout = `thread:     ${entry.threadId}
+rollout:    ${entry.path}
+            (${fmtSize2(entry.size)} \xB7 ${entry.lineCount} lines)
+last_seen:  ${fmtAge3(Math.max(0, Math.floor((ctx.now() - entry.mtimeMs) / 1e3)))} ago
+
+first prompt:
+${indent2(firstPrompt)}
+
+last assistant:
+${indent2(lastAssistant)}
+
+resume: tm resume ${name} ${entry.threadId}
+`;
+  return { code: 0, stdout, stderr: "" };
+}
+function codexHistory(req, ctx) {
+  const cwd = req.cwd ?? readBaseRecord(req.name)?.cwd ?? readCodexMeta(req.name)?.cwd ?? null;
+  if (cwd === null) {
+    return { kind: "failed", message: `codex teammate '${req.name}' has no cwd to match rollout history` };
+  }
+  const entries = historyEntriesForCwd(cwd, ctx.env);
+  const activeThreadId = readDaemonState(req.name)?.threadId ?? null;
+  const tmResult = req.index === null ? listHistory(req.name, entries, activeThreadId, ctx.now()) : detailHistory(req.name, req.index, entries, ctx);
+  if (tmResult.code !== 0) return { kind: "failed", message: tmResult.stderr.trim(), tmResult };
+  if (req.index === null) {
+    return { kind: "list", turns: [], tmResult };
+  }
+  return {
+    kind: "detail",
+    turn: { index: 0, startedAt: 0, summary: req.index },
+    items: [],
+    tmResult
+  };
+}
+
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
@@ -6899,175 +7344,6 @@ async function runTurn(client, threadId, prompt, options) {
   return collector.awaitTurn();
 }
 
-// src/engines/codex/rollout.ts
-import { homedir } from "node:os";
-import { join as join11 } from "node:path";
-import { readdirSync as readdirSync5, readFileSync as readFileSync12, statSync as statSync13 } from "node:fs";
-var CODEX_ROLLOUT_BUSY_WINDOW_MS = 2e4;
-function isPlainObject3(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function stringProp(obj, key) {
-  const value = obj[key];
-  return typeof value === "string" ? value : null;
-}
-function numberProp(obj, key) {
-  const value = obj[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-function codexHome(env) {
-  return env["CLAUDEMUX_CODEX_HOME"] || env["CODEX_HOME"] || join11(homedir(), ".codex");
-}
-function codexSessionsRoot(env) {
-  return env["CLAUDEMUX_CODEX_SESSIONS_ROOT"] || join11(codexHome(env), "sessions");
-}
-function sortedNumericDirs(root) {
-  let entries;
-  try {
-    entries = readdirSync5(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map((entry) => entry.name).sort((a, b) => Number(b) - Number(a));
-}
-function findInDay(dayDir, suffix) {
-  let entries;
-  try {
-    entries = readdirSync5(dayDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  let newest = null;
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const name = entry.name;
-    if (!name.startsWith("rollout-") || !name.endsWith(suffix)) continue;
-    const path = join11(dayDir, name);
-    let mtimeMs;
-    try {
-      mtimeMs = statSync13(path).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (newest === null || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
-  }
-  return newest;
-}
-function findCodexRolloutFile(threadId, env) {
-  const suffix = `-${threadId}.jsonl`;
-  const root = codexSessionsRoot(env);
-  for (const year of sortedNumericDirs(root)) {
-    const yearDir = join11(root, year);
-    for (const month of sortedNumericDirs(yearDir)) {
-      const monthDir = join11(yearDir, month);
-      for (const day of sortedNumericDirs(monthDir)) {
-        const found = findInDay(join11(monthDir, day), suffix);
-        if (found !== null) return found;
-      }
-    }
-  }
-  return null;
-}
-function phaseAllowed(phase) {
-  return phase === "final_answer" || phase === "commentary";
-}
-function textFromContent(content) {
-  if (!Array.isArray(content)) return null;
-  const parts = [];
-  for (const item of content) {
-    if (!isPlainObject3(item)) continue;
-    if (item["type"] !== "output_text") continue;
-    const text = stringProp(item, "text");
-    if (text !== null) parts.push(text);
-  }
-  return parts.length === 0 ? null : parts.join("");
-}
-function assistantTextFromEntry(entry) {
-  if (!isPlainObject3(entry)) return null;
-  const payload = entry["payload"];
-  if (!isPlainObject3(payload)) return null;
-  if (payload["type"] === "agent_message" && phaseAllowed(payload["phase"])) {
-    return stringProp(payload, "message");
-  }
-  if (payload["type"] === "agentMessage" && phaseAllowed(payload["phase"])) {
-    return stringProp(payload, "text");
-  }
-  if (payload["type"] === "message" && payload["role"] === "assistant" && phaseAllowed(payload["phase"])) {
-    return textFromContent(payload["content"]);
-  }
-  const item = payload["item"];
-  if (isPlainObject3(item) && item["type"] === "agentMessage" && phaseAllowed(item["phase"])) {
-    return stringProp(item, "text");
-  }
-  return null;
-}
-function tokenCountFromSnake(info) {
-  const last = info["last_token_usage"];
-  if (!isPlainObject3(last)) return null;
-  const window = numberProp(info, "model_context_window");
-  if (window === null || window <= 0) return null;
-  const input = numberProp(last, "input_tokens");
-  const total = numberProp(last, "total_tokens");
-  const used = total ?? input;
-  if (used === null) return null;
-  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
-}
-function tokenCountFromCamel(tokenUsage) {
-  const last = tokenUsage["last"];
-  if (!isPlainObject3(last)) return null;
-  const window = numberProp(tokenUsage, "modelContextWindow");
-  if (window === null || window <= 0) return null;
-  const input = numberProp(last, "inputTokens");
-  const total = numberProp(last, "totalTokens");
-  const used = total ?? input;
-  if (used === null) return null;
-  return { tokensUsed: used, tokensTotal: window, pct: Math.floor(used * 100 / window) };
-}
-function tokenUsageFromEntry(entry) {
-  if (!isPlainObject3(entry)) return null;
-  const payload = entry["payload"];
-  if (isPlainObject3(payload)) {
-    if (payload["type"] === "token_count" && isPlainObject3(payload["info"])) {
-      return tokenCountFromSnake(payload["info"]);
-    }
-    if (payload["method"] === "thread/tokenUsage/updated" && isPlainObject3(payload["params"]) && isPlainObject3(payload["params"]["tokenUsage"])) {
-      return tokenCountFromCamel(payload["params"]["tokenUsage"]);
-    }
-  }
-  if (entry["type"] === "thread/tokenUsage/updated" && isPlainObject3(entry["params"]) && isPlainObject3(entry["params"]["tokenUsage"])) {
-    return tokenCountFromCamel(entry["params"]["tokenUsage"]);
-  }
-  return null;
-}
-function readCodexRolloutSnapshot(threadId, env) {
-  const rollout = findCodexRolloutFile(threadId, env);
-  if (rollout === null) return null;
-  let content;
-  try {
-    content = readFileSync12(rollout.path, "utf8");
-  } catch {
-    return null;
-  }
-  let lastAssistantText = null;
-  let tokenUsage = null;
-  for (const line of content.split("\n")) {
-    if (line.trim() === "") continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    lastAssistantText = assistantTextFromEntry(entry) ?? lastAssistantText;
-    tokenUsage = tokenUsageFromEntry(entry) ?? tokenUsage;
-  }
-  return { ...rollout, lastAssistantText, tokenUsage };
-}
-function rolloutRecentlyActive(snapshot, nowMs) {
-  if (snapshot === null) return false;
-  return nowMs - snapshot.mtimeMs <= CODEX_ROLLOUT_BUSY_WINDOW_MS;
-}
-
 // src/engines/codex/engine.ts
 var CODEX_CLIENT_INFO = {
   name: "claudemux",
@@ -7191,7 +7467,7 @@ function formatFirstTurn(turn) {
 ` };
   }
 }
-function fmtAge3(age) {
+function fmtAge4(age) {
   if (age < 60) return `${age}s`;
   if (age < 3600) return `${Math.floor(age / 60)}m`;
   if (age < 86400) return `${Math.floor(age / 3600)}h`;
@@ -7226,7 +7502,7 @@ function codexListExtras(name, nowSec3, state, daemonState, rollout, runtime) {
   const recordedSeen = state?.lastSeen ?? null;
   const activitySeen = recordedSeen === null ? rolloutSeen : rolloutSeen === null ? recordedSeen : Math.max(recordedSeen, rolloutSeen);
   const lastSeen = activitySeen === null ? "" : String(activitySeen);
-  const lastSeenAge = activitySeen === null ? "-" : fmtAge3(Math.max(0, nowSec3 - activitySeen));
+  const lastSeenAge = activitySeen === null ? "-" : fmtAge4(Math.max(0, nowSec3 - activitySeen));
   return {
     sidShort: thread.length === 0 ? "codex" : thread.slice(0, 8),
     busy: daemonState === "busy" ? "yes" : daemonState === "idle" ? "no" : "?",
@@ -7243,7 +7519,7 @@ function codexListExtras(name, nowSec3, state, daemonState, rollout, runtime) {
 }
 function statusPane(args) {
   const activitySeen = args.rollout === null ? args.state?.lastSeen ?? null : Math.max(args.state?.lastSeen ?? 0, Math.floor(args.rollout.mtimeMs / 1e3));
-  const activityAge = activitySeen === null ? "-" : fmtAge3(Math.max(0, args.nowSec - activitySeen));
+  const activityAge = activitySeen === null ? "-" : fmtAge4(Math.max(0, args.nowSec - activitySeen));
   return [
     `codex: ${args.name}`,
     `state: ${args.daemonState}`,
@@ -7268,7 +7544,7 @@ var CodexEngine = class {
     atomicSpawnPrompt: true,
     compaction: "auto",
     contextUsage: "transcript-jsonl",
-    history: "unsupported",
+    history: "transcript-files",
     memory: "unsupported",
     reload: "unsupported",
     resume: "thread-id",
@@ -7682,7 +7958,7 @@ var CodexEngine = class {
     };
   }
   async history(_req, _ctx) {
-    return { kind: "not-supported", reason: "codex thread history enumeration is not exposed through the Phase 2b engine yet" };
+    return codexHistory(_req, _ctx);
   }
   async mem(_req, _ctx) {
     return notSupported("codex does not use Claude project memory files");
@@ -7818,7 +8094,7 @@ function productionRegistry(env) {
 }
 
 // src/verbs/archive.ts
-import { readFileSync as readFileSync13, statSync as statSync14, writeFileSync as writeFileSync5 } from "node:fs";
+import { readFileSync as readFileSync14, statSync as statSync15, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join12 } from "node:path";
 
 // src/persistence/project-dir.ts
@@ -7851,7 +8127,7 @@ function die2(message) {
 }
 function isRegularFile5(path) {
   try {
-    return statSync14(path).isFile();
+    return statSync15(path).isFile();
   } catch {
     return false;
   }
@@ -7902,7 +8178,7 @@ async function archiveVerb(args, stdin, env) {
   if (outcome.replace(/\s/g, "") === "") {
     return die2(`outcome text required on stdin, e.g.:  echo '...' | tm archive ${id}`);
   }
-  const activeContent = readFileSync13(activePath, "utf8");
+  const activeContent = readFileSync14(activePath, "utf8");
   const activeLines = ledgerLines(activeContent);
   let headerRe;
   try {
@@ -7945,7 +8221,7 @@ async function archiveVerb(args, stdin, env) {
 - intent: ${field("intent")}
 - outcome: ${outcome}
 - closed: ${fmtLocalDate()}`;
-  const archiveContent = isRegularFile5(archivePath) ? readFileSync13(archivePath, "utf8") : ARCHIVE_TEMPLATE;
+  const archiveContent = isRegularFile5(archivePath) ? readFileSync14(archivePath, "utf8") : ARCHIVE_TEMPLATE;
   const archiveLines = ledgerLines(archiveContent);
   let firstEntry = 0;
   for (let index = 0; index < archiveLines.length; index++) {
@@ -8514,9 +8790,11 @@ async function ctxVerb(name, ctx, opts) {
 
 // src/verbs/history.ts
 async function historyVerb(args, ctx) {
-  const engine = await resolveTargetEngine(args.name, ctx);
+  const resolved = await ctx.router.resolve(args.name);
+  const codexFromHistory = resolved === null && args.cwd !== null && ctx.engines.get("codex") !== void 0 && hasCodexHistoryForCwd(args.cwd, ctx.engineContext.env);
+  const engine = codexFromHistory ? ctx.engines.get("codex") : resolved?.engine ?? await resolveTargetEngine(args.name, ctx);
   if ("code" in engine) return engine;
-  const req = { name: args.name, index: args.index };
+  const req = { name: args.name, cwd: args.cwd, index: args.index };
   return formatHistory(await engine.history(req, ctx.engineContext));
 }
 
@@ -8616,7 +8894,7 @@ function runHelpVerb(rest) {
 }
 function isDirectory3(path) {
   try {
-    return statSync15(path).isDirectory();
+    return statSync16(path).isDirectory();
   } catch {
     return false;
   }
@@ -8647,11 +8925,11 @@ async function inferSpawnEngine(name, requested, ctx) {
 function spawnCwd(name, engine, env) {
   if (engine === "codex") {
     const repoPath = join13(env.dispatcherDir, name);
-    return isDirectory3(repoPath) ? realpathSync4(repoPath) : realpathSync4(env.dispatcherDir);
+    return isDirectory3(repoPath) ? realpathSync5(repoPath) : realpathSync5(env.dispatcherDir);
   }
   return join13(env.dispatcherDir, name);
 }
-function resumeCwd(name, env) {
+function codexCwd(name, env) {
   try {
     return spawnCwd(name, "codex", env);
   } catch {
@@ -8810,7 +9088,7 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
       return resumeVerb(
         {
           name: parsed.repo,
-          cwd: resumeCwd(parsed.repo, env),
+          cwd: codexCwd(parsed.repo, env),
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           displayName: parsed.task.length === 0 ? null : parsed.task
@@ -8837,8 +9115,8 @@ async function dispatchEngineVerb(verb, rest, ctx, env) {
     }
     case "history": {
       const name = rest[0] ?? "";
-      if (name.length === 0) return die5("usage: tm history <repo> [<sid-or-prefix>]");
-      return historyVerb({ name, index: rest[1] ?? null }, ctx);
+      if (name.length === 0) return die5("usage: tm history <repo> [<sid-or-thread-prefix>]");
+      return historyVerb({ name, cwd: codexCwd(name, env), index: rest[1] ?? null }, ctx);
     }
     case "mem": {
       const name = rest[0] ?? "";

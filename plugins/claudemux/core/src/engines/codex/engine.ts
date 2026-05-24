@@ -48,6 +48,7 @@ import type { ThreadResumeResponse } from '../../codex-protocol/v2/ThreadResumeR
 import type { ThreadStartResponse } from '../../codex-protocol/v2/ThreadStartResponse.js'
 import type { TmResult } from '../../tm'
 import type { TurnCompletedNotification } from './events.js'
+import { codexHistory } from './history.js'
 import { CodexWsClient } from './rpc.js'
 import { runTurn, subscribeTurnCollection } from './events.js'
 import {
@@ -338,7 +339,7 @@ export class CodexEngine implements Engine {
     atomicSpawnPrompt: true,
     compaction: 'auto',
     contextUsage: 'transcript-jsonl',
-    history: 'unsupported',
+    history: 'transcript-files',
     memory: 'unsupported',
     reload: 'unsupported',
     resume: 'thread-id',
@@ -782,7 +783,7 @@ export class CodexEngine implements Engine {
   }
 
   async history(_req: HistoryRequest, _ctx: EngineContext): Promise<HistoryResult> {
-    return { kind: 'not-supported', reason: 'codex thread history enumeration is not exposed through the Phase 2b engine yet' }
+    return codexHistory(_req, _ctx)
   }
 
   async mem(_req: MemoryRequest, _ctx: EngineContext): Promise<TextResult> {

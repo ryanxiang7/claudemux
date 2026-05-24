@@ -30,9 +30,10 @@ export interface CodexRolloutSnapshot {
   readonly tokenUsage: RolloutTokenUsage | null
 }
 
-interface RolloutFile {
+export interface CodexRolloutFile {
   readonly path: string
   readonly mtimeMs: number
+  readonly threadId: string
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -70,7 +71,19 @@ function sortedNumericDirs(root: string): string[] {
     .sort((a, b) => Number(b) - Number(a))
 }
 
-function findInDay(dayDir: string, suffix: string): RolloutFile | null {
+const ROLLOUT_THREAD_RE =
+  /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+function rolloutThreadId(name: string): string | null {
+  const match = ROLLOUT_THREAD_RE.exec(name)
+  return match === null ? null : match[1]!
+}
+
+function findInDay(
+  dayDir: string,
+  suffix: string,
+  exactThreadId: string,
+): CodexRolloutFile | null {
   let entries
   try {
     entries = readdirSync(dayDir, { withFileTypes: true })
@@ -78,7 +91,7 @@ function findInDay(dayDir: string, suffix: string): RolloutFile | null {
     return null
   }
 
-  let newest: RolloutFile | null = null
+  let newest: CodexRolloutFile | null = null
   for (const entry of entries) {
     if (!entry.isFile()) continue
     const name = entry.name
@@ -90,7 +103,9 @@ function findInDay(dayDir: string, suffix: string): RolloutFile | null {
     } catch {
       continue
     }
-    if (newest === null || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs }
+    if (newest === null || mtimeMs > newest.mtimeMs) {
+      newest = { path, mtimeMs, threadId: exactThreadId }
+    }
   }
   return newest
 }
@@ -98,7 +113,7 @@ function findInDay(dayDir: string, suffix: string): RolloutFile | null {
 export function findCodexRolloutFile(
   threadId: string,
   env: NodeJS.ProcessEnv,
-): RolloutFile | null {
+): CodexRolloutFile | null {
   const suffix = `-${threadId}.jsonl`
   const root = codexSessionsRoot(env)
   for (const year of sortedNumericDirs(root)) {
@@ -106,12 +121,51 @@ export function findCodexRolloutFile(
     for (const month of sortedNumericDirs(yearDir)) {
       const monthDir = join(yearDir, month)
       for (const day of sortedNumericDirs(monthDir)) {
-        const found = findInDay(join(monthDir, day), suffix)
+        const found = findInDay(join(monthDir, day), suffix, threadId)
         if (found !== null) return found
       }
     }
   }
   return null
+}
+
+function listInDay(dayDir: string): CodexRolloutFile[] {
+  let entries
+  try {
+    entries = readdirSync(dayDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const files: CodexRolloutFile[] = []
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const threadId = rolloutThreadId(entry.name)
+    if (threadId === null || !entry.name.startsWith('rollout-')) continue
+    const path = join(dayDir, entry.name)
+    try {
+      files.push({ path, mtimeMs: statSync(path).mtimeMs, threadId })
+    } catch {
+      continue
+    }
+  }
+  return files
+}
+
+export function listCodexRolloutFiles(env: NodeJS.ProcessEnv): readonly CodexRolloutFile[] {
+  const root = codexSessionsRoot(env)
+  const files: CodexRolloutFile[] = []
+  for (const year of sortedNumericDirs(root)) {
+    const yearDir = join(root, year)
+    for (const month of sortedNumericDirs(yearDir)) {
+      const monthDir = join(yearDir, month)
+      for (const day of sortedNumericDirs(monthDir)) {
+        files.push(...listInDay(join(monthDir, day)))
+      }
+    }
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  return files
 }
 
 function phaseAllowed(phase: unknown): boolean {

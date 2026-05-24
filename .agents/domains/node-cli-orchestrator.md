@@ -132,7 +132,10 @@ persistence). A Codex teammate uses it directly — no tmux, no screen-scraping.
 - **Durable inspection.** `tm last` reads the latest assistant final answer or
   commentary from the current thread's rollout JSONL. `tm ctx` reads the latest
   token-count event from the same rollout file and reports used tokens,
-  context-window tokens, and percentage.
+  context-window tokens, and percentage. `tm history <name>` scans Codex rollout
+  files by recorded cwd, lists thread-id prefixes with age / size / topic, and
+  expands a thread-id prefix into a detail block with the rollout path, first
+  prompt, last assistant text, and the `tm resume` command.
 - **Thread resume.** `tm resume <name> <thread-id>` for Codex starts a fresh
   per-teammate `app-server`, writes the thread id back to
   `/tmp/teammate-codex/<name>/thread`, and calls `thread/resume`. When `tm kill`

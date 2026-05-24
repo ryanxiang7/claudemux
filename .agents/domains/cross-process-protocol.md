@@ -53,6 +53,7 @@ rewrites it when the session_id rotates — without that, `tm states` /
 | `/tmp/claudemux-sid-changes.log` | `on-session-start.sh` audit log of every sid rotation |
 | `~/.claude/projects/<encoded>/*.jsonl` | Claude Code session transcripts; `tm history`/`ctx`/`resume` parse them |
 | `~/.claude/projects/<encoded>/memory/` | AutoMemory; `tm mem` cats a sibling repo's `MEMORY.md` |
+| `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex thread rollouts; `tm last`/`ctx`/`history` parse them and `tm resume` accepts their thread id |
 
 `/tmp/claude-idle/` files older than 7 days are swept by `on-stop.sh`
 (~1/16 of fires, in the background) — `tm kill` only cleans up sessions it

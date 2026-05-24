@@ -207,7 +207,7 @@ function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
   return join(env.dispatcherDir, name)
 }
 
-function resumeCwd(name: string, env: NativeEnv): string {
+function codexCwd(name: string, env: NativeEnv): string {
   try {
     return spawnCwd(name, 'codex', env)
   } catch {
@@ -381,7 +381,7 @@ async function dispatchEngineVerb(
       return resumeVerb(
         {
           name: parsed.repo,
-          cwd: resumeCwd(parsed.repo, env),
+          cwd: codexCwd(parsed.repo, env),
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           displayName: parsed.task.length === 0 ? null : parsed.task,
@@ -408,8 +408,8 @@ async function dispatchEngineVerb(
     }
     case 'history': {
       const name = rest[0] ?? ''
-      if (name.length === 0) return die('usage: tm history <repo> [<sid-or-prefix>]')
-      return historyVerb({ name, index: rest[1] ?? null }, ctx)
+      if (name.length === 0) return die('usage: tm history <repo> [<sid-or-thread-prefix>]')
+      return historyVerb({ name, cwd: codexCwd(name, env), index: rest[1] ?? null }, ctx)
     }
     case 'mem': {
       const name = rest[0] ?? ''

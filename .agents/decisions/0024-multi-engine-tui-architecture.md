@@ -317,6 +317,7 @@ same file). The hook-write set stays exactly as today:
 | `/tmp/teammate-codex/<name>/last-seen` | Codex engine per round-trip | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/meta.json` | Codex engine at spawn/resume | doctor, status | CodexTeammateRecord extension |
 | `~/.claude/projects/<encoded>/...` | Claude Code | `tm history`, Claude engine `ctx` | Claude Code product surface, **left as-is** |
+| `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex CLI | Codex `tm last`, `tm ctx`, `tm history`, resume routing hint | Codex product surface, **left as-is** |
 
 The rule by row, in two sentences: **`tm`-owned, engine-implementation-
 agnostic** base state lives in the JSON; **engine-implementation-
@@ -422,13 +423,15 @@ Codex engine, not in the architecture decision.
 `tm kill`, `tm doctor`, `tm archive`, `tm ask` all stay verbs in the
 public CLI. None is removed by this reshape.
 
-`tm history` is useful enough that it lives on; for the Claude engine
-it reads `~/.claude/projects/<encoded>/`, and the Codex engine returns
-`not-supported` until the app-server exposes thread enumeration in a
-form the Node core can consume. `tm mem` is rarely used today but
-keeps a stable surface — Claude reads project memory under
+`tm history` is useful enough that it lives on. The Claude engine reads
+`~/.claude/projects/<encoded>/` and lists transcript sid values. The
+Codex engine reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
+filters rollouts by their recorded cwd, and lists thread ids that can be
+passed to `tm resume <name> <thread-id>`. `tm mem` is rarely used today
+but keeps a stable surface — Claude reads project memory under
 `~/.claude/projects/<encoded>/memory/`; Codex returns `not-supported`.
-The verb formatter prints one explanatory line and exits 0.
+The verb formatter prints one explanatory line and exits 0 for unsupported
+capabilities.
 
 **`cwd` is engine input, not hook-derived.** Today, Claude's
 SessionStart hook learns a teammate's cwd from `/tmp/teammate-<n>.cwd`

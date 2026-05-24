@@ -209,6 +209,8 @@ export type ContextResult =
 
 export interface HistoryRequest {
   readonly name: TeammateName
+  /** Absolute working directory used by engines whose history is keyed by cwd. */
+  readonly cwd: string | null
   /** `null` = list view; non-null = engine-specific detail selector. */
   readonly index: string | null
 }
