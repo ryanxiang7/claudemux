@@ -8,7 +8,8 @@
  * tests here are about wiring (which handler was reached, with which args).
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
@@ -17,12 +18,38 @@ import type { ColumnRunner } from '../src/column'
 import type { GrepRunner } from '../src/grep'
 import { HELP_TEXTS, OVERVIEW_HELP, REMOVED_VERB_MESSAGES } from '../src/help'
 import type { NativeEnv } from '../src/native'
+import {
+  codexPidFile,
+  codexStartedAtFile,
+  codexTeammateDir,
+} from '../src/engines/codex/persistence'
+import {
+  cwdFile,
+  lastFileFor,
+  readyFile,
+  sendAtFile,
+  sidFile,
+} from '../src/paths'
 import type { TmuxRunner } from '../src/tmux'
 import { TM_VERBS } from '../src/verbs'
 
 const fakeTmux: TmuxRunner = async () => ({ code: 0, stdout: '', stderr: '' })
 const fakeColumn: ColumnRunner = async (input) => ({ code: 0, stdout: input, stderr: '' })
 const fakeGrep: GrepRunner = async () => 1
+let savedCodexRegistryRoot: string | undefined
+let codexRegistryRoot: string
+
+beforeAll(() => {
+  savedCodexRegistryRoot = process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT']
+  codexRegistryRoot = mkdtempSync('/tmp/cmxcli-')
+  process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT'] = codexRegistryRoot
+})
+
+afterAll(() => {
+  if (savedCodexRegistryRoot === undefined) delete process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT']
+  else process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT'] = savedCodexRegistryRoot
+  rmSync(codexRegistryRoot, { recursive: true, force: true })
+})
 
 /** A `NativeEnv` with quiet fakes for every backend. */
 function fakeEnv(over: Partial<NativeEnv> = {}): NativeEnv {
@@ -220,6 +247,46 @@ describe('native dispatch', () => {
     const result = await runCli(['archive', 'task-9'], fakeEnv(), 'no ledger here')
     expect(result.code).not.toBe(0)
   })
+
+  test('explicit Claude spawn is not hijacked by a stale codex registry entry', async () => {
+    const repo = `stale-claude-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const repoDir = join(dispatcherDir, repo)
+    mkdirSync(repoDir, { recursive: true })
+    mkdirSync(codexTeammateDir(repo), { recursive: true })
+    writeFileSync(codexPidFile(repo), `${process.pid}\n`)
+    writeFileSync(codexStartedAtFile(repo), `${Math.floor(Date.now() / 1000)}\n`)
+    const tmuxCalls: string[][] = []
+    const runTmux: TmuxRunner = async (args) => {
+      tmuxCalls.push([...args])
+      if (args[0] === 'has-session') return { code: 1, stdout: '', stderr: '' }
+      if (args[0] === 'new-session') {
+        mkdirSync(dirname(readyFile(repo)), { recursive: true })
+        writeFileSync(readyFile(repo), '')
+        return { code: 0, stdout: '%1\n', stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+
+    try {
+      const result = await runCli(
+        ['spawn', repo, '--engine', 'claude'],
+        fakeEnv({ dispatcherDir, runTmux }),
+      )
+      expect(result.code).toBe(0)
+      expect(tmuxCalls.some((args) => args[0] === 'new-session')).toBe(true)
+      expect(result.stderr).toContain(`tmux=teammate-${repo}`)
+    } finally {
+      const sid = existsSync(sidFile(repo)) ? readFileSync(sidFile(repo), 'utf8').trim() : ''
+      rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(cwdFile(repo), { force: true })
+      rmSync(sidFile(repo), { force: true })
+      rmSync(readyFile(repo), { force: true })
+      rmSync(sendAtFile(repo), { force: true })
+      if (sid.length > 0) rmSync(lastFileFor(sid), { force: true })
+      rmSync(codexTeammateDir(repo), { recursive: true, force: true })
+    }
+  })
 })
 
 describe('engine-routed verbs (Phase 2a-1 fleet visibility)', () => {
@@ -276,7 +343,7 @@ describe('doctor — sections fire top-down, never raising', () => {
     // Short `/tmp` root rather than `$TMPDIR` so the supervisor's unix
     // socket nodes (under `<root>/<name>/socket`) stay under macOS's
     // ~104-char path limit. Doctor itself does not bind sockets, but
-    // sharing the root with the codex-verbs / supervisor test contract
+    // sharing the root with the engines/codex verbs / supervisor test contract
     // is the safer pattern.
     registryDir = mkdtempSync('/tmp/cmxc-')
     savedRegistryRoot = process.env['CLAUDEMUX_CODEX_REGISTRY_ROOT']
