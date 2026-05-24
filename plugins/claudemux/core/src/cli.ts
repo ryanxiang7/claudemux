@@ -209,6 +209,8 @@ function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
 
 function codexCwd(name: string, env: NativeEnv): string {
   try {
+    // Killed non-prefix Codex teammates have no base record; use the same cwd
+    // inference as spawn/resume so rollout-history routing can still find them.
     return spawnCwd(name, 'codex', env)
   } catch {
     return process.cwd()

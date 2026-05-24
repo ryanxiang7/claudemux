@@ -8,7 +8,17 @@
  * tests here are about wiring (which handler was reached, with which args).
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -577,6 +587,45 @@ describe('native dispatch', () => {
     } finally {
       if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
       else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot
+      rmSync(sessionsRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('history routes a killed non-prefix codex teammate by realpath-matched rollout cwd', async () => {
+    const name = `history-router-link-${Date.now()}`
+    const threadId = '019e5f5f-2e57-7abc-8def-123456789ac4'
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const realRepo = mkdtempSync('/tmp/cmxcli-real-repo-')
+    const repoLink = join(dispatcherDir, name)
+    const sessionsRoot = mkdtempSync('/tmp/cmxcli-sessions-')
+    const savedSessionsRoot = process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+    const seen: Array<{ name: string; cwd: string | null; index: string | null }> = []
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; cwd: string | null; index: string | null }) => {
+        seen.push({ name: req.name, cwd: req.cwd, index: req.index })
+        return {
+          kind: 'list',
+          turns: [],
+          tmResult: { code: 0, stdout: 'codex history via realpath\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeCodex)
+    process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = sessionsRoot
+    symlinkSync(realRepo, repoLink)
+    writeCliRollout(sessionsRoot, threadId, repoLink)
+
+    try {
+      const result = await runCli(['history', name], fakeEnv({ dispatcherDir, engines: registry }))
+      expect(result).toEqual({ code: 0, stdout: 'codex history via realpath\n', stderr: '' })
+      expect(seen).toEqual([{ name, cwd: realpathSync(realRepo), index: null }])
+    } finally {
+      if (savedSessionsRoot === undefined) delete process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT']
+      else process.env['CLAUDEMUX_CODEX_SESSIONS_ROOT'] = savedSessionsRoot
+      rmSync(dispatcherDir, { recursive: true, force: true })
+      rmSync(realRepo, { recursive: true, force: true })
       rmSync(sessionsRoot, { recursive: true, force: true })
     }
   })

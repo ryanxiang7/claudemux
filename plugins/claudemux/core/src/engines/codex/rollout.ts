@@ -34,6 +34,7 @@ export interface CodexRolloutFile {
   readonly path: string
   readonly mtimeMs: number
   readonly threadId: string
+  readonly createdAt: string | null
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -73,6 +74,17 @@ function sortedNumericDirs(root: string): string[] {
 
 const ROLLOUT_THREAD_RE =
   /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+const ROLLOUT_CREATED_RE = /^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.[0-9]+)?Z?)-/
+
+function rolloutCreatedAt(name: string): string | null {
+  const match = ROLLOUT_CREATED_RE.exec(name)
+  if (match === null) return null
+  return match[1]!
+    .replace('T', ' ')
+    .replace(/^(.+ )(\d{2})-(\d{2})-(\d{2})/, '$1$2:$3:$4')
+    .replace(/\.[0-9]+Z?$/, '')
+    .replace(/Z$/, '')
+}
 
 function rolloutThreadId(name: string): string | null {
   const match = ROLLOUT_THREAD_RE.exec(name)
@@ -104,7 +116,12 @@ function findInDay(
       continue
     }
     if (newest === null || mtimeMs > newest.mtimeMs) {
-      newest = { path, mtimeMs, threadId: exactThreadId }
+      newest = {
+        path,
+        mtimeMs,
+        threadId: exactThreadId,
+        createdAt: rolloutCreatedAt(name),
+      }
     }
   }
   return newest
@@ -144,7 +161,12 @@ function listInDay(dayDir: string): CodexRolloutFile[] {
     if (threadId === null || !entry.name.startsWith('rollout-')) continue
     const path = join(dayDir, entry.name)
     try {
-      files.push({ path, mtimeMs: statSync(path).mtimeMs, threadId })
+      files.push({
+        path,
+        mtimeMs: statSync(path).mtimeMs,
+        threadId,
+        createdAt: rolloutCreatedAt(entry.name),
+      })
     } catch {
       continue
     }

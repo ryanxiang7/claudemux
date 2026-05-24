@@ -273,10 +273,11 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       id recorded in a rollout filename. '*' marks the current live
       teammate's session / thread. With a sid, thread id, or prefix:
       detail mode (full id, transcript / rollout path, size / line
-      count, first prompt, last assistant text up to 1500 chars,
-      ready-to-paste 'tm resume' command). Boundary vs 'tm last':
-      last covers only the current live teammate's reply; history
-      covers any jsonl on disk including killed sessions.
+      count, created time, ctx usage when present, first prompt,
+      last assistant text up to 1500 chars, ready-to-paste
+      'tm resume' command). Boundary vs 'tm last': last covers only
+      the current live teammate's reply; history covers any jsonl on
+      disk including killed sessions.
 `,
   archive: `tm archive <id> [--status '<tag>']
 

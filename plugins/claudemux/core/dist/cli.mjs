@@ -4019,10 +4019,11 @@ var HELP_TEXTS = {
       id recorded in a rollout filename. '*' marks the current live
       teammate's session / thread. With a sid, thread id, or prefix:
       detail mode (full id, transcript / rollout path, size / line
-      count, first prompt, last assistant text up to 1500 chars,
-      ready-to-paste 'tm resume' command). Boundary vs 'tm last':
-      last covers only the current live teammate's reply; history
-      covers any jsonl on disk including killed sessions.
+      count, created time, ctx usage when present, first prompt,
+      last assistant text up to 1500 chars, ready-to-paste
+      'tm resume' command). Boundary vs 'tm last': last covers only
+      the current live teammate's reply; history covers any jsonl on
+      disk including killed sessions.
 `,
   archive: `tm archive <id> [--status '<tag>']
 
@@ -6668,7 +6669,15 @@ var ClaudeEngine = class {
 };
 
 // src/engines/codex/history.ts
-import { readFileSync as readFileSync13, realpathSync as realpathSync4, statSync as statSync14 } from "node:fs";
+import { Buffer as Buffer2 } from "node:buffer";
+import {
+  closeSync as closeSync3,
+  openSync as openSync3,
+  readFileSync as readFileSync13,
+  readSync,
+  realpathSync as realpathSync4,
+  statSync as statSync14
+} from "node:fs";
 
 // src/engines/codex/rollout.ts
 import { homedir } from "node:os";
@@ -6702,6 +6711,12 @@ function sortedNumericDirs(root) {
   return entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map((entry) => entry.name).sort((a, b) => Number(b) - Number(a));
 }
 var ROLLOUT_THREAD_RE = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+var ROLLOUT_CREATED_RE = /^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.[0-9]+)?Z?)-/;
+function rolloutCreatedAt(name) {
+  const match = ROLLOUT_CREATED_RE.exec(name);
+  if (match === null) return null;
+  return match[1].replace("T", " ").replace(/^(.+ )(\d{2})-(\d{2})-(\d{2})/, "$1$2:$3:$4").replace(/\.[0-9]+Z?$/, "").replace(/Z$/, "");
+}
 function rolloutThreadId(name) {
   const match = ROLLOUT_THREAD_RE.exec(name);
   return match === null ? null : match[1];
@@ -6726,7 +6741,12 @@ function findInDay(dayDir, suffix, exactThreadId) {
       continue;
     }
     if (newest === null || mtimeMs > newest.mtimeMs) {
-      newest = { path, mtimeMs, threadId: exactThreadId };
+      newest = {
+        path,
+        mtimeMs,
+        threadId: exactThreadId,
+        createdAt: rolloutCreatedAt(name)
+      };
     }
   }
   return newest;
@@ -6760,7 +6780,12 @@ function listInDay(dayDir) {
     if (threadId === null || !entry.name.startsWith("rollout-")) continue;
     const path = join11(dayDir, entry.name);
     try {
-      files.push({ path, mtimeMs: statSync13(path).mtimeMs, threadId });
+      files.push({
+        path,
+        mtimeMs: statSync13(path).mtimeMs,
+        threadId,
+        createdAt: rolloutCreatedAt(entry.name)
+      });
     } catch {
       continue;
     }
@@ -6956,6 +6981,46 @@ function cwdFromEntry(entry) {
   if (!isPlainObject4(payload)) return null;
   return stringProp2(payload, "cwd");
 }
+function readFirstLine(path) {
+  let fd = null;
+  try {
+    fd = openSync3(path, "r");
+    const chunks = [];
+    const buf = Buffer2.alloc(4096);
+    let offset = 0;
+    while (true) {
+      const n = readSync(fd, buf, 0, buf.length, offset);
+      if (n === 0) break;
+      const chunk = buf.subarray(0, n);
+      const newline = chunk.indexOf(10);
+      if (newline >= 0) {
+        chunks.push(Buffer2.from(chunk.subarray(0, newline)));
+        return Buffer2.concat(chunks).toString("utf8");
+      }
+      chunks.push(Buffer2.from(chunk));
+      offset += n;
+    }
+    return Buffer2.concat(chunks).toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync3(fd);
+      } catch {
+      }
+    }
+  }
+}
+function cwdFromFirstLine(file) {
+  const line = readFirstLine(file.path);
+  if (line === null || line.trim() === "") return null;
+  try {
+    return cwdFromEntry(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
 function readHistoryEntry(file) {
   let content;
   try {
@@ -6995,6 +7060,7 @@ function readHistoryEntry(file) {
     threadId: file.threadId,
     path: file.path,
     mtimeMs: file.mtimeMs,
+    createdAt: file.createdAt,
     size,
     lineCount: content.match(/\n/g)?.length ?? 0,
     cwd,
@@ -7006,8 +7072,8 @@ function historyEntriesForCwd(cwd, env) {
 }
 function hasCodexHistoryForCwd(cwd, env) {
   for (const file of listCodexRolloutFiles(env)) {
-    const entry = readHistoryEntry(file);
-    if (entry !== null && cwdMatches(entry.cwd, cwd)) return true;
+    const recordedCwd = cwdFromFirstLine(file);
+    if (recordedCwd !== null && cwdMatches(recordedCwd, cwd)) return true;
   }
   return false;
 }
@@ -7051,6 +7117,15 @@ function truncateAssistant(text) {
   return `${cps.slice(0, 1500).join("")}
 ... (${cps.length - 1500} chars truncated; full text in jsonl)`;
 }
+function fmtTokenWindow(tokens) {
+  if (tokens >= 1e6 && tokens % 1e6 === 0) return `${tokens / 1e6}M`;
+  if (tokens >= 1e3 && tokens % 1e3 === 0) return `${tokens / 1e3}k`;
+  return String(tokens);
+}
+function fmtContext(snapshot) {
+  if (snapshot?.tokenUsage === null || snapshot?.tokenUsage === void 0) return "(no usage data)";
+  return `${snapshot.tokenUsage.tokensUsed} tokens \xB7 ${snapshot.tokenUsage.pct}% of ${fmtTokenWindow(snapshot.tokenUsage.tokensTotal)}`;
+}
 function detailHistory(name, selector, entries, ctx) {
   if (!/^[0-9a-f-]{1,36}$/i.test(selector)) {
     return { code: 1, stdout: "", stderr: `tm: history: invalid thread-id prefix '${selector}'
@@ -7074,11 +7149,14 @@ function detailHistory(name, selector, entries, ctx) {
   const entry = matches[0];
   const snapshot = readCodexRolloutSnapshot(entry.threadId, ctx.env);
   const firstPrompt = entry.firstPrompt ?? "(no user prompt)";
+  const ctxStr = fmtContext(snapshot);
   const lastAssistant = snapshot?.lastAssistantText === null || snapshot?.lastAssistantText === void 0 ? "(no assistant text)" : truncateAssistant(snapshot.lastAssistantText);
   const stdout = `thread:     ${entry.threadId}
 rollout:    ${entry.path}
             (${fmtSize2(entry.size)} \xB7 ${entry.lineCount} lines)
+created:    ${entry.createdAt ?? "(unknown)"}
 last_seen:  ${fmtAge3(Math.max(0, Math.floor((ctx.now() - entry.mtimeMs) / 1e3)))} ago
+ctx:        ${ctxStr}
 
 first prompt:
 ${indent2(firstPrompt)}

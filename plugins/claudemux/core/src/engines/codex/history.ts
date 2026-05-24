@@ -7,7 +7,15 @@
  * `tm resume`, and never mutates the daemon registry.
  */
 
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { Buffer } from 'node:buffer'
+import {
+  closeSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from 'node:fs'
 
 import type { EngineContext, HistoryRequest, HistoryResult } from '../types'
 import type { TmResult } from '../../tm'
@@ -23,6 +31,7 @@ interface CodexHistoryEntry {
   readonly threadId: string
   readonly path: string
   readonly mtimeMs: number
+  readonly createdAt: string | null
   readonly size: number
   readonly lineCount: number
   readonly cwd: string
@@ -117,6 +126,47 @@ function cwdFromEntry(entry: unknown): string | null {
   return stringProp(payload, 'cwd')
 }
 
+function readFirstLine(path: string): string | null {
+  let fd: number | null = null
+  try {
+    fd = openSync(path, 'r')
+    const chunks: Buffer[] = []
+    const buf = Buffer.alloc(4096)
+    let offset = 0
+    while (true) {
+      const n = readSync(fd, buf, 0, buf.length, offset)
+      if (n === 0) break
+      const chunk = buf.subarray(0, n)
+      const newline = chunk.indexOf(10)
+      if (newline >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, newline)))
+        return Buffer.concat(chunks).toString('utf8')
+      }
+      chunks.push(Buffer.from(chunk))
+      offset += n
+    }
+    return Buffer.concat(chunks).toString('utf8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch { /* ignore close failure after a read-only route probe */ }
+    }
+  }
+}
+
+function cwdFromFirstLine(file: CodexRolloutFile): string | null {
+  const line = readFirstLine(file.path)
+  if (line === null || line.trim() === '') return null
+  try {
+    return cwdFromEntry(JSON.parse(line))
+  } catch {
+    return null
+  }
+}
+
 function readHistoryEntry(file: CodexRolloutFile): CodexHistoryEntry | null {
   let content: string
   try {
@@ -158,6 +208,7 @@ function readHistoryEntry(file: CodexRolloutFile): CodexHistoryEntry | null {
     threadId: file.threadId,
     path: file.path,
     mtimeMs: file.mtimeMs,
+    createdAt: file.createdAt,
     size,
     lineCount: content.match(/\n/g)?.length ?? 0,
     cwd,
@@ -173,8 +224,8 @@ function historyEntriesForCwd(cwd: string, env: NodeJS.ProcessEnv): readonly Cod
 
 export function hasCodexHistoryForCwd(cwd: string, env: NodeJS.ProcessEnv): boolean {
   for (const file of listCodexRolloutFiles(env)) {
-    const entry = readHistoryEntry(file)
-    if (entry !== null && cwdMatches(entry.cwd, cwd)) return true
+    const recordedCwd = cwdFromFirstLine(file)
+    if (recordedCwd !== null && cwdMatches(recordedCwd, cwd)) return true
   }
   return false
 }
@@ -226,6 +277,19 @@ function truncateAssistant(text: string): string {
   return `${cps.slice(0, 1500).join('')}\n... (${cps.length - 1500} chars truncated; full text in jsonl)`
 }
 
+function fmtTokenWindow(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`
+  if (tokens >= 1000 && tokens % 1000 === 0) return `${tokens / 1000}k`
+  return String(tokens)
+}
+
+function fmtContext(snapshot: ReturnType<typeof readCodexRolloutSnapshot>): string {
+  if (snapshot?.tokenUsage === null || snapshot?.tokenUsage === undefined) return '(no usage data)'
+  return `${snapshot.tokenUsage.tokensUsed} tokens · ${snapshot.tokenUsage.pct}% of ${
+    fmtTokenWindow(snapshot.tokenUsage.tokensTotal)
+  }`
+}
+
 function detailHistory(
   name: string,
   selector: string,
@@ -252,6 +316,7 @@ function detailHistory(
   const entry = matches[0]!
   const snapshot = readCodexRolloutSnapshot(entry.threadId, ctx.env)
   const firstPrompt = entry.firstPrompt ?? '(no user prompt)'
+  const ctxStr = fmtContext(snapshot)
   const lastAssistant = snapshot?.lastAssistantText === null || snapshot?.lastAssistantText === undefined
     ? '(no assistant text)'
     : truncateAssistant(snapshot.lastAssistantText)
@@ -259,7 +324,9 @@ function detailHistory(
     `thread:     ${entry.threadId}\n` +
     `rollout:    ${entry.path}\n` +
     `            (${fmtSize(entry.size)} · ${entry.lineCount} lines)\n` +
+    `created:    ${entry.createdAt ?? '(unknown)'}\n` +
     `last_seen:  ${fmtAge(Math.max(0, Math.floor((ctx.now() - entry.mtimeMs) / 1000)))} ago\n` +
+    `ctx:        ${ctxStr}\n` +
     '\n' +
     'first prompt:\n' +
     `${indent(firstPrompt)}\n` +
