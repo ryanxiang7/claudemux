@@ -9,7 +9,7 @@ Operations manual for dispatcher-style work from a parent directory of sibling g
 
 > **`tm` is the helper script** bundled with this plugin. Examples below call it as bare `tm`. Claude Code auto-prepends each installed plugin's `bin/` directory to `PATH`, so `which tm` resolves inside any Bash subshell of an interactive Claude Code session. If `tm` is not on `PATH`, use the absolute install path: `~/.claude/plugins/cache/claudemux/claudemux/<version>/bin/tm`. **Do not** rely on `${CLAUDE_PLUGIN_ROOT}` from a generic Bash tool call; that variable is injected only when the harness runs plugin-defined commands, hooks, or skill bodies.
 
-> **Verb contracts live in the script.** `tm --help` is the top-level synopsis; `tm <verb> --help` (or `tm help <verb>`) is the detailed flag/output contract for each verb. The shipped help is the source of truth. References in this skill explain scenario flow and edge cases; read `--help` for flags and exact stdout/stderr contracts.
+> **Use live help for executable CLI contracts.** `tm --help` is the top-level synopsis; `tm <verb> --help` (or `tm help <verb>`) owns flags, accepted arguments, exit codes, and exact stdout/stderr contracts. This skill and its references own operational semantics, scenario selection, and edge cases. Keep the two in sync; do not reason about `tm` from prior-conversation memory or model priors.
 
 ## Confirm dispatcher scope
 
@@ -38,7 +38,7 @@ Cron firing is reliable only inside an interactive TUI REPL: this dispatcher, or
 
 `tm` resolves the dispatcher directory from `TM_DISPATCHER_DIR` if set, otherwise `$PWD`. `/claudemux:setup` writes `TM_DISPATCHER_DIR` into the dispatcher root's `.claude/settings.json` so Claude Code injects it on dispatcher launch. If `tm doctor` reports `TM_DISPATCHER_DIR: unset` or points at the wrong directory, run `/claudemux:setup` from the dispatcher root or ask the user to relaunch there.
 
-For Claude teammates, `<repo>` is the short name of a sibling subdirectory directly under the dispatcher dir; `tm spawn my-repo` starts tmux session `teammate-my-repo` with cwd `<dispatcher-dir>/my-repo`. Codex teammates are daemons, not tmux sessions; spawn them explicitly with `tm spawn <name> --engine codex`.
+For Claude teammates, `<repo>` is the short name of a sibling subdirectory directly under the dispatcher dir; `tm spawn my-repo` starts tmux session `teammate-my-repo` with cwd `<dispatcher-dir>/my-repo`. Codex teammates are daemons, not tmux sessions; spawn them explicitly with `tm spawn <name> --engine codex`. For Codex, `<name>` is first interpreted as a path relative to the dispatcher dir: if that path resolves to a directory, the daemon cwd is that realpath, including nested names such as `web-project/flow-web-monorepo`; otherwise cwd falls back to the dispatcher dir. The same `<name>` also composes `/tmp/teammate-codex/<name>/` for daemon registry and socket state.
 
 ## Scenario routing
 

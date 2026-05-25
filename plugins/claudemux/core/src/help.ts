@@ -94,6 +94,12 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       claude; pass --engine codex for a Codex daemon teammate. The name
       itself has no engine meaning, so codex-reviewer is a Claude
       teammate unless --engine codex is present.
+      For Codex, <name> is also interpreted as a path relative to the
+      dispatcher dir. If that path is a directory, the daemon cwd is its
+      realpath, including nested names like web-project/flow-web-monorepo;
+      otherwise cwd falls back to the dispatcher dir. The same <name>
+      composes the daemon registry and socket path under
+      /tmp/teammate-codex/<name>/.
       Codex teammates are not tmux sessions; --task and --resume are
       rejected on that path.
       Every teammate launches with the AskUserQuestion tool disabled

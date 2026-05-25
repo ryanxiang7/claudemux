@@ -15,7 +15,7 @@ The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm
 | Existing persistent Codex daemon teammate, send a new task | `tm send <name> --prompt "..."` |
 | One-shot Codex pool turn on a fresh ephemeral thread | `tm ask "..."` |
 
-Run `tm spawn --help`, `tm send --help`, and `tm ask --help` for the exact flag/output contract. The shipped help is the source of truth; this file explains selection and surrounding mechanics.
+Run `tm spawn --help`, `tm send --help`, and `tm ask --help` for flags, accepted arguments, exit codes, and exact stdout/stderr contracts. This file explains operational semantics, path resolution, scenario selection, and surrounding mechanics. Keep it synchronized with live help.
 
 ## The wait phase
 
@@ -63,7 +63,8 @@ Key differences from the Claude path:
 
 - Codex teammates are daemons under `/tmp/teammate-codex/<name>/`, not tmux sessions.
 - The name itself has no engine meaning; `codex-reviewer` is still a Claude teammate unless `--engine codex` is present.
-- If `<name>` matches a sibling subdirectory, the daemon cwd is that repo; otherwise it uses the dispatcher dir.
+- `<name>` is interpreted as a path relative to the dispatcher dir. If that path resolves to a directory, the daemon cwd is the directory's realpath, including nested names such as `web-project/flow-web-monorepo`; otherwise cwd falls back to the dispatcher dir.
+- The same `<name>` composes the daemon registry and socket path under `/tmp/teammate-codex/<name>/`.
 - `--task` is rejected on Codex spawn.
 - `tm send <name> --prompt "..."` writes or resumes the daemon's persistent thread, prints final assistant text on stdout, and reports `sent` / `sid` / `ctx` / `raw` status lines on stderr.
 - `tm kill <name>` reaps the daemon and registry directory instead of killing a tmux session.
