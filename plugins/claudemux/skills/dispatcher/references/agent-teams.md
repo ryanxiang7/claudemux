@@ -1,6 +1,6 @@
 # Agent Teams teammates (diagnostic reference)
 
-`tm spawn` (tmux teammate) is the default delegation path. Reach for Agent Teams **only** when you genuinely need a shared task list or peer SendMessage across multiple teammates. Otherwise skip this file — tmux teammates have none of the caveats below.
+Reach for Agent Teams only when you genuinely need a shared task list or peer SendMessage across multiple teammates. Otherwise prefer `tm` teammates or `tm ask`; Agent Teams teammates have the caveats below.
 
 ## Spawn-prompt checklist
 
@@ -10,11 +10,11 @@ Use the `Agent` tool with `team_name=<existing-team>` and `name=<teammate-name>`
 
 2. **Hard SendMessage requirement.** Teammates default to silent idle and will not message back even when the prompt politely asks. Use this exact framing in the prompt:
 
-   > ⚠️ Required: SendMessage to="team-lead" with the result. Not allowed to only idle. Not sending = not done.
+   > Required: SendMessage to="team-lead" with the result. Not allowed to only idle. Not sending = not done.
 
 3. **No nested teams.** Teammates cannot spawn their own teammates. If a sub-team is needed, you (the lead) must spawn it.
 
-`--resume` does not restore an Agent Teams teammate after dispatcher restart. Treat teammates as ephemeral; pin persistent state into files inside the target repo if you need continuity.
+Agent Teams teammates cannot be resumed after dispatcher restart; there is no equivalent of `tm resume`. Treat teammates as ephemeral; pin persistent state into files inside the target repo if you need continuity.
 
 ## Filtering idle-notification noise
 

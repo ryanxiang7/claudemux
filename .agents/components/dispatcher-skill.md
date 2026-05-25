@@ -2,13 +2,13 @@
 
 The `dispatcher` skill is the operations manual the dispatcher session loads
 before any teammate operation. It turns a natural-language request ("派一个
-teammate 去 repo-a 跑测试") into the right `tm` verb and delegation form.
+teammate 去 repo-a 跑测试") into the right delegation form and `tm` verb.
 
 ## Files
 
 | Path | Audience | Role |
 |---|---|---|
-| [`skills/dispatcher/SKILL.md`](/plugins/claudemux/skills/dispatcher/SKILL.md) | model | Always-loaded skeleton: scope check, delegation-form table, `tm` overview, a scenario routing table, shared invariants |
+| [`skills/dispatcher/SKILL.md`](/plugins/claudemux/skills/dispatcher/SKILL.md) | model | Always-loaded skeleton: scope check, delegation-form table, `tm` overview, scenario routing, shared invariants |
 | `skills/dispatcher/references/*.md` | model, on demand | One file per scenario — the detailed flow for that scenario only |
 | [`templates/CLAUDE.md.template`](/plugins/claudemux/templates/CLAUDE.md.template) | model, always loaded | Copied into the dispatcher directory by `/claudemux:setup`; the dispatcher's durable identity + routing memory |
 | [`commands/setup.md`](/plugins/claudemux/commands/setup.md) | human → model | Body of the `/claudemux:setup` slash command — the guided onboarding flow |
@@ -16,21 +16,21 @@ teammate 去 repo-a 跑测试") into the right `tm` verb and delegation form.
 
 ## SKILL.md is a skeleton, references hold the steps
 
-`SKILL.md` deliberately stays small (~96 lines). It does **not** contain
+`SKILL.md` deliberately stays small (around 100 lines). It does **not** contain
 per-scenario steps; it contains a routing table that maps the user's intent
 to one `references/<scenario>.md`. Each reference is self-contained — the
 agent reads exactly the one that applies. The references:
 
 | Reference | Scenario |
 |---|---|
-| `dispatch-task.md` | Push work into a repo via a tmux teammate (the default) |
+| `dispatch-task.md` | Push work into a Claude tmux teammate, persistent Codex daemon teammate, or Codex pool one-shot |
 | `sibling-memory.md` | Compose a prompt that quotes sibling-repo state (`tm mem`) |
 | `wait-and-readback.md` | Wait for a turn an external actor drove; pane-quiet blind spot |
-| `inspect-and-resume.md` | Read `tm states`; look up / resume past sessions |
-| `compact-a-teammate.md` | Check or compact a teammate's context window |
+| `inspect-and-resume.md` | Read `tm states`; look up / resume past Claude sessions and Codex threads |
+| `compact-a-teammate.md` | Check or compact a Claude teammate's context window |
 | `ledger-and-archive.md` | Append / archive the dispatcher task ledger |
-| `agent-teams.md` | Spawn an Agent Teams teammate instead of a tmux one |
-| `sid-rotation.md` | Diagnose `.sid` drift or a stuck spawn |
+| `agent-teams.md` | Spawn an Agent Teams teammate |
+| `sid-rotation.md` | Diagnose `.sid` drift or a stuck Claude spawn |
 
 This skeleton/reference split was a size cut — see
 [the dispatcher SKILL.md split](https://github.com/excitedjs/claudemux/commit/dd94785) (commit `dd94785`).
@@ -50,21 +50,22 @@ inline steps into `SKILL.md`.
 - `commands/setup.md` **body** runs only after the human invokes
   `/claudemux:setup`. Write it as an execution guide for that one command.
 
-## Three delegation forms
+## Delegation forms
 
-The skill picks one of three ways to push work outward — chosen once, up
-front:
+The skill picks one outward execution form up front:
 
 | Form | Pick when |
 |---|---|
 | `claude -p` headless | One-shot repo task that finishes in one delegated turn |
 | `Agent` teammate (Agent Teams) | Parallel work across repos sharing a task list |
-| `tmux` teammate (`tm spawn`) | Long-running work needing a real REPL, its own cron, or a Remote Control session |
+| Claude tmux teammate (`tm spawn <repo>`) | Long-running Claude work needing a real TUI REPL, Remote Control, resume, or cron tied to that teammate |
+| Persistent Codex daemon teammate (`tm spawn <name> --engine codex`) | Long-running Codex work needing a named daemon and persistent thread |
+| Codex pool one-shot (`tm ask "..."`) | One Codex turn on a fresh ephemeral thread using an already-spawned idle Codex daemon |
 
 `CronCreate` fires reliably **only inside an interactive TUI REPL** — the
-dispatcher itself, or a tmux teammate. `claude -p` and Agent Teams teammates
-accept the create call and then never fire. This empirical fact drives the
-"keep cron on the dispatcher" rule.
+dispatcher itself, or a Claude tmux teammate. `claude -p`, Agent Teams
+teammates, and Codex daemon teammates are not cron hosts. This drives the
+"keep cron on the dispatcher" default.
 
 ## Editing rule
 

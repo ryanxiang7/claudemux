@@ -29,13 +29,9 @@ Memory entries can be stale. A feature-gate name may have been renamed, a branch
 - Feature-gate / config name → grep the actual sibling repo
 - "Current owner / in-progress project" → check the dispatcher ledger or recent git log
 
-This is the same verify-before-recommend rule that applies to the dispatcher's own memory, but the stakes are higher when the fact lands inside another agent's prompt. A wrong fact in the dispatcher's own answer is correctable in the next turn; a wrong fact baked into a teammate's bootstrap prompt sends the teammate down a wrong path with full context and tools.
+This is the same verify-before-recommend rule that applies to the dispatcher's own memory.
 
-## Why sibling memories live elsewhere
-
-Claude Code derives each session's AutoMemory directory from the cwd of the `claude` process: `$HOME/.claude/projects/<encoded>/memory/`, where `<encoded>` replaces every `/` and `.` in the physical cwd with `-`. The dispatcher runs at `<dispatcher-dir>`; each sibling teammate runs at `<dispatcher-dir>/<repo>`. So the dispatcher and every sibling get separate, non-overlapping memory directories — no cross-pollination by design.
-
-`tm mem` encapsulates the encoding rule and the `<dispatcher-dir> → <repo> → physical cwd` resolution. Use the verb rather than hand-rolling a path; the encoding convention is a Claude Code internal.
+`tm mem` owns the project-dir encoding and `<dispatcher-dir> → <repo> → physical cwd` resolution. Use the verb rather than hand-rolling `$HOME/.claude/projects/<encoded>/memory/` paths.
 
 ## Foot-guns
 

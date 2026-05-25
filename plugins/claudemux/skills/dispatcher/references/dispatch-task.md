@@ -1,56 +1,94 @@
-# Dispatch a task to a repo (scenario reference)
+# Dispatch a task to a teammate (scenario reference)
 
-Read this when you need to push work into a sibling repo — either bring up a new teammate to handle it, or hand a follow-up to an existing one. Skip when you only need to read teammate state (use `wait-and-readback.md`) or look up past sessions (`inspect-and-resume.md`).
+Read this when you need to push work into a sibling repo or Codex teammate: bring up a new teammate, hand follow-up work to an existing one, or borrow the Codex pool for one turn. Skip when you only need to read teammate state (`wait-and-readback.md`) or look up past sessions (`inspect-and-resume.md`).
 
-The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm overview`); `<repo>` below is the short name of a sibling subdirectory directly under it.
+The dispatcher dir is resolved as `${TM_DISPATCHER_DIR:-$PWD}` (see SKILL.md `tm` overview). For Claude teammates, `<repo>` is the short name of a sibling subdirectory directly under it.
 
-## Three primitives
+## Choose the execution path
 
 | Situation | Verb |
 |---|---|
-| Fresh teammate AND a first task in one shot | `tm spawn <repo> --prompt "..."` (atomic bootstrap, prints first-turn reply on stdout) |
-| Fresh teammate, no task yet | `tm spawn <repo>` (returns once the REPL signals SessionStart) |
-| Existing teammate, send a new task and get the reply | `tm send <repo> --prompt "..."` (sync round-trip — send + wait for Stop + print reply on stdout) |
+| Fresh Claude tmux teammate and first task in one shot | `tm spawn <repo> --prompt "..."` |
+| Fresh Claude tmux teammate, no task yet | `tm spawn <repo>` |
+| Existing Claude tmux teammate, send a new task and get the reply | `tm send <repo> --prompt "..."` |
+| Fresh persistent Codex daemon teammate and optional first task | `tm spawn <name> --engine codex [--prompt "..."]` |
+| Existing persistent Codex daemon teammate, send a new task | `tm send <name> --prompt "..."` |
+| One-shot Codex pool turn on a fresh ephemeral thread | `tm ask "..."` |
 
-All three are background-execution candidates — see the wait phase contract below.
+Run `tm spawn --help`, `tm send --help`, and `tm ask --help` for the exact flag/output contract. The shipped help is the source of truth; this file explains selection and surrounding mechanics.
 
-Run `tm spawn --help` / `tm send --help` for the full flag/output contract. The shipped help is the single source of truth; everything below explains the surrounding mechanics that `--help` doesn't cover.
+## The wait phase
 
-## The wait phase — always background
+`tm spawn --prompt`, `tm send`, `tm wait`, `tm resume --prompt`, and `tm ask` can block for a full model turn. Run them with `run_in_background: true` on the Bash tool so the dispatcher stays free; the harness fires a task notification when the verb returns.
 
-`tm spawn --prompt` and `tm send` (default mode) both block until the teammate's next Stop hook fires (`--timeout 600` cap). That is potentially minutes. **Every such call MUST run with `run_in_background: true` on the Bash tool** so the dispatcher stays free to handle other work; the harness fires a task-notification when the verb returns, with the reply text already in stdout. Foreground waits block the dispatcher end-to-end for nothing — there is no upside.
+Claude sync paths block until the teammate's next Stop hook fires (`--timeout 1800` default). Persistent Codex sync paths use the Codex driver and print the raw Turn JSON on stdout; `--pane-quiet` is rejected on Codex targets. `tm ask` prints one ephemeral Turn JSON and releases the borrowed daemon.
 
-## Three exit codes — `124` is NOT a failure
+## Exit codes for sync verbs
 
-Both verbs distinguish three outcomes:
+`tm spawn --prompt`, `tm send`, `tm wait`, and `tm compact` use the same high-level split:
 
-- **`0`** — the reply landed within `--timeout`; stdout is the reply.
-- **`124`** — sync wait expired, the teammate is **still running**. The first turn may finish moments later. **Do not respawn** — the teammate name is still taken, and a fresh `tm spawn` would just collide and report `already exists`. Collect the late reply with `tm wait <repo>` (run in background, same notification flow), or peek with `tm status <repo>`. This is the spurious-error class that used to look like "failure exit 1" before the exit-code split.
-- **`1`** — true failure: no tmux session, sid marker missing, sendKeys broke, repo path not under the dispatcher dir. The teammate is gone or never started; respawn is correct here.
+- **`0`** — the reply or completion signal landed within `--timeout`; stdout contains the reply, Turn JSON, or verb-specific success line.
+- **`124`** — sync wait expired and the teammate is still running. Do not respawn; the teammate name is still taken. Collect the late result with `tm wait <repo>` for Claude, or retry the relevant Codex wait/send flow after checking state.
+- **`1`** — true failure: no teammate, missing sid/thread marker, broken send path, invalid repo/name, or the command was rejected.
 
-The `tm spawn --prompt` path inherits these from its inner `tm send`. The stderr line on `124` always names the verb to retry with (`tm wait <repo>`); read it before deciding what to do.
+Read stderr before deciding the next step; timeout paths name the recovery verb when one applies.
 
-Fire-and-forget is no longer a first-class CLI option. The two historical use cases are handled differently now: `/clear` before `tm kill` is redundant (kill already clears the on-disk markers); slash-command fan-out (e.g. `/reload-plugins`) is handled internally by `tm reload`. External-actor-driven turns (Remote Control web UI, mobile, cron) are collected with `tm wait --fresh`, since there is no `tm send --no-wait` to drive them.
+## Current-state command rules
 
-## What `tm spawn` sets up under the hood
+- For reload fan-out across teammates, use `tm reload --all` or `tm reload <repo>...`.
+- For externally driven Claude turns (Remote Control web UI, mobile, cron, sub-agent), collect the next reply with `tm wait --fresh <repo>`; for Codex daemon turns, use `tm wait <name>`.
+- For stopping a teammate, use `tm kill <repo>`; it clears the matching on-disk state for that engine.
 
-When you `tm spawn <repo>`:
+## Claude tmux teammate setup
 
-1. **cwd** = `<dispatcher-dir>/<repo>`. The teammate's claude process is launched there via `tmux new-session -c`.
-2. **CLAUDE.md exclusions.** Without help, claude's upward memory walk from `<dispatcher-dir>/<repo>` would pick up the dispatcher's own `CLAUDE.md` / `CLAUDE.local.md` as "project instructions" — but those are dispatcher-only and would confuse the teammate. `tm spawn` passes `--settings` with `claudeMdExcludes` for exactly those two files; the target repo's own `CLAUDE.md` still loads normally.
-3. **Remote Control auto-registration.** The teammate's startup banner prints its own Remote Control URL (visible via `tm status <repo>`). The user can drive that teammate directly from claude.ai/code or mobile, in parallel with you.
-4. **sid pre-generation.** `tm` generates a UUID and hands it to `claude --session-id <uuid>` so the sid is known the moment spawn returns; written to `/tmp/teammate-<repo>.sid`. Sets up the idle/.last machinery wait phase relies on (see `wait-and-readback.md`).
-5. **`--task <slug>`** names the conversation `<repo>-<slug>` (visible in the prompt box / `/resume` picker / terminal title). Allowlist: `[a-z0-9]` + CJK Unified Ideographs (`--task 国际化` works). Without `--task`, a fresh spawn auto-names `<repo>-<rand4>`. Use this to stamp intent on the conversation so dispatcher-restart-then-resume can pick the right session.
+When you `tm spawn <repo>` on the default Claude engine:
 
-## The two reflexes to avoid
+1. **cwd** = `<dispatcher-dir>/<repo>`. The teammate's Claude process is launched there via `tmux new-session -c`.
+2. **CLAUDE.md exclusions.** The teammate loads the target repo's own `CLAUDE.md`, but not the dispatcher's `CLAUDE.md` / `CLAUDE.local.md`.
+3. **Remote Control auto-registration.** The teammate's startup banner prints its Remote Control URL, visible via `tm status <repo>`.
+4. **sid pre-generation.** `tm` generates a UUID, passes it to `claude --session-id <uuid>`, writes `/tmp/teammate-<repo>.sid`, and creates the idle/.last machinery used by waits.
+5. **Fresh `.last` sentinel.** A fresh spawn writes an empty `/tmp/claude-idle/<sid>.last`; `tm last` before any reply returns a clear "no reply yet" error instead of stale text.
+6. **AskUserQuestion disabled.** Teammates raise questions by ending the turn with text, which `tm send` / `tm spawn --prompt` relays back. Do not instruct the teammate to ask via that tool.
+7. **`--task <slug>`.** Names the conversation `<repo>-<slug>` for the prompt box, `/resume` picker, and terminal title. ASCII letters/digits plus CJK Unified Ideographs are accepted; ASCII letters are lowercased, other runs collapse to `-`, and the slug is capped at 30 code points. Without `--task`, a fresh spawn auto-names `<repo>-<rand4>`.
 
-- **Don't `tm spawn` then immediately `tm send`** for a bootstrap. `tm spawn --prompt "..."` does both atomically in one call and returns the first-turn reply on stdout. Two separate calls add a sleep + a second wait cycle for no benefit.
-- **Don't `cd <sibling-repo> && <cmd>`** to inspect a repo before dispatching to it. The Bash tool persists `cd` across invocations, so the next `tm` call (or any dispatcher Bash work) inherits the drifted cwd. With `TM_DISPATCHER_DIR` set, `tm` itself stays correct; but `grep`/`find`/raw `git log` still see the drift. Use `git -C <repo> <cmd>` for per-repo inspection, or `(cd <repo> && <cmd>)` as a subshell so the parent's PWD never moves. Confirm `TM_DISPATCHER_DIR` is set via `tm doctor`.
+## Persistent Codex daemon teammates
+
+Spawn persistent Codex explicitly:
+
+```bash
+tm spawn <name> --engine codex
+```
+
+Key differences from the Claude path:
+
+- Codex teammates are daemons under `/tmp/teammate-codex/<name>/`, not tmux sessions.
+- The name itself has no engine meaning; `codex-reviewer` is still a Claude teammate unless `--engine codex` is present.
+- If `<name>` matches a sibling subdirectory, the daemon cwd is that repo; otherwise it uses the dispatcher dir.
+- `--task` is rejected on Codex spawn.
+- `tm send <name> --prompt "..."` writes or resumes the daemon's persistent thread and prints raw Turn JSON.
+- `tm kill <name>` reaps the daemon and registry directory instead of killing a tmux session.
+
+Use this path when the user needs a named Codex teammate or resumable Codex thread. Use `tm ask` for throwaway Codex one-shots.
+
+## Codex pool one-shots: `tm ask`
+
+`tm ask "<prompt>"` borrows one alive idle Codex daemon, starts a fresh ephemeral thread, runs the prompt, prints the Turn JSON to stdout, and releases the daemon. It does not pollute the daemon's persistent conversation thread.
+
+Preconditions and failures:
+
+- At least one Codex daemon must already exist (`tm spawn <name> --engine codex`).
+- If every recorded daemon is dead, run `tm doctor` to reap stale state or spawn a new daemon.
+- If every alive daemon is borrowed, retry later or spawn one more daemon.
+
+## Two reflexes to avoid
+
+- **Don't `tm spawn` then immediately `tm send`** for a bootstrap. `tm spawn --prompt "..."` does both atomically in one call and returns the first-turn result on stdout.
+- **Don't `cd <sibling-repo> && <cmd>`** to inspect a repo before dispatching to it. The Bash tool persists `cd` across invocations. Use `git -C <repo> <cmd>` for per-repo inspection, or `(cd <repo> && <cmd>)` as a subshell. Confirm `TM_DISPATCHER_DIR` with `tm doctor`.
 
 ## Resuming a prior task
 
-If the user wants to continue a task whose teammate has died (dispatcher restarted, `tm kill`, Mac reboot), don't `tm spawn` a fresh session — that loses the prior context. Use `tm resume <repo> <sid-or-thread-id>` instead, with the id pulled from the active ledger or `tm history <repo>`. See `inspect-and-resume.md`.
+If the user wants to continue a task whose teammate has died (dispatcher restarted, `tm kill`, Mac reboot), use `tm resume <repo> <sid-or-thread-id>` with the id pulled from the active ledger or `tm history <repo>`. See `inspect-and-resume.md`.
 
 ## Recording the task in the ledger
 
-Every spawn that produces work worth tracking should append an entry to `active-dispatcher-tasks.md` at spawn time — the sid, branch, intent, and any artifact URLs you expect to fill later. Schema and entry shape live in `ledger-and-archive.md`. Skip this only for truly throwaway one-shot calls (e.g. a one-line "what's your branch?" probe).
+Every spawn that produces work worth tracking should append an entry to `active-dispatcher-tasks.md` at spawn time: sid/thread id when available, branch, intent, and artifacts you expect to fill later. Schema and entry shape live in `ledger-and-archive.md`. Skip this only for truly throwaway one-shot calls such as `tm ask` or a one-line "what's your branch?" probe.

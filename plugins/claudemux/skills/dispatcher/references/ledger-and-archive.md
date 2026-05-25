@@ -11,7 +11,7 @@ Both live in the dispatcher's AutoMemory directory (the directory whose absolute
 | `active-dispatcher-tasks.md` | In-flight tasks only, one `## Active` section. Small by construction. | **On dispatcher boot**, before any cross-task decision, and whenever the user asks "what's running" / "看看现在在跑啥". |
 | `dispatcher-tasks-archive.md` | Closed tasks, compressed. | **Never on boot.** On demand only — when the user asks about a past task or you need history to make a decision. |
 
-If either file doesn't exist yet, create it from the shape below. Minimal skeleton for `active-dispatcher-tasks.md`:
+If `active-dispatcher-tasks.md` doesn't exist yet, create it from this shape:
 
 ```markdown
 # Active dispatcher tasks
@@ -28,13 +28,7 @@ If either file doesn't exist yet, create it from the shape below. Minimal skelet
 - created: 2026-05-18T17:30:00+08:00
 ```
 
-Minimal skeleton for `dispatcher-tasks-archive.md`:
-
-```markdown
-# Dispatcher tasks archive
-
-(newest first; `tm archive` prepends here)
-```
+Let `tm archive` create `dispatcher-tasks-archive.md` when the first task closes; the verb seeds that file from its built-in template.
 
 ## Active entry schema
 
@@ -45,8 +39,8 @@ When you spawn delegated repo work (`tm spawn`, Agent teammate, or `claude -p`),
 | `id` | `t-<YYYYMMDD-HHMM>-<short-tag>` — short-tag is a 1-2 word slug of the intent |
 | `repo` | The repo's absolute path (a sibling subdirectory under the dispatcher dir) |
 | `branch` | `git -C <repo> branch --show-current` at spawn time |
-| `teammate` | tmux session name (`teammate-<repo>`) for tmux teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for `claude -p` |
-| `sid` | The teammate's Claude session id, or the Codex thread id when the teammate runs on Codex. For Claude tmux teammates: `cat /tmp/teammate-<repo>.sid`. For live Codex teammates: `cat /tmp/teammate-codex/<repo>/thread`. For Agent Teams: not applicable. This is the id `tm resume <repo> <id>` consumes when you come back to the task in a future dispatcher session — **record it while the teammate is live, not after it has died**. |
+| `teammate` | `teammate-<repo>` for Claude tmux teammates; Codex daemon name for Codex teammates; `<agent_id>@<team>` for Agent Teams teammates; short PID or none for `claude -p` |
+| `sid` | The Claude session id or Codex thread id when available. For Claude tmux teammates, read `/tmp/teammate-<repo>.sid`; Claude continue/resume may update it after SessionStart. For live Codex teammates, read `/tmp/teammate-codex/<name>/thread` after a thread has started; if it is absent, record `(pending)` and fill it after the first `tm send` or explicit resume. For Agent Teams, use `n/a`. This is the id `tm resume <repo-or-name> <id>` consumes in a future dispatcher session. |
 | `intent` | One short line — what the user actually asked for |
 | `artifacts` | URLs to any Dev Task / MR / Feishu doc as they appear (start empty, fill later) |
 | `created` | Timestamp at spawn |
@@ -72,6 +66,4 @@ An archive entry is a **pointer plus a conclusion**, not a knowledge store. The 
 
 If some analysis turns out to be durably reusable knowledge (not task-specific), promote it to its own `project` or `feedback` AutoMemory file instead of leaving it in the archive. The archive should stay scan-friendly.
 
-## The markdown files ARE the system
-
-There's no database behind these files. `tm archive` handles the mechanical move; for everything else (reading the ledger, fixing a field, editing active entries in place) Read + Edit them like any other text. Same Read/Edit tools, same conventions.
+Both files are plain markdown. Use Read/Edit for ledger inspection and in-place fixes; use `tm archive` for the active-to-archive move.

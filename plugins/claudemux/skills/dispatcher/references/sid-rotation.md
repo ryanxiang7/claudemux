@@ -21,7 +21,7 @@ Read this only when debugging `.sid` drift, a stuck `tm spawn`, or surprising `t
 
 On a both-gates pass, the hook overwrites `/tmp/teammate-<repo>.sid` with the new sid (handles `/clear` and interactive `/resume`) and touches `/tmp/teammate-<repo>.ready` (the spawn-readiness signal). `source=startup|compact|resume` with unchanged sid is a quiet no-op for the rotation step; readiness is touched regardless. All sid rotations are logged to `/tmp/claudemux-sid-changes.log` for audit.
 
-The env gate is what makes this safe in the edge case where the dispatcher's own cwd byte-equals a recorded `teammate.cwd` (e.g. when maintaining the claudemux plugin itself: running the dispatcher from `~/Development/claudemux` while also having spawned `tm spawn claudemux` from a parent directory at some point). Without the env gate, both sessions match the same `.cwd` file and the last SessionStart to fire wins. With it, only the `tm spawn`-launched teammate ever updates the sid pointer.
+The `/hooks` slash-command UI surfaces tool-related hooks, not Stop hooks. Do not conclude that Stop wiring is missing from that UI alone; check `~/.claude/settings.json` and watch `/tmp/claude-idle/<sid>` instead.
 
 ## Debugging checklist
 
