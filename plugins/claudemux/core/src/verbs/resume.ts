@@ -17,6 +17,7 @@
 
 import { hasClaudeHistoryForCwd } from '../engines/claude/history'
 import { hasCodexHistoryForCwd } from '../engines/codex/history'
+import { legacyCodexPrefixWarning } from '../identity/legacy-codex-prefix'
 import { formatResume } from './format'
 import { findCodexRolloutFile } from '../engines/codex/rollout'
 import { resolveTargetEngine } from './resolve'
@@ -57,7 +58,13 @@ async function dispatchResume(engine: Engine, args: ResumeArgs, ctx: VerbContext
     prompt: args.prompt,
     displayName: args.displayName,
   }
-  return formatResume(await engine.resume(req, ctx.engineContext))
+  // Resume's engine resolution is the only point we know the final engine
+  // kind for this teammate — wire the legacy-prefix warning here so it
+  // fires on every routing branch (--engine, checkpoint reverse-lookup,
+  // router, cwd probing) without duplicating the check at each callsite.
+  const warning = legacyCodexPrefixWarning('resume', args.name, engine.kind)
+  const result = formatResume(await engine.resume(req, ctx.engineContext))
+  return warning === '' ? result : { ...result, stderr: warning + result.stderr }
 }
 
 export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<TmResult> {

@@ -9,7 +9,13 @@
 
 import { formatHistory } from './format'
 import type { Engine } from '../engines/engine'
-import type { HistoryListEntry, HistoryRequest, HistoryResult, TeammateName } from '../engines/types'
+import type {
+  EngineKind,
+  HistoryListEntry,
+  HistoryRequest,
+  HistoryResult,
+  TeammateName,
+} from '../engines/types'
 import type { TmResult } from '../tm'
 import type { VerbContext } from './context'
 import { resolveTargetEngine } from './resolve'
@@ -59,6 +65,25 @@ function historyCandidateEngines(target: HistoryTarget, ctx: VerbContext): reado
   add(ctx.engines.get('codex'))
   add(target.engine)
   return engines
+}
+
+/**
+ * Detail-mode prefix → engine, when the UUID version digit is reachable
+ * inside the prefix. Claude sids are random UUIDv4 (`xxxxxxxx-xxxx-4xxx-...`);
+ * Codex thread ids are UUIDv7 (`xxxxxxxx-xxxx-7xxx-...`). Stripping `-` and
+ * inspecting the 13th hex char (index 12) gives the version regardless of
+ * whether the caller pasted the canonical dashed form or a raw hex run.
+ * Returns `null` when the prefix is too short to reach the version digit,
+ * or when the version digit is neither `4` nor `7` — both cases fall back
+ * to the existing dual-engine probe rather than silently misroute.
+ */
+function detailEngineFromPrefix(prefix: string): EngineKind | null {
+  const stripped = prefix.replace(/-/g, '')
+  if (stripped.length < 13) return null
+  const versionChar = stripped[12]
+  if (versionChar === '4') return 'claude'
+  if (versionChar === '7') return 'codex'
+  return null
 }
 
 function fmtSize(bytes: number): string {
@@ -116,6 +141,17 @@ export async function historyVerb(args: HistoryArgs, ctx: VerbContext): Promise<
   const req: HistoryRequest = { name: args.name, cwd: args.cwd, index: args.index }
 
   if (args.index !== null) {
+    // UUID-version short-circuit: when the prefix is long enough to expose
+    // the version digit (claude=v4, codex=v7), route to that one engine and
+    // skip the cross-engine probe. The other engine cannot hold a session
+    // whose id begins with the wrong version digit, so probing it would only
+    // walk a rollout tree that is guaranteed to miss.
+    const shortCircuit = detailEngineFromPrefix(args.index)
+    const shortCircuitEngine = shortCircuit !== null ? ctx.engines.get(shortCircuit) : undefined
+    if (shortCircuitEngine !== undefined) {
+      return raw(await shortCircuitEngine.history(req, ctx.engineContext))
+    }
+
     const engines = historyCandidateEngines(target, ctx)
     const results = await Promise.all(
       engines.map(async (engine) => ({ engine, result: await engine.history(req, ctx.engineContext) })),

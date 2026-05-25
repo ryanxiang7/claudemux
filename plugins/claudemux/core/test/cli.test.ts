@@ -396,7 +396,7 @@ describe('native dispatch', () => {
   })
 
   test('codex spawn --prompt prints the atomic first-turn result', async () => {
-    const name = 'codex-x'
+    const name = 'cdx-x'
     const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
     const registry = new EngineRegistry()
     registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
@@ -407,7 +407,7 @@ describe('native dispatch', () => {
       removeBaseRecord(name)
       const result = await runCli(['spawn', name, '--engine', 'codex', '--prompt', 'hi'], env)
       expect(result.code).toBe(0)
-      expect(result.stderr).toMatch(/^spawned: codex-x \(pid=\d+, socket=.*\)\n$/)
+      expect(result.stderr).toMatch(/^spawned: cdx-x \(pid=\d+, socket=.*\)\n$/)
       expect(result.stdout).toContain('fake reply: hi')
     } finally {
       await reapDaemon(name)
@@ -417,7 +417,7 @@ describe('native dispatch', () => {
   })
 
   test('codex spawn --prompt returns the first-turn failure instead of reporting success', async () => {
-    const name = `codex-failed-${Date.now()}`
+    const name = `cdx-failed-${Date.now()}`
     const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
     const registry = new EngineRegistry()
     registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
@@ -443,7 +443,7 @@ describe('native dispatch', () => {
   })
 
   test('codex spawn --prompt returns the first-turn sync-wait expiry instead of reporting success', async () => {
-    const name = `codex-timeout-${Date.now()}`
+    const name = `cdx-timeout-${Date.now()}`
     const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
     const registry = new EngineRegistry()
     registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
@@ -474,7 +474,7 @@ describe('native dispatch', () => {
   })
 
   test('codex spawn writes the base identity record so status and kill route through the identity router', async () => {
-    const name = `codex-router-${Date.now()}`
+    const name = `cdx-router-${Date.now()}`
     const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
     const registry = new EngineRegistry()
     registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
@@ -504,6 +504,104 @@ describe('native dispatch', () => {
       await reapDaemon(name)
       removeBaseRecord(name)
       rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('codex spawn surfaces the naming-style suggestion when the name uses the legacy `codex-` prefix', async () => {
+    // The suggestion is informational; the `codex-` shape is not
+    // reserved and is not on a removal path. Spawn must succeed
+    // unchanged and the line must read as a tip, not a deprecation.
+    const name = `codex-suggest-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const registry = new EngineRegistry()
+    registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
+    const env = fakeEnv({ dispatcherDir, engines: registry })
+
+    try {
+      await reapDaemon(name)
+      removeBaseRecord(name)
+      const spawned = await runCli(['spawn', name, '--engine', 'codex'], env)
+      expect(spawned.code).toBe(0)
+      expect(spawned.stderr).toContain(`tm spawn: note — name '${name}' uses the legacy 'codex-' prefix`)
+      expect(spawned.stderr).toContain(`the nested form 'codex/suggest-`)
+      expect(spawned.stderr).toContain('Both shapes are supported')
+      // No removal promise — anything stating a future hard error /
+      // deprecation would walk back the ADR's "name is a label" rule.
+      expect(spawned.stderr).not.toContain('hard error')
+      expect(spawned.stderr).not.toContain('deprecat')
+      // Behaviour unchanged: identity recorded as codex, daemon spawned.
+      expect(readIdentity(name)).toMatchObject({ name, engine: 'codex' })
+    } finally {
+      await reapDaemon(name)
+      removeBaseRecord(name)
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('codex spawn does not warn for nested `codex/...` names', async () => {
+    const name = `codex/nested-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    const registry = new EngineRegistry()
+    registry.register(new CodexEngine({ binPath: FAKE_CODEX, readyTimeoutMs: 5000 }))
+    const env = fakeEnv({ dispatcherDir, engines: registry })
+
+    try {
+      await reapDaemon(name)
+      removeBaseRecord(name)
+      const spawned = await runCli(['spawn', name, '--engine', 'codex'], env)
+      expect(spawned.code).toBe(0)
+      expect(spawned.stderr).not.toContain('legacy')
+      expect(spawned.stderr).not.toContain('deprecat')
+    } finally {
+      await reapDaemon(name)
+      removeBaseRecord(name)
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('claude spawn does not warn when the name happens to start with `codex-`', async () => {
+    // The warning is engine-scoped: a claude teammate with a `codex-` name
+    // is just an arbitrary label, not a misrouted codex teammate.
+    const repo = `codex-claude-only-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const runTmux: TmuxRunner = async () => ({ code: 0, stdout: '', stderr: '' })
+    const env = fakeEnv({ dispatcherDir, runTmux })
+
+    try {
+      const spawned = await runCli(['spawn', repo, '--engine', 'claude'], env)
+      expect(spawned.stderr).not.toContain('legacy')
+      expect(spawned.stderr).not.toContain('deprecat')
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('resume warns when routing a codex teammate whose name uses the legacy `codex-` prefix', async () => {
+    const name = `codex-resume-suggest-${Date.now()}`
+    writeBaseRecord(new CodexTeammateRecord({
+      name,
+      cwd: '/tmp',
+      createdAt: 1,
+      displayName: null,
+    }))
+    const registry = new EngineRegistry()
+    const fakeCodex = {
+      kind: 'codex',
+      resume: async () => ({ kind: 'resumed', checkpoint: '019e5f5f-2e57-7abc-8def-123456789ac7' }),
+    } as unknown as Engine
+    registry.register(fakeCodex)
+
+    try {
+      const result = await runCli(['resume', name], fakeEnv({ engines: registry }))
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe('resumed: 019e5f5f-2e57-7abc-8def-123456789ac7\n')
+      expect(result.stderr).toContain(`tm resume: note — name '${name}' uses the legacy 'codex-' prefix`)
+      expect(result.stderr).toContain('Both shapes are supported')
+      expect(result.stderr).not.toContain('hard error')
+      expect(result.stderr).not.toContain('deprecat')
+    } finally {
+      removeBaseRecord(name)
     }
   })
 
@@ -756,7 +854,7 @@ describe('native dispatch', () => {
   })
 
   test('resume routes an existing codex teammate through CodexEngine with null checkpoint', async () => {
-    const name = `codex-dispatch-resume-${Date.now()}`
+    const name = `cdx-dispatch-resume-${Date.now()}`
     writeBaseRecord(new CodexTeammateRecord({
       name,
       cwd: '/tmp',
@@ -924,6 +1022,152 @@ describe('native dispatch', () => {
       removeBaseRecord(name)
       rmSync(originalCwd, { recursive: true, force: true })
       rmSync(otherDispatcher, { recursive: true, force: true })
+    }
+  })
+
+  // ─── U7: history detail-mode prefix short-circuit ──────────────────
+  // Once the UUID version digit is exposed by the prefix (the 13th hex
+  // char with `-` stripped), the verb knows exactly one engine can hold
+  // a matching session — claude for v4, codex for v7. Probing the other
+  // engine would walk a session tree it cannot match. Short prefixes
+  // (no version digit reached) keep the dual-engine probe.
+  //
+  // Each test asserts which engines were called by counting calls on a
+  // fake claude + fake codex pair; the short-circuit asserts exactly
+  // one was called, the dual probe asserts both were.
+
+  test('history detail short-circuits to claude when prefix exposes a UUID v4 version digit', async () => {
+    const repo = `history-shortcircuit-v4-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const claudeCalls: string[] = []
+    const codexCalls: string[] = []
+    const fakeClaude = {
+      kind: 'claude',
+      history: async (req: { name: string; index: string | null }) => {
+        claudeCalls.push(req.index ?? '<null>')
+        return {
+          kind: 'list',
+          turns: [{ index: 0, startedAt: 0, summary: 'claude detail' }],
+          tmResult: { code: 0, stdout: 'claude detail\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; index: string | null }) => {
+        codexCalls.push(req.index ?? '<null>')
+        return {
+          kind: 'failed' as const,
+          message: 'should not be called',
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeClaude)
+    registry.register(fakeCodex)
+
+    try {
+      // 52778285-eab4-4 — 15 chars, strip-dashes index 12 is '4' (v4 → claude)
+      const prefix = '52778285-eab4-4'
+      const result = await runCli(['history', repo, prefix], fakeEnv({ dispatcherDir, engines: registry }))
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe('claude detail\n')
+      expect(claudeCalls).toEqual([prefix])
+      expect(codexCalls).toEqual([])
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('history detail short-circuits to codex when prefix exposes a UUID v7 version digit', async () => {
+    const repo = `history-shortcircuit-v7-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const claudeCalls: string[] = []
+    const codexCalls: string[] = []
+    const fakeClaude = {
+      kind: 'claude',
+      history: async (req: { name: string; index: string | null }) => {
+        claudeCalls.push(req.index ?? '<null>')
+        return {
+          kind: 'failed' as const,
+          message: 'should not be called',
+        }
+      },
+    } as unknown as Engine
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; index: string | null }) => {
+        codexCalls.push(req.index ?? '<null>')
+        return {
+          kind: 'list',
+          turns: [{ index: 0, startedAt: 0, summary: 'codex detail' }],
+          tmResult: { code: 0, stdout: 'codex detail\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeClaude)
+    registry.register(fakeCodex)
+
+    try {
+      // 019e5794-8c6f-7 — 15 chars, strip-dashes index 12 is '7' (v7 → codex)
+      const prefix = '019e5794-8c6f-7'
+      const result = await runCli(['history', repo, prefix], fakeEnv({ dispatcherDir, engines: registry }))
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe('codex detail\n')
+      expect(codexCalls).toEqual([prefix])
+      expect(claudeCalls).toEqual([])
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
+    }
+  })
+
+  test('history detail falls back to dual probe when prefix is too short for the version digit', async () => {
+    const repo = `history-shortcircuit-fallback-${Date.now()}`
+    const dispatcherDir = mkdtempSync('/tmp/cmxcli-dispatcher-')
+    mkdirSync(join(dispatcherDir, repo), { recursive: true })
+    const claudeCalls: string[] = []
+    const codexCalls: string[] = []
+    const fakeClaude = {
+      kind: 'claude',
+      history: async (req: { name: string; index: string | null }) => {
+        claudeCalls.push(req.index ?? '<null>')
+        // Empty list → no match on claude side; codex's match wins.
+        return {
+          kind: 'failed' as const,
+          message: `tm history: no session matching '${req.index}' in ${req.name}`,
+        }
+      },
+    } as unknown as Engine
+    const fakeCodex = {
+      kind: 'codex',
+      history: async (req: { name: string; index: string | null }) => {
+        codexCalls.push(req.index ?? '<null>')
+        return {
+          kind: 'detail',
+          turn: { index: 0, startedAt: 0, summary: req.index ?? '' },
+          items: [],
+          tmResult: { code: 0, stdout: 'codex detail (fallback)\n', stderr: '' },
+        }
+      },
+    } as unknown as Engine
+    const registry = new EngineRegistry()
+    registry.register(fakeClaude)
+    registry.register(fakeCodex)
+
+    try {
+      // 8 hex chars — strip length 8 < 13, version digit not reachable.
+      const prefix = '52778285'
+      const result = await runCli(['history', repo, prefix], fakeEnv({ dispatcherDir, engines: registry }))
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe('codex detail (fallback)\n')
+      // Both engines probed — that is the fallback path.
+      expect(claudeCalls).toEqual([prefix])
+      expect(codexCalls).toEqual([prefix])
+    } finally {
+      rmSync(dispatcherDir, { recursive: true, force: true })
     }
   })
 

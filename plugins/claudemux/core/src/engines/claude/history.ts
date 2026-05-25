@@ -261,7 +261,7 @@ function readHistoryData(content: string): HistoryData {
  * project directory does not exist; an empty array means it exists but has
  * no transcript files.
  */
-export function claudeHistoryListEntries(
+function claudeHistoryListEntries(
   repo: string,
   projectDir: string,
 ): readonly HistoryListEntry[] | null {
@@ -315,14 +315,36 @@ export function claudeHistoryListEntries(
 }
 
 /**
- * `tm history <repo>` — list a teammate repo's past Claude Code
- * sessions, one per transcript jsonl, newest first. The rows are built
- * natively and aligned by the real `column -t`.
+ * Both the formatted `TmResult` and the structured entries from one
+ * project-dir scan. The engine adapter consumes both halves; the bash-
+ * compatible `claudeHistory` entry point drops the entries and returns
+ * the `TmResult` only.
  */
-async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv): Promise<TmResult> {
+export interface ClaudeHistoryListResult {
+  readonly tmResult: TmResult
+  readonly entries: readonly HistoryListEntry[]
+}
+
+/**
+ * `tm history <repo>` — list a teammate repo's past Claude Code
+ * sessions, one per transcript jsonl, newest first. One project-dir
+ * walk produces both the structured entries (returned for engine-level
+ * consumers like `Engine.history`'s `HistoryResult.entries`) and the
+ * `column -t`-aligned text rows. Repo-missing surfaces as `{ tmResult:
+ * die..., entries: [] }`.
+ */
+export async function claudeHistoryList(repo: string, env: ClaudeVerbEnv): Promise<ClaudeHistoryListResult> {
+  const path = join(env.dispatcherDir, repo)
+  if (!isDirectory(path)) {
+    return { tmResult: dieRepoNotFound('history', repo, path, env.dispatcherDir), entries: [] }
+  }
+  const projectDir = projectDirForRepo(repo, env)
   const entries = claudeHistoryListEntries(repo, projectDir)
   if (entries === null || entries.length === 0) {
-    return { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' }
+    return {
+      tmResult: { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' },
+      entries: entries ?? [],
+    }
   }
   const now = Math.floor(Date.now() / 1000)
   const rows: string[][] = [[' ', 'ENGINE', 'ID', 'AGE', 'SIZE', 'TOPIC']]
@@ -336,7 +358,8 @@ async function historyList(repo: string, projectDir: string, env: ClaudeVerbEnv)
       entry.topic,
     ])
   }
-  return env.runColumn(`${rows.map((row) => row.join('\t')).join('\n')}\n`)
+  const tmResult = await env.runColumn(`${rows.map((row) => row.join('\t')).join('\n')}\n`)
+  return { tmResult, entries }
 }
 
 /**
@@ -466,12 +489,11 @@ export async function claudeHistory(args: readonly string[], env: ClaudeVerbEnv)
   const repo = args[0] ?? ''
   if (repo.length === 0) return die('usage: tm history <repo> [<sid-or-prefix>]')
 
+  const sidArg = args[1] ?? ''
+  if (sidArg === '') return (await claudeHistoryList(repo, env)).tmResult
+
   const path = join(env.dispatcherDir, repo)
   if (!isDirectory(path)) return dieRepoNotFound('history', repo, path, env.dispatcherDir)
-
   const projectDir = projectDirForRepo(repo, env)
-  const sidArg = args[1] ?? ''
-  return sidArg === ''
-    ? historyList(repo, projectDir, env)
-    : historyDetail(repo, projectDir, sidArg)
+  return historyDetail(repo, projectDir, sidArg)
 }

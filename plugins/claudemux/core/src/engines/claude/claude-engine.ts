@@ -55,11 +55,11 @@ import type { NativeEnv } from '../../env'
 import { claudeCompact } from './compact'
 import { claudeCtxLine, claudeCtxUsage } from './ctx'
 import { claudeDoctor } from './doctor'
-import { claudeHistory, claudeHistoryListEntries } from './history'
+import { claudeHistory, claudeHistoryList } from './history'
 import { claudeLast } from './last'
 import { claudeMem } from './mem'
 import { claudeReload } from './reload'
-import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
+import { dieRepoNotFound } from './repo-fs'
 import { claudeResume } from './resume'
 import { claudeSend } from './send'
 import { claudeSpawn } from './spawn'
@@ -472,23 +472,31 @@ export class ClaudeEngine implements Engine {
   }
 
   async history(req: HistoryRequest, _ctx: EngineContext): Promise<HistoryResult> {
-    const argv = [req.name]
-    if (req.index !== null) argv.push(req.index)
-    const result = await claudeHistory(argv, this.env)
-    if (result.code === 0) {
-      // Engine adapter still hands the raw text back via the `list` arm
-      // with one synthetic turn; a richer parse on the structured side
-      // is a separate change.
+    // List mode shares one project-dir walk with `claudeHistoryList`;
+    // detail mode keeps the path through `claudeHistory` (which itself
+    // routes to `historyDetail` after a single repo-dir check).
+    if (req.index === null) {
+      const { tmResult, entries } = await claudeHistoryList(req.name, this.env)
+      if (tmResult.code !== 0) {
+        return { kind: 'failed', message: rstrip(tmResult.stderr) || rstrip(tmResult.stdout), tmResult }
+      }
       return {
         kind: 'list',
-        turns: [{ index: Number(req.index ?? 0), startedAt: 0, summary: rstrip(result.stdout) }],
-        entries: req.index === null
-          ? claudeHistoryListEntries(req.name, projectDirForRepo(req.name, this.env)) ?? []
-          : undefined,
-        tmResult: result,
+        turns: [{ index: 0, startedAt: 0, summary: rstrip(tmResult.stdout) }],
+        entries,
+        tmResult,
       }
     }
-    return { kind: 'failed', message: rstrip(result.stderr) || rstrip(result.stdout), tmResult: result }
+    const result = await claudeHistory([req.name, req.index], this.env)
+    if (result.code !== 0) {
+      return { kind: 'failed', message: rstrip(result.stderr) || rstrip(result.stdout), tmResult: result }
+    }
+    return {
+      kind: 'list',
+      turns: [{ index: Number(req.index), startedAt: 0, summary: rstrip(result.stdout) }],
+      entries: undefined,
+      tmResult: result,
+    }
   }
 
   async mem(req: MemoryRequest, _ctx: EngineContext): Promise<TextResult> {
