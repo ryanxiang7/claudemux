@@ -289,7 +289,7 @@ includes `/tmp/teammate-<name>.cwd` (kept as plain text, so the
 SessionStart hook's `sed`-only fast path stays cheap),
 `/tmp/teammate-<name>.send-at` (touched for pane-quiet timing), and
 the Codex engine extension is the existing
-`/tmp/teammate-codex/<name>/{pid,socket,thread,started-at,last-seen,meta.json}`
+`/tmp/teammate-codex/<name>/{pid,socket,thread,started-at,last-seen,meta.json,last-turn.json}`
 tree.
 
 Hooks-managed files are **not** moved into the JSON. Bash hooks
@@ -316,6 +316,7 @@ same file). The hook-write set stays exactly as today:
 | `/tmp/teammate-codex/<name>/started-at` | Codex engine at spawn | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/last-seen` | Codex engine per round-trip | doctor | CodexTeammateRecord extension |
 | `/tmp/teammate-codex/<name>/meta.json` | Codex engine at spawn/resume | doctor, status | CodexTeammateRecord extension |
+| `/tmp/teammate-codex/<name>/last-turn.json` | Codex engine after a completed `send` / `wait` / prompt-spawn turn (atomic overwrite) | `tm last <name> --verbose`, post-hoc raw inspection | CodexTeammateRecord extension |
 | `~/.claude/projects/<encoded>/...` | Claude Code | `tm history`, Claude engine `ctx` | Claude Code product surface, **left as-is** |
 | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex CLI | Codex `tm last`, `tm ctx`, `tm history`, resume routing hint | Codex product surface, **left as-is** |
 
@@ -401,6 +402,14 @@ shape.
 are **always** atomic — one engine operation owns the prompt
 delivery, completion wait, and result extraction. `--no-wait` is
 removed from both verbs across both engines.
+
+The stdout/stderr split stays the same across engines: stdout is the
+assistant's final text, and status lines (`sent`, `sid` / Codex thread id,
+post-turn `ctx`, raw-inspection path) go to stderr. Codex does not print
+the raw app-server `Turn` envelope on `send`, `wait`, or prompt-spawn;
+it atomically overwrites `/tmp/teammate-codex/<name>/last-turn.json` and
+`tm last <name> --verbose` prints that raw envelope when the dispatcher
+needs it.
 
 `tm wait <name>` remains, for the case where a previous `send` or
 `spawn` aborted (timeout, transport drop) before reading the reply

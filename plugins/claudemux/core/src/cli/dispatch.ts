@@ -236,9 +236,21 @@ async function dispatchEngineVerb(
       )
     }
     case 'last': {
-      const name = rest[0] ?? ''
-      if (name.length === 0) return die('usage: tm last <repo>')
-      return lastVerb(name, ctx)
+      let name = ''
+      let verbose = false
+      for (const arg of rest) {
+        if (arg === '--verbose') {
+          verbose = true
+        } else if (arg.startsWith('--')) {
+          return die(`tm last: unknown option ${arg}`)
+        } else if (name.length === 0) {
+          name = arg
+        } else {
+          return die('usage: tm last <repo> [--verbose]')
+        }
+      }
+      if (name.length === 0) return die('usage: tm last <repo> [--verbose]')
+      return lastVerb(name, ctx, { verbose })
     }
     case 'ctx': {
       const parsed = parseCtxArgs(rest)

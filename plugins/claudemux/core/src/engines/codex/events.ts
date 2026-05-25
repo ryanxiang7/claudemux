@@ -3,18 +3,26 @@
  *
  * Codex sends a `turn/completed` envelope whose `turn.items` can be the empty
  * not-loaded husk; completed items arrive on the parallel `item/completed`
- * stream. This module is engine-private: callers above `CodexEngine` see only
- * a `TurnResult`, never the JSON-RPC notification stream.
+ * stream, and context usage arrives on `thread/tokenUsage/updated`.
+ * This module is engine-private: callers above `CodexEngine` see only a
+ * `TurnResult`, never the JSON-RPC notification stream.
  */
 
 import type { CodexWsClient } from './rpc.js'
 import type { ItemCompletedNotification } from '../../codex-protocol/v2/ItemCompletedNotification.js'
 import type { ThreadItem } from '../../codex-protocol/v2/ThreadItem.js'
+import type { ThreadTokenUsage } from '../../codex-protocol/v2/ThreadTokenUsage.js'
+import type { ThreadTokenUsageUpdatedNotification } from '../../codex-protocol/v2/ThreadTokenUsageUpdatedNotification.js'
 import type { TurnCompletedNotification } from '../../codex-protocol/v2/TurnCompletedNotification.js'
 import type { TurnStartResponse } from '../../codex-protocol/v2/TurnStartResponse.js'
 
+export interface CollectedTurn {
+  readonly completed: TurnCompletedNotification
+  readonly tokenUsage: ThreadTokenUsage | null
+}
+
 export interface TurnCollector {
-  awaitTurn(): Promise<TurnCompletedNotification>
+  awaitTurn(): Promise<CollectedTurn>
 }
 
 export function subscribeTurnCollection(
@@ -22,9 +30,10 @@ export function subscribeTurnCollection(
   threadId: string,
 ): TurnCollector {
   const itemsByTurn = new Map<string, ThreadItem[]>()
-  let cached: TurnCompletedNotification | null = null
-  let awaiting: Promise<TurnCompletedNotification> | null = null
-  let resolveTurn: ((turn: TurnCompletedNotification) => void) | null = null
+  const tokenUsageByTurn = new Map<string, ThreadTokenUsage>()
+  let cached: CollectedTurn | null = null
+  let awaiting: Promise<CollectedTurn> | null = null
+  let resolveTurn: ((turn: CollectedTurn) => void) | null = null
   let done = false
 
   const onResolve = (params: TurnCompletedNotification): void => {
@@ -34,9 +43,12 @@ export function subscribeTurnCollection(
       ...params,
       turn: { ...params.turn, items, itemsView },
     }
-    cached = merged
+    cached = {
+      completed: merged,
+      tokenUsage: tokenUsageByTurn.get(params.turn.id) ?? null,
+    }
     if (resolveTurn !== null) {
-      resolveTurn(merged)
+      resolveTurn(cached)
       resolveTurn = null
     }
   }
@@ -49,6 +61,10 @@ export function subscribeTurnCollection(
       const bucket = itemsByTurn.get(params.turnId) ?? []
       bucket.push(params.item)
       itemsByTurn.set(params.turnId, bucket)
+    } else if (notif.method === 'thread/tokenUsage/updated') {
+      const params = notif.params as ThreadTokenUsageUpdatedNotification
+      if (params.threadId !== threadId) return
+      tokenUsageByTurn.set(params.turnId, params.tokenUsage)
     } else if (notif.method === 'turn/completed') {
       const params = notif.params as TurnCompletedNotification
       if (params.threadId !== threadId) return
@@ -58,10 +74,10 @@ export function subscribeTurnCollection(
   })
 
   return {
-    awaitTurn(): Promise<TurnCompletedNotification> {
+    awaitTurn(): Promise<CollectedTurn> {
       if (cached !== null) return Promise.resolve(cached)
       if (awaiting !== null) return awaiting
-      awaiting = new Promise<TurnCompletedNotification>((res) => {
+      awaiting = new Promise<CollectedTurn>((res) => {
         resolveTurn = res
       })
       return awaiting
@@ -74,7 +90,7 @@ export async function runTurn(
   threadId: string,
   prompt: string,
   options: { wait: boolean; cwd: string | null },
-): Promise<TurnCompletedNotification | null> {
+): Promise<CollectedTurn | null> {
   const collector = options.wait ? subscribeTurnCollection(client, threadId) : null
 
   await client.request<'turn/start', TurnStartResponse>('turn/start', {

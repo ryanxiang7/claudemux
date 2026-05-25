@@ -7,8 +7,8 @@
  * not write any of these files.
  */
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import { TeammateRecord } from '../teammate-record'
 import type { EngineKind, TeammateName } from '../types'
@@ -33,6 +33,7 @@ export interface CodexTeammateExtension {
   stderrLog: string
   meta: string
   lock: string
+  lastTurn: string
 }
 
 export interface CodexMeta {
@@ -95,6 +96,26 @@ export function codexBorrowLockFile(name: TeammateName): string {
   return join(codexTeammateDir(name), 'lock')
 }
 
+export function codexLastTurnFile(name: TeammateName): string {
+  return join(codexTeammateDir(name), 'last-turn.json')
+}
+
+export function writeCodexLastTurn(name: TeammateName, json: string): void {
+  const path = codexLastTurnFile(name)
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  writeFileSync(tmp, json)
+  renameSync(tmp, path)
+}
+
+export function readCodexLastTurn(name: TeammateName): string | null {
+  try {
+    return readFileSync(codexLastTurnFile(name), 'utf8')
+  } catch {
+    return null
+  }
+}
+
 export function codexExtension(name: TeammateName): CodexTeammateExtension {
   const root = codexTeammateDir(name)
   return {
@@ -108,6 +129,7 @@ export function codexExtension(name: TeammateName): CodexTeammateExtension {
     stderrLog: codexStderrLogFile(name),
     meta: codexMetaFile(name),
     lock: codexBorrowLockFile(name),
+    lastTurn: codexLastTurnFile(name),
   }
 }
 
@@ -185,6 +207,7 @@ export class CodexTeammateRecord extends TeammateRecord {
       ext.stderrLog,
       ext.meta,
       ext.lock,
+      ext.lastTurn,
     ]
   }
 }

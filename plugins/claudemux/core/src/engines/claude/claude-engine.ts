@@ -453,6 +453,7 @@ export class ClaudeEngine implements Engine {
   }
 
   async last(req: LastRequest, _ctx: EngineContext): Promise<TextResult> {
+    if (req.verbose) return { kind: 'not-supported', reason: 'raw turn JSON is only available for codex teammates' }
     return claudeLast(req.name)
   }
 

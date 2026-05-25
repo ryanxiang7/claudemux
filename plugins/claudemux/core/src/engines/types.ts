@@ -195,6 +195,7 @@ export type ReloadResult =
 
 export interface LastRequest {
   readonly name: TeammateName
+  readonly verbose: boolean
 }
 
 export interface ContextRequest {

@@ -260,6 +260,34 @@ function bind() {
                 },
               },
             })
+            const totalTokens =
+              Number.parseInt(process.env.CODEX_FAKE_TOTAL_TOKENS ?? '1234', 10) || 1234
+            const contextWindow =
+              Number.parseInt(process.env.CODEX_FAKE_CONTEXT_WINDOW ?? '200000', 10) || 200000
+            sendJson({
+              method: 'thread/tokenUsage/updated',
+              params: {
+                threadId: params.threadId,
+                turnId,
+                tokenUsage: {
+                  total: {
+                    totalTokens,
+                    inputTokens: Math.max(0, totalTokens - 10),
+                    cachedInputTokens: 0,
+                    outputTokens: 10,
+                    reasoningOutputTokens: 0,
+                  },
+                  last: {
+                    totalTokens,
+                    inputTokens: Math.max(0, totalTokens - 10),
+                    cachedInputTokens: 0,
+                    outputTokens: 10,
+                    reasoningOutputTokens: 0,
+                  },
+                  modelContextWindow: contextWindow,
+                },
+              },
+            })
           }
           sendJson({
             method: 'turn/completed',

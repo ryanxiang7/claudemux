@@ -194,8 +194,9 @@ describe.skipIf(!probe.ok)('live codex driver — smoke (no turn spend)', () => 
 // run cannot accidentally spend credits — set
 // `CLAUDEMUX_CODEX_SPEND_TOKENS=1` to opt in. The assertions stay
 // permissive — exact reply text is the model's call, not ours — and only
-// pin contract-level facts: the round-trip completed, the JSON is well
-// formed, the borrow lock came and went, the daemon survived the call.
+// pin contract-level facts: the round-trip completed, stdout is not a raw
+// Turn dump, raw JSON is available on demand, the borrow lock came and
+// went, the daemon survived the call.
 const spendsTokens = process.env['CLAUDEMUX_CODEX_SPEND_TOKENS'] === '1'
 
 describe.skipIf(!probe.ok || !spendsTokens)('live codex driver — turn-spending (opt-in)', () => {
@@ -210,10 +211,17 @@ describe.skipIf(!probe.ok || !spendsTokens)('live codex driver — turn-spending
     await tm(['kill', name])
   })
 
-  test('tm send drives one turn and prints a Turn JSON to stdout', async () => {
+  test('tm send drives one turn, prints reply text, and stores raw Turn JSON out-of-band', async () => {
     const result = await tm(['send', name, '--prompt', 'Reply with the single word: PONG.'])
     expect(result.code, result.stderr).toBe(0)
-    const parsed = JSON.parse(result.stdout) as Record<string, unknown>
+    expect(result.stdout.trim().length).toBeGreaterThan(0)
+    expect(result.stdout).not.toMatch(/^\s*\{\s*"threadId"/)
+    expect(result.stderr).toContain(`sent to ${name} (codex)\n`)
+    expect(result.stderr).toMatch(/^sid=[0-9a-f-]+$/m)
+    expect(result.stderr).toContain(`raw: ${registryRoot}/${name}/last-turn.json\n`)
+    const raw = await tm(['last', name, '--verbose'])
+    expect(raw.code, raw.stderr).toBe(0)
+    const parsed = JSON.parse(raw.stdout) as Record<string, unknown>
     expect(parsed['threadId']).toBeTypeOf('string')
     expect(parsed['turn']).toBeTypeOf('object')
   }, 60000)

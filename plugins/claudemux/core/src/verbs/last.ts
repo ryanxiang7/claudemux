@@ -21,10 +21,14 @@ function formatLast(result: TextResult): TmResult {
   }
 }
 
-export async function lastVerb(name: TeammateName, ctx: VerbContext): Promise<TmResult> {
+export async function lastVerb(
+  name: TeammateName,
+  ctx: VerbContext,
+  options: { readonly verbose?: boolean } = {},
+): Promise<TmResult> {
   const engine = await resolveTargetEngine(name, ctx)
   if ('code' in engine) return engine
 
-  const req: LastRequest = { name }
+  const req: LastRequest = { name, verbose: options.verbose === true }
   return formatLast(await engine.last(req, ctx.engineContext))
 }

@@ -407,8 +407,11 @@ describe('native dispatch', () => {
       removeBaseRecord(name)
       const result = await runCli(['spawn', name, '--engine', 'codex', '--prompt', 'hi'], env)
       expect(result.code).toBe(0)
-      expect(result.stderr).toMatch(/^spawned: cdx-x \(pid=\d+, socket=.*\)\n$/)
-      expect(result.stdout).toContain('fake reply: hi')
+      expect(result.stderr).toMatch(/^spawned: cdx-x \(pid=\d+, socket=.*\)\n/)
+      expect(result.stderr).toContain(`sent to ${name} (codex)\n`)
+      expect(result.stderr).toContain('sid=thread-1\n')
+      expect(result.stderr).toContain('ctx: 1234 tokens · 0% of 200k\n')
+      expect(result.stdout).toBe('fake reply: hi\n')
     } finally {
       await reapDaemon(name)
       removeBaseRecord(name)

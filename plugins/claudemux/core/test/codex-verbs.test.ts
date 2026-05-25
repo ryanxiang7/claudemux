@@ -311,18 +311,18 @@ describe('subscribeTurnCollection — turn/item stream merge', () => {
     } as never)
 
     const resolved = await collector.awaitTurn()
-    expect(resolved.threadId).toBe('thread-1')
-    expect(resolved.turn.id).toBe('turn-A')
+    expect(resolved.completed.threadId).toBe('thread-1')
+    expect(resolved.completed.turn.id).toBe('turn-A')
     // The fix: items is populated from the stream, not the empty daemon husk.
-    expect(resolved.turn.items.length).toBe(2)
-    expect(resolved.turn.items[0]).toMatchObject({ type: 'agentMessage', text: 'hi' })
-    expect(resolved.turn.items[1]).toMatchObject({ type: 'reasoning' })
+    expect(resolved.completed.turn.items.length).toBe(2)
+    expect(resolved.completed.turn.items[0]).toMatchObject({ type: 'agentMessage', text: 'hi' })
+    expect(resolved.completed.turn.items[1]).toMatchObject({ type: 'reasoning' })
     // itemsView is flipped to "full" because the client now has every item
     // the daemon emitted for this turn — not the daemon's "notLoaded" status.
-    expect(resolved.turn.itemsView).toBe('full')
+    expect(resolved.completed.turn.itemsView).toBe('full')
     // Turn metadata (timing, status, error) carries through from turn/completed.
-    expect(resolved.turn.status).toBe('completed')
-    expect(resolved.turn.durationMs).toBe(1000)
+    expect(resolved.completed.turn.status).toBe('completed')
+    expect(resolved.completed.turn.durationMs).toBe(1000)
   })
 
   test('items addressed to a different thread or turn are ignored', async () => {
@@ -380,8 +380,58 @@ describe('subscribeTurnCollection — turn/item stream merge', () => {
     } as never)
 
     const resolved = await collector.awaitTurn()
-    expect(resolved.turn.items.length).toBe(1)
-    expect(resolved.turn.items[0]).toMatchObject({ id: 'm1', text: 'real' })
+    expect(resolved.completed.turn.items.length).toBe(1)
+    expect(resolved.completed.turn.items[0]).toMatchObject({ id: 'm1', text: 'real' })
+  })
+
+  test('token usage addressed to the same turn is returned with the merged turn', async () => {
+    const { client, emit } = makeFakeClient()
+    const collector = subscribeTurnCollection(client, 'thread-1')
+
+    emit({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-A',
+        tokenUsage: {
+          total: {
+            totalTokens: 4321,
+            inputTokens: 4311,
+            cachedInputTokens: 0,
+            outputTokens: 10,
+            reasoningOutputTokens: 0,
+          },
+          last: {
+            totalTokens: 4321,
+            inputTokens: 4311,
+            cachedInputTokens: 0,
+            outputTokens: 10,
+            reasoningOutputTokens: 0,
+          },
+          modelContextWindow: 200000,
+        },
+      },
+    } as never)
+    emit({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-A',
+          items: [],
+          itemsView: 'notLoaded',
+          status: 'completed',
+          error: null,
+          startedAt: 0,
+          completedAt: 1,
+          durationMs: 1,
+        },
+      },
+    } as never)
+
+    const resolved = await collector.awaitTurn()
+    expect(resolved.tokenUsage?.last.totalTokens).toBe(4321)
+    expect(resolved.tokenUsage?.modelContextWindow).toBe(200000)
   })
 
   test('a turn/completed with no observed items resolves with itemsView "notLoaded"', async () => {
@@ -413,8 +463,8 @@ describe('subscribeTurnCollection — turn/item stream merge', () => {
     } as never)
 
     const resolved = await collector.awaitTurn()
-    expect(resolved.turn.items.length).toBe(0)
-    expect(resolved.turn.itemsView).toBe('notLoaded')
+    expect(resolved.completed.turn.items.length).toBe(0)
+    expect(resolved.completed.turn.itemsView).toBe('notLoaded')
   })
 
   test('awaitTurn() is idempotent — a second call returns the same promise', async () => {

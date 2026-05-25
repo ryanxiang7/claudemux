@@ -50,11 +50,12 @@ export async function codexAsk(prompt: string): Promise<TmResult> {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
     })
-    const completed = await runTurn(client, resp.thread.id, prompt, { wait: true, cwd: null })
+    const outcome = await runTurn(client, resp.thread.id, prompt, { wait: true, cwd: null })
+    if (outcome === null) return die(`codex ask on '${borrowedName}' did not return a turn`)
     touchLastSeen(borrowedName)
     return {
       code: 0,
-      stdout: JSON.stringify(completed, null, 2) + '\n',
+      stdout: JSON.stringify(outcome.completed, null, 2) + '\n',
       stderr: '',
     }
   } catch (e) {

@@ -33,6 +33,7 @@ import {
 import {
   CodexTeammateRecord,
   codexBorrowLockFile,
+  codexLastTurnFile,
   codexPidFile,
   codexStartedAtFile,
   codexTeammateDir,
@@ -254,8 +255,20 @@ describe('CodexEngine — core lifecycle', () => {
     )
     expect(send.kind).toBe('completed')
     if (send.kind === 'completed') {
-      expect(send.text).toContain('fake reply: pong from codex')
+      expect(send.text).toBe('fake reply: pong from codex\n')
       expect(send.items).toContainEqual({ kind: 'assistant-text', text: 'fake reply: pong from codex' })
+      expect(send.tmResult?.stdout).toBe('fake reply: pong from codex\n')
+      expect(send.tmResult?.stderr).toContain(`sent to ${name} (codex)\n`)
+      expect(send.tmResult?.stderr).toContain('sid=thread-1\n')
+      expect(send.tmResult?.stderr).toContain('ctx: 1234 tokens · 0% of 200k\n')
+      expect(send.tmResult?.stderr).toContain(`raw: ${codexLastTurnFile(name)}\n`)
+    }
+    const rawLastTurn = JSON.parse(readFileSync(codexLastTurnFile(name), 'utf8')) as Record<string, unknown>
+    expect(rawLastTurn['threadId']).toBe('thread-1')
+    const rawLast = await engine.last({ name, verbose: true }, ctx())
+    expect(rawLast).toMatchObject({ kind: 'text' })
+    if (rawLast.kind === 'text') {
+      expect(JSON.parse(rawLast.text)['threadId']).toBe('thread-1')
     }
 
     const listing = await engine.list(ctx())
@@ -556,7 +569,7 @@ describe('CodexEngine — core lifecycle', () => {
       },
     ])
 
-    const last = await engine.last({ name }, ctx())
+    const last = await engine.last({ name, verbose: false }, ctx())
     expect(last).toEqual({ kind: 'text', text: 'camel agent message from rollout\n' })
 
     const context = await engine.ctx({ name, windowOverride: '' }, ctx())
@@ -578,7 +591,7 @@ describe('CodexEngine — core lifecycle', () => {
     const name = nameUnder()
     writeDaemonFiles(name, '019e-missing-rollout')
 
-    const last = await engine.last({ name }, ctx())
+    const last = await engine.last({ name, verbose: false }, ctx())
 
     expect(last).toMatchObject({
       kind: 'not-found',
@@ -963,9 +976,13 @@ describe('CodexEngine — core lifecycle', () => {
       )
       expect(wait.kind).toBe('completed')
       if (wait.kind === 'completed') {
-        expect(wait.text).toContain('turn-backfilled')
-        expect(wait.text).toContain('fake reply: backfilled')
+        expect(wait.text).toBe('fake reply: backfilled\n')
+        expect(wait.tmResult?.stderr).toContain(`waited on ${name} (codex)\n`)
       }
+      const raw = JSON.parse(readFileSync(codexLastTurnFile(name), 'utf8')) as {
+        turn?: { id?: unknown }
+      }
+      expect(raw.turn?.id).toBe('turn-backfilled')
     } finally {
       if (savedStatus === undefined) delete process.env['CODEX_FAKE_THREAD_READ_STATUS']
       else process.env['CODEX_FAKE_THREAD_READ_STATUS'] = savedStatus

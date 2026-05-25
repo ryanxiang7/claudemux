@@ -22,7 +22,7 @@ USAGE  (most common first)
   tm wait <repo> [--fresh]               wait for next Stop; print reply
   tm compact <repo>                      /compact + verify, prints "compacted"
   tm resume <repo> [<sid/thread-id>]     resume a prior conversation
-  tm last <repo>                         reprint the last-turn reply
+  tm last <repo> [--verbose]             reprint last reply; Codex raw turn with --verbose
   tm kill <repo>                         kill the teammate's tmux session
   tm reload <repo>... | --all            fan out /reload-plugins
   tm ls                                  list running teammate sessions
@@ -145,9 +145,13 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
 
       When <repo> is a codex teammate (recorded in the identity JSON),
       this verb routes into the codex driver: --prompt is
-      required, --timeout is accepted, the reply on stdout is the raw
-      Turn JSON, and --pane-quiet is rejected explicitly rather than
-      silently ignored.
+      required, --timeout is accepted, stdout is the final assistant
+      text (same pipe-friendly contract as Claude), stderr carries
+      sent/sid/ctx/raw-path status lines, and --pane-quiet is rejected
+      explicitly rather than silently ignored. The raw Codex Turn JSON
+      is atomically overwritten at
+      /tmp/teammate-codex/<name>/last-turn.json and can be read with
+      'tm last <repo> --verbose'.
 `,
   wait: `tm wait <repo> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]
 
@@ -223,12 +227,15 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       resumed teammate raises questions by ending its turn with
       text, not by opening a modal.
 `,
-  last: `tm last <repo>
+  last: `tm last <repo> [--verbose]
 
       Print the teammate's last-turn reply from
       /tmp/claude-idle/<sid>.last. Empty or missing file dies with
       "no reply yet". Use this when you want to re-read a reply the
       send/wait verbs already printed (their output is one-shot).
+      For a Codex teammate, --verbose prints the raw
+      /tmp/teammate-codex/<name>/last-turn.json instead of the
+      assistant-text summary.
 `,
   mem: `tm mem <repo>
 

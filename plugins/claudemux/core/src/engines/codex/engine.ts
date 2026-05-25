@@ -51,8 +51,9 @@ import type { ThreadListResponse } from '../../codex-protocol/v2/ThreadListRespo
 import type { ThreadReadResponse } from '../../codex-protocol/v2/ThreadReadResponse.js'
 import type { ThreadResumeResponse } from '../../codex-protocol/v2/ThreadResumeResponse.js'
 import type { ThreadStartResponse } from '../../codex-protocol/v2/ThreadStartResponse.js'
+import type { ThreadTokenUsage } from '../../codex-protocol/v2/ThreadTokenUsage.js'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
-import type { TurnCompletedNotification } from './events.js'
+import type { CollectedTurn, TurnCompletedNotification } from './events.js'
 import { codexHistory } from './history.js'
 import { CodexWsClient } from './rpc.js'
 import { runTurn, subscribeTurnCollection } from './events.js'
@@ -74,10 +75,13 @@ import {
 } from './supervisor.js'
 import {
   CodexTeammateRecord,
+  codexLastTurnFile,
   readBaseRecord,
   readCodexMeta,
+  readCodexLastTurn,
   removeBaseRecord,
   reserveBaseRecord,
+  writeCodexLastTurn,
 } from './persistence.js'
 import {
   type CodexRolloutSnapshot,
@@ -98,6 +102,8 @@ const COMPACT_REASON =
 const CODEX_STATUS_RPC_TIMEOUT_MS = 250
 const CODEX_THREAD_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const NO_TEXT_REPLY =
+  '(no text reply this turn — tool-only, /compact, /clear, or fresh spawn)'
 
 export interface CodexEngineOptions {
   readonly binPath?: string
@@ -135,6 +141,81 @@ function itemToInteractions(item: ThreadItem): readonly InteractionItem[] {
     ]
   }
   return [{ kind: 'system-note', text: JSON.stringify(item) }]
+}
+
+function finalAssistantText(items: readonly ThreadItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (item?.type !== 'agentMessage') continue
+    if (item.text.length === 0) continue
+    return item.text
+  }
+  return null
+}
+
+function ensureTrailingNewline(text: string): string {
+  return text.endsWith('\n') ? text : `${text}\n`
+}
+
+function fmtTokenWindow(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`
+  if (tokens >= 1000 && tokens % 1000 === 0) return `${tokens / 1000}k`
+  return String(tokens)
+}
+
+function contextFromThreadTokenUsage(tokenUsage: ThreadTokenUsage | null): ContextResult | null {
+  if (tokenUsage === null) return null
+  const window = tokenUsage.modelContextWindow
+  if (window === null || window <= 0) return null
+  const used = tokenUsage.last.totalTokens
+  return {
+    kind: 'usage',
+    tokensUsed: used,
+    tokensTotal: window,
+    pct: Math.floor((used * 100) / window),
+  }
+}
+
+function contextFromRollout(threadId: string, ctx: EngineContext): ContextResult | null {
+  const usage = readCodexRolloutSnapshot(threadId, ctx.env)?.tokenUsage ?? null
+  if (usage === null) return null
+  return {
+    kind: 'usage',
+    tokensUsed: usage.tokensUsed,
+    tokensTotal: usage.tokensTotal,
+    pct: usage.pct,
+  }
+}
+
+function contextForCollectedTurn(outcome: CollectedTurn, ctx: EngineContext): ContextResult | null {
+  return contextFromThreadTokenUsage(outcome.tokenUsage) ?? contextFromRollout(outcome.completed.threadId, ctx)
+}
+
+function formatCtxForStderr(context: ContextResult | null): string {
+  if (context?.kind !== 'usage') return 'ctx: (no usage data)\n'
+  return `ctx: ${context.tokensUsed} tokens · ${context.pct}% of ${fmtTokenWindow(context.tokensTotal)}\n`
+}
+
+function codexTurnStderr(args: {
+  readonly name: string
+  readonly action: 'sent' | 'waited'
+  readonly threadId: string
+  readonly context: ContextResult | null
+  readonly rawPath: string
+}): string {
+  const prefix = args.action === 'sent' ? `sent to ${args.name}` : `waited on ${args.name}`
+  return (
+    `${prefix} (codex)\n` +
+    `sid=${args.threadId}\n` +
+    formatCtxForStderr(args.context) +
+    `raw: ${args.rawPath}\n`
+  )
+}
+
+function writeLastTurn(name: string, completed: TurnCompletedNotification): string {
+  const rawPath = codexLastTurnFile(name)
+  writeCodexLastTurn(name, ensureTrailingNewline(JSON.stringify(completed, null, 2)))
+  return rawPath
 }
 
 /**
@@ -196,8 +277,15 @@ export function pickBackfillTurn(
   }
 }
 
-export function turnNotificationToResult(completed: TurnCompletedNotification): TurnResult {
-  const text = `${JSON.stringify(completed, null, 2)}\n`
+export function turnNotificationToResult(
+  completed: TurnCompletedNotification,
+  options: {
+    readonly name?: string
+    readonly action?: 'sent' | 'waited'
+    readonly context?: ContextResult | null
+    readonly rawPath?: string
+  } = {},
+): TurnResult {
   const items = completed.turn.items.flatMap((item) => itemToInteractions(item))
   if (completed.turn.status === 'failed') {
     return {
@@ -213,7 +301,26 @@ export function turnNotificationToResult(completed: TurnCompletedNotification): 
       recoverable: true,
     }
   }
-  return { kind: 'completed', text, items, context: null }
+  const text = ensureTrailingNewline(finalAssistantText(completed.turn.items) ?? NO_TEXT_REPLY)
+  const context = options.context ?? null
+  const base = { kind: 'completed' as const, text, items, context }
+  if (options.name === undefined || options.action === undefined || options.rawPath === undefined) {
+    return base
+  }
+  return {
+    ...base,
+    tmResult: {
+      code: 0,
+      stdout: text,
+      stderr: codexTurnStderr({
+        name: options.name,
+        action: options.action,
+        threadId: completed.threadId,
+        context,
+        rawPath: options.rawPath,
+      }),
+    },
+  }
 }
 
 async function withTimeout<T>(
@@ -540,7 +647,7 @@ export class CodexEngine implements Engine {
     }
   }
 
-  async send(req: SendRequest, _ctx: EngineContext): Promise<TurnResult> {
+  async send(req: SendRequest, ctx: EngineContext): Promise<TurnResult> {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) {
       return { kind: 'failed', message: invalidName, recoverable: false }
@@ -584,14 +691,20 @@ export class CodexEngine implements Engine {
         })
       }
 
-      const completed = await withTimeout(
+      const outcome = await withTimeout(
         runTurn(client, threadId, req.prompt, { wait: true, cwd: null }),
         req.timeoutMs,
       )
-      if (isTimedOut(completed)) return { kind: 'timed-out', elapsedMs: req.timeoutMs ?? 0 }
-      if (completed === null) return { kind: 'no-op', reason: 'turn was started without waiting' }
+      if (isTimedOut(outcome)) return { kind: 'timed-out', elapsedMs: req.timeoutMs ?? 0 }
+      if (outcome === null) return { kind: 'no-op', reason: 'turn was started without waiting' }
+      const rawPath = writeLastTurn(req.name, outcome.completed)
       touchLastSeen(req.name)
-      return turnNotificationToResult(completed)
+      return turnNotificationToResult(outcome.completed, {
+        name: req.name,
+        action: 'sent',
+        context: contextForCollectedTurn(outcome, ctx),
+        rawPath,
+      })
     } catch (e) {
       return {
         kind: 'failed',
@@ -604,7 +717,7 @@ export class CodexEngine implements Engine {
     }
   }
 
-  async wait(req: WaitRequest, _ctx: EngineContext): Promise<TurnResult> {
+  async wait(req: WaitRequest, ctx: EngineContext): Promise<TurnResult> {
     const invalidName = codexNameFailure(req.name)
     if (invalidName !== null) {
       return { kind: 'failed', message: invalidName, recoverable: false }
@@ -660,7 +773,7 @@ export class CodexEngine implements Engine {
       // The 124 contract — "still running, re-collect with tm wait" —
       // now actually holds for Codex: the second wait recovers the
       // in-window completion. If the wall-clock --timeout fires before
-      // the read RPC returns, control still reaches `isTimedOut(completed)`
+      // the read RPC returns, control still reaches `isTimedOut(outcome)`
       // and the caller gets the documented 124; the next `tm wait`
       // catches the completion via the same backfill path.
       //
@@ -668,26 +781,32 @@ export class CodexEngine implements Engine {
       // is the original (pre-backfill) source of truth, and a snapshot
       // failure should not turn a healthy wait into a failed verb. Swallow
       // the rejection and fall through to the collector.
-      const backfillRace: Promise<TurnCompletedNotification> = readPromise.then(
+      const backfillRace: Promise<CollectedTurn> = readPromise.then(
         (read) => {
           const backfill = pickBackfillTurn(read.thread.turns, lastSeen, threadId)
-          if (backfill !== null) return backfill
+          if (backfill !== null) return { completed: backfill, tokenUsage: null }
           return collector.awaitTurn()
         },
         () => collector.awaitTurn(),
       )
-      const completed = await withTimeout(
+      const outcome = await withTimeout(
         Promise.race([collector.awaitTurn(), backfillRace]),
         req.timeoutMs,
       )
-      if (isTimedOut(completed)) {
+      if (isTimedOut(outcome)) {
         // Swallow the readPromise rejection (if any) so the WS close in
         // `finally` does not race with an unhandled rejection.
         readPromise.catch(() => {})
         return { kind: 'timed-out', elapsedMs: req.timeoutMs ?? 0 }
       }
+      const rawPath = writeLastTurn(req.name, outcome.completed)
       touchLastSeen(req.name)
-      return turnNotificationToResult(completed)
+      return turnNotificationToResult(outcome.completed, {
+        name: req.name,
+        action: 'waited',
+        context: contextForCollectedTurn(outcome, ctx),
+        rawPath,
+      })
     } catch (e) {
       return {
         kind: 'failed',
@@ -903,6 +1022,11 @@ export class CodexEngine implements Engine {
   }
 
   async last(req: LastRequest, ctx: EngineContext): Promise<TextResult> {
+    if (req.verbose) {
+      const raw = readCodexLastTurn(req.name)
+      if (raw === null) return { kind: 'not-found', reason: `codex teammate '${req.name}' has no raw last turn` }
+      return { kind: 'text', text: ensureTrailingNewline(raw) }
+    }
     const threadId = readDaemonState(req.name)?.threadId ?? null
     if (threadId === null) return { kind: 'not-found', reason: `codex teammate '${req.name}' has no thread id` }
     const rollout = readCodexRolloutSnapshot(threadId, ctx.env)

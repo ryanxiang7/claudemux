@@ -21,13 +21,13 @@ Run `tm spawn --help`, `tm send --help`, and `tm ask --help` for the exact flag/
 
 `tm spawn --prompt`, `tm send`, `tm wait`, `tm resume --prompt`, and `tm ask` can block for a full model turn. Run them with `run_in_background: true` on the Bash tool so the dispatcher stays free; the harness fires a task notification when the verb returns.
 
-Claude sync paths block until the teammate's next Stop hook fires (`--timeout 1800` default). Persistent Codex sync paths use the Codex driver and print the raw Turn JSON on stdout; `--pane-quiet` is rejected on Codex targets. `tm ask` prints one ephemeral Turn JSON and releases the borrowed daemon.
+Claude sync paths block until the teammate's next Stop hook fires (`--timeout 1800` default). Persistent Codex sync paths use the Codex driver, print the final assistant text on stdout, and write the raw Turn JSON to `/tmp/teammate-codex/<name>/last-turn.json`; read it with `tm last <name> --verbose` when needed. `--pane-quiet` is rejected on Codex targets. `tm ask` prints one ephemeral Turn JSON and releases the borrowed daemon.
 
 ## Exit codes for sync verbs
 
 `tm spawn --prompt`, `tm send`, `tm wait`, and `tm compact` use the same high-level split:
 
-- **`0`** — the reply or completion signal landed within `--timeout`; stdout contains the reply, Turn JSON, or verb-specific success line.
+- **`0`** — the reply or completion signal landed within `--timeout`; stdout contains the reply text or verb-specific success line. `tm ask` is the Codex exception that still prints an ephemeral Turn JSON.
 - **`124`** — sync wait expired and the teammate is still running. Do not respawn; the teammate name is still taken. Collect the late result with `tm wait <repo>` for Claude, or retry the relevant Codex wait/send flow after checking state.
 - **`1`** — true failure: no teammate, missing sid/thread marker, broken send path, invalid repo/name, or the command was rejected.
 
@@ -65,7 +65,7 @@ Key differences from the Claude path:
 - The name itself has no engine meaning; `codex-reviewer` is still a Claude teammate unless `--engine codex` is present.
 - If `<name>` matches a sibling subdirectory, the daemon cwd is that repo; otherwise it uses the dispatcher dir.
 - `--task` is rejected on Codex spawn.
-- `tm send <name> --prompt "..."` writes or resumes the daemon's persistent thread and prints raw Turn JSON.
+- `tm send <name> --prompt "..."` writes or resumes the daemon's persistent thread, prints final assistant text on stdout, and reports `sent` / `sid` / `ctx` / `raw` status lines on stderr.
 - `tm kill <name>` reaps the daemon and registry directory instead of killing a tmux session.
 
 Use this path when the user needs a named Codex teammate or resumable Codex thread. Use `tm ask` for throwaway Codex one-shots.
