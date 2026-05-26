@@ -1,5 +1,15 @@
 # claudemux changelog
 
+## 1.0.0-beta.3 — 2026-05-26
+
+- (minor) promote dispatcher methodology workflows to shipped skill
+- (patch) i18n cleanup: translate Chinese trigger examples to English in dispatcher skill files
+- (patch) docs: clarify codex spawn cwd semantics and source-of-truth split between help and dispatcher skill (resolves #83)
+- (patch) fix dispatcher references: tm states sid column cannot disambiguate engines; codex compact 'not supported' writes to stderr
+- (patch) trim shipped dispatcher skill per PR #88 review: drop heterogeneous-review and heterogeneous-negotiation references, tighten SKILL.md (replace delegation-form table with three-verb picker, remove cron/local-notes/permission sections), drop tm ctx description from compact reference and routing table
+- (patch) merge SKILL.md verb-picker table into scenario routing
+- (minor) add .workspace/ for dispatcher personalization and intermediate artifacts
+
 ## 1.0.0-beta.2 — 2026-05-25
 
 - (patch) tm history list mode shows the full canonical sid/thread-id (was an 8-char prefix) — at both the cross-engine renderer and each engine's raw fallback path — so it pastes cleanly into tm resume; tm resume attaches an actionable "looks like a prefix" hint for both engines when the caller pastes a partial canonical-dashed id, replacing the misleading "wrong repo" error
