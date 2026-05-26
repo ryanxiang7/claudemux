@@ -1,0 +1,69 @@
+name: claudemux reset next pre
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: claudemux-reset-next-pre
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  reset:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/claudemux-ga-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: plugins/claudemux/pnpm-lock.yaml
+
+      - name: Install claudemux release tooling
+        run: pnpm --dir plugins/claudemux install --frozen-lockfile
+
+      - id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CLAUDEMUX_RELEASE_APP_ID }}
+          private-key: ${{ secrets.CLAUDEMUX_RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Re-enter beta pre mode on next
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          v=$(jq -r .version plugins/claudemux/package.json)
+          branch="release/claudemux-next-pre-$v"
+
+          git config user.name "claudemux-release-bot[bot]"
+          git config user.email "claudemux-release-bot[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git"
+
+          git checkout -B "$branch"
+          pnpm --dir plugins/claudemux changeset pre enter beta
+          git add plugins/claudemux/.changeset/pre.json
+          git commit -m "chore(release): re-enter beta pre mode (initialVersions=$v)"
+          git push --force-with-lease origin "$branch"
+
+          gh pr create \
+            --base next \
+            --head "$branch" \
+            --title "chore(release): re-enter beta pre mode ($v)" \
+            --body "Post-GA: next re-enters beta pre mode with initialVersions=$v."
+
+          gh pr merge --auto --squash "$branch"
