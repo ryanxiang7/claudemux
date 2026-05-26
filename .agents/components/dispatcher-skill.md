@@ -8,7 +8,7 @@ teammate 去 repo-a 跑测试") into the right delegation form and `tm` verb.
 
 | Path | Audience | Role |
 |---|---|---|
-| [`skills/dispatcher/SKILL.md`](/plugins/claudemux/skills/dispatcher/SKILL.md) | model | Always-loaded skeleton: scope check, delegation-form table, `tm` overview, scenario routing, shared invariants |
+| [`skills/dispatcher/SKILL.md`](/plugins/claudemux/skills/dispatcher/SKILL.md) | model | Always-loaded skeleton: scope check, `tm` overview, scenario routing, shared invariants |
 | `skills/dispatcher/references/*.md` | model, on demand | One file per scenario — the detailed flow for that scenario only |
 | [`templates/CLAUDE.md.template`](/plugins/claudemux/templates/CLAUDE.md.template) | model, always loaded | Copied into the dispatcher directory by `/claudemux:setup`; the dispatcher's durable identity + routing memory |
 | [`commands/setup.md`](/plugins/claudemux/commands/setup.md) | human → model | Body of the `/claudemux:setup` slash command — the guided onboarding flow |
@@ -29,7 +29,7 @@ agent reads exactly the one that applies. The references:
 | `inspect-and-resume.md` | Read `tm states`; look up / resume past Claude sessions and Codex threads |
 | `compact-a-teammate.md` | Check or compact a Claude teammate's context window |
 | `ledger-and-archive.md` | Append / archive the dispatcher task ledger |
-| `agent-teams.md` | Spawn an Agent Teams teammate |
+| `agent-teams.md` | Spawn an Agent Teams teammate (legacy reference — see SKILL.md for why this form is no longer surfaced as a dispatcher delegation option) |
 | `sid-rotation.md` | Diagnose `.sid` drift or a stuck Claude spawn |
 
 This skeleton/reference split was a size cut — see
@@ -50,22 +50,14 @@ inline steps into `SKILL.md`.
 - `commands/setup.md` **body** runs only after the human invokes
   `/claudemux:setup`. Write it as an execution guide for that one command.
 
-## Delegation forms
+## Delegation invariant
 
-The skill picks one outward execution form up front:
-
-| Form | Pick when |
-|---|---|
-| `claude -p` headless | One-shot repo task that finishes in one delegated turn |
-| `Agent` teammate (Agent Teams) | Parallel work across repos sharing a task list |
-| Claude tmux teammate (`tm spawn <repo>`) | Long-running Claude work needing a real TUI REPL, Remote Control, resume, or cron tied to that teammate |
-| Persistent Codex daemon teammate (`tm spawn <name> --engine codex`) | Long-running Codex work needing a named daemon and persistent thread |
-| Codex pool one-shot (`tm ask "..."`) | One Codex turn on a fresh ephemeral thread using an already-spawned idle Codex daemon |
-
-`CronCreate` fires reliably **only inside an interactive TUI REPL** — the
-dispatcher itself, or a Claude tmux teammate. `claude -p`, Agent Teams
-teammates, and Codex daemon teammates are not cron hosts. This drives the
-"keep cron on the dispatcher" default.
+The dispatcher orchestrates teammates exclusively through `tm`. Agent Teams
+and raw `claude -p` are intentionally not surfaced as dispatcher delegation
+forms; routing every teammate through the same `tm` verbs is what makes the
+ledger, identity record, and state-tracking machinery cover every teammate
+the same way. The scenario-routing table in `SKILL.md` is the up-to-date
+list of `tm` verbs and the reference each one belongs to.
 
 ## Editing rule
 
