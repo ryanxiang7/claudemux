@@ -66,6 +66,8 @@ REPL 里:
 /claudemux:setup
 ```
 
+`/claudemux:setup` 还会在 dispatcher 目录里建一个 `.workspace/`,放三个 personalization 文件(`persona.md` / `user-profile.md` / `principles.md`),每次 dispatcher session 启动都会 `@import` 进上下文;另外还有 `notes/`(长期手记)和 `artifacts/`(dispatcher 自动产生的中间产物)。setup 会引导你填,也可以跳过先生成空 stub 之后再编辑。详细布局看 dispatcher dir 下 `.workspace/README.md`。
+
 ## 快速上手
 
 直接说人话,`dispatcher` 技能会接住:

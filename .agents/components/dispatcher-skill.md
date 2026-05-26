@@ -10,9 +10,10 @@ teammate 去 repo-a 跑测试") into the right delegation form and `tm` verb.
 |---|---|---|
 | [`skills/dispatcher/SKILL.md`](/plugins/claudemux/skills/dispatcher/SKILL.md) | model | Always-loaded skeleton: scope check, `tm` overview, scenario routing, shared invariants |
 | `skills/dispatcher/references/*.md` | model, on demand | One file per scenario — the detailed flow for that scenario only |
-| [`templates/CLAUDE.md.template`](/plugins/claudemux/templates/CLAUDE.md.template) | model, always loaded | Copied into the dispatcher directory by `/claudemux:setup`; the dispatcher's durable identity + routing memory |
-| [`commands/setup.md`](/plugins/claudemux/commands/setup.md) | human → model | Body of the `/claudemux:setup` slash command — the guided onboarding flow |
-| [`scripts/setup.sh`](/plugins/claudemux/scripts/setup.sh) | executable | The dependency-check + CLAUDE.md-seed + settings step `/claudemux:setup` runs |
+| [`templates/CLAUDE.md.template`](/plugins/claudemux/templates/CLAUDE.md.template) | model, always loaded | Copied into the dispatcher directory by `/claudemux:setup`; the dispatcher's durable identity + routing memory. Contains a marker-bracketed `@.workspace/imports.md` import line at the top |
+| [`templates/workspace/`](/plugins/claudemux/templates/workspace/) | model + human | Seed tree for the dispatcher's `.workspace/`: personalization stubs (`profile/persona.md`, `profile/user-profile.md`, `profile/principles.md`), `imports.md` (the file `CLAUDE.md` imports — explains layout + imports the three profiles), `README.md`, and `notes/` + `artifacts/` placeholders |
+| [`commands/setup.md`](/plugins/claudemux/commands/setup.md) | human → model | Body of the `/claudemux:setup` slash command — the guided onboarding flow (Step 1.5 is workspace personalization) |
+| [`scripts/setup.sh`](/plugins/claudemux/scripts/setup.sh) | executable | The dependency-check + CLAUDE.md-seed + settings + `.workspace/` scaffold + `.workspace/` git init step `/claudemux:setup` runs |
 
 ## SKILL.md is a skeleton, references hold the steps
 

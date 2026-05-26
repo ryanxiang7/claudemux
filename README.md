@@ -69,6 +69,8 @@ In the REPL:
 /claudemux:setup
 ```
 
+`/claudemux:setup` also seeds a `.workspace/` directory in your dispatcher dir holding three personalization files (`persona.md`, `user-profile.md`, `principles.md`) that get imported into every dispatcher session, plus `notes/` and `artifacts/` for long-term notes and dispatcher-generated intermediate output. The setup walks you through filling them in; you can skip and edit later. See `.workspace/README.md` in your dispatcher dir after setup for full layout.
+
 ## Quick start
 
 Talk in plain language — the `dispatcher` skill picks up the intent:

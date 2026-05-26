@@ -71,6 +71,19 @@ jobs:
       - name: agents — KB structural check
         run: bash .agents/scripts/check.sh
 
+      - name: setup.sh conformance
+        # test-setup.sh git-inits a throwaway .workspace/ in each scenario.
+        # Runners without a default git identity would hit setup.sh's
+        # graceful "commit failed" path; setting an identity here forces
+        # the full init → commit chain to run, so a regression in the
+        # happy-path commit logic surfaces in CI.
+        env:
+          GIT_AUTHOR_NAME: claudemux-ci
+          GIT_AUTHOR_EMAIL: claudemux-ci@users.noreply.github.com
+          GIT_COMMITTER_NAME: claudemux-ci
+          GIT_COMMITTER_EMAIL: claudemux-ci@users.noreply.github.com
+        run: bash plugins/claudemux/scripts/test-setup.sh
+
       - name: bats — release tooling
         if: hashFiles('tests/cli/*.bats') != ''
         run: bats tests/cli/

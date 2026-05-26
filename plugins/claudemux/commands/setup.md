@@ -119,12 +119,75 @@ background; the setup report should hand off only the dispatcher start command.
 |---|---|---|
 | `[setup] wrote <path>/CLAUDE.md from template` | fresh install | continue |
 | `[setup] CLAUDE.md already matches template — skipping` | already set up | continue |
-| `[setup] CLAUDE.md exists and differs from template — leaving in place` | user has a customized `CLAUDE.md` | ask whether to keep it or overwrite with `--force`; if they choose overwrite, re-run the setup script with the same arguments plus `--force` |
+| `[setup] CLAUDE.md exists and differs from template — leaving in place` | customized `CLAUDE.md` without the workspace marker block | ask whether to inject the `@.workspace/imports.md` marker block at the top (body stays untouched). If yes, re-run with `--force` |
+| `[setup] injected @.workspace/imports.md marker block at the top of <path>` | `--force` added the workspace import line into a legacy CLAUDE.md | continue |
+| `[setup] <path> already has the workspace imports marker — skipping inject` | `--force` re-run on a CLAUDE.md that already has the block (idempotent) | continue |
 | `[setup] wrote <path>/.claude/settings.json with TM_DISPATCHER_DIR=...` | fresh write of settings.json | continue |
 | `[setup] merged TM_DISPATCHER_DIR=... into <path>/.claude/settings.json (other keys preserved)` | merged into a settings.json the user already had | continue |
 | `[setup] <path>/.claude/settings.json already has TM_DISPATCHER_DIR=... — skipping` | re-running setup; nothing to change | continue |
 | `[setup] updated TM_DISPATCHER_DIR in <path>/.claude/settings.json (<old> -> <new>)` | user moved the dispatcher dir; old value replaced | continue |
 | `setup.sh: failed to update <path>/.claude/settings.json (is it valid JSON?...)` | existing settings.json is corrupt | hand the user the suggested `jq .` command and stop |
+| `[setup] workspace imports: active (CLAUDE.md contains the marker block)` | dispatcher's CLAUDE.md does `@.workspace/imports.md`, so editing profile stubs takes effect immediately | **gate Step 1.5** — proceed with the personalization walk-through |
+| `[setup] workspace imports: inactive (CLAUDE.md is missing the marker block — run with --force to inject)` | legacy CLAUDE.md exists, marker not injected; profile stubs are inert | **gate Step 1.5** — skip the walk-through and tell the user they need `--force` first (see Step 1.5 below) |
+| `[setup] wrote <path>/.workspace/...` | new workspace stub written | continue |
+| `[setup] ensured <path>/.workspace/ exists with profile / notes / artifacts subdirs` | workspace tree present and verified | continue |
+| `[setup] <path>/.workspace is a symlink (-> <target>) — refusing to seed scaffold or git init` | user has a symlinked `.workspace/`; setup did not touch it | **gate Step 1.5** — skip personalization and tell the user to resolve the symlink and re-run |
+| `[setup] skipped .workspace/ git init (symlink)` | companion line to the above | continue |
+| `[setup] initialized <path>/.workspace/ as a git repo and committed the scaffold` | first-time `.workspace/` git init succeeded | continue |
+| `[setup] <path>/.workspace/ is already a git repo — skipping git init` | re-run; nothing to do | continue |
+| `[setup] git init OK in <path>/.workspace/, but the initial commit failed` | likely missing `user.email` / `user.name` or GPG prompt with no TTY (actual git stderr printed on the following `  git: …` lines) | surface the printed `git:` diagnostic and recovery hint verbatim; setup itself still succeeded |
+| `[setup] git init failed in <path>/.workspace/ — skipping` | rare filesystem / permission issue | note in the final report; non-fatal |
+| `[setup] git is not installed — skipping .workspace/ git init` | `git` missing on PATH | suggest installing git later; non-fatal |
+
+## Step 1.5: personalize the dispatcher (optional)
+
+**Before asking anything, gate this entire step on the workspace state setup.sh just printed.** Three branches, exactly one applies:
+
+1. `[setup] workspace imports: active (CLAUDE.md contains the marker block)` — proceed with the personalization walk-through below.
+2. `[setup] workspace imports: inactive (CLAUDE.md is missing the marker block — run with --force to inject)` — **skip the walk-through entirely**. Tell the user: ".workspace/ was seeded with stubs at .workspace/profile/{persona,user-profile,principles}.md, but the imports are inactive — your existing CLAUDE.md does not yet have the @.workspace/imports.md marker. Filling profiles now would have no effect on dispatcher sessions. Re-run /claudemux:setup with `--force` to inject the marker (your CLAUDE.md body is preserved), then come back here for personalization." Note this in Step 3 as `workspace personalization: pending — imports inactive, --force needed`.
+3. `[setup] <path>/.workspace is a symlink (-> <target>) — refusing to seed scaffold or git init` — **skip the walk-through entirely**. Tell the user: ".workspace/ is a symlink to <target>; setup did not touch it because the design contract is that .workspace/.git/ lives inside the dispatcher dir. Either remove the symlink (rm <path>/.workspace) and re-run setup, or manage the link-target directory by hand." Note this in Step 3 as `workspace: skipped (symlink)`.
+
+If branch 1 applies, continue with the walk-through. The dispatcher dir has HTML-comment-only stubs at `.workspace/profile/persona.md`, `.workspace/profile/user-profile.md`, and `.workspace/profile/principles.md`. Edited content gets imported into every dispatcher session via `.workspace/imports.md`; unedited stubs contribute nothing (HTML block comments are stripped from Claude Code context).
+
+**Ask in plain chat by default, not via `AskUserQuestion`.** `AskUserQuestion`'s modal does not render reliably on Claude Code Remote Control (web), the mobile app, or other non-TUI clients — the user may see only your follow-up text and never the modal options. Drop down to the modal only when you know the current client surfaces it (e.g., the user invoked `/claudemux:setup` directly in a TUI session you can observe). Phrase the prompt in the user's own language at runtime — the dispatcher knows it from prior context. Skeleton in English:
+
+> "Your dispatcher's `.workspace/profile/` has three empty stubs:
+>   - `persona.md` — how the dispatcher should talk to you (language, verbosity, tone).
+>   - `user-profile.md` — who you are, your role, your preferences.
+>   - `principles.md` — house rules, do's, don'ts.
+>  These get `@import`'d into `CLAUDE.md` via `.workspace/imports.md` every dispatcher session. Want to fill them in now? Reply with one of:
+>    1. **Walk me through it** — I'll ask three quick questions.
+>    2. **I'll fill them in later** — leave the stubs as-is; I'll print the paths.
+>    3. **Skip** — same as above; no difference.
+>  You can also edit the files directly any time. Write in whatever language you prefer — this is your local workspace, the 'CLAUDE.md must be English' rule does not apply here."
+
+If the user picks option 1, ask three questions in order:
+
+1. "How should the dispatcher talk to you? (language, verbosity, tone, formatting preferences)"
+2. "What should the dispatcher know about you? (role, expertise, preferred workflows)"
+3. "Any house rules you want the dispatcher to follow? (do's, don'ts, hard prohibitions)"
+
+After **each** answer, Write that answer into the matching profile file (overwriting the HTML-comment stub). Writing per-answer instead of batching means a mid-flow ctrl-C still keeps earlier answers durable on disk.
+
+**Idempotency for re-runs.** Before asking any question, inspect each `.workspace/profile/*.md`. If a file contains any non-blank line that is not inside `<!-- ... -->` HTML comments, treat that file as already filled and skip the matching question, reporting "<file>: already filled, leaving as-is" in the final report. Heuristic check (any line outside HTML comments that has non-whitespace content):
+
+```bash
+awk '
+  /<!--/ { in_comment = 1 }
+  /-->/  { in_comment = 0; next }
+  !in_comment && NF { print "non-comment content"; exit }
+' "$file"
+```
+
+If that prints anything, the file is filled.
+
+For the final report, surface workspace personalization state as one of:
+
+- "workspace personalization: seeded (persona / user-profile / principles)" — if all three were filled this run.
+- "workspace personalization: partial (filled: <list>, stubs: <list>)" — if only some.
+- "workspace personalization: stubs only at .workspace/profile/" — if the user skipped everything but imports are active.
+- "workspace personalization: pending — imports inactive, --force needed" — if branch 2 above applied.
+- "workspace: skipped (symlink)" — if branch 3 above applied.
 
 ## Step 2: offer to enable Remote Control
 
@@ -182,6 +245,9 @@ Print a short, human-facing summary:
   the next `claude` launch — the existing dispatcher session (if any) keeps
   its old env until restart. Once restarted, the dispatcher can run
   `tm doctor` to confirm the env is taking effect.
+- Workspace state: `.workspace/` seeded fresh / already existed (per-file lines from setup.sh). Always include the `.workspace/profile/` paths the user can edit later, even if all three were filled this run.
+- Workspace git: initialized + committed / already a git repo / git missing / commit pending (recovery hint).
+- Workspace personalization: seeded / partial / stubs only (as decided in Step 1.5).
 - Dependency state: all required binaries present.
 - Remote Control state: already on / enabled / manual step pending /
   skipped by user / failed with manual recovery.
@@ -200,8 +266,9 @@ End after this report. The next `claude` process is the dispatcher session.
 
 ## Re-running
 
-`/claudemux:setup` is fully idempotent: `setup.sh` skips writing `CLAUDE.md` when the existing copy already matches the template, `mkdir -p /tmp/claude-idle` is harmless on an existing dir, and the legacy-config cleanup is a no-op when nothing is left to remove. If the user later says "再跑一次 setup" / "再帮我配一下" / "verify the install", just re-run the command — no special handling needed.
+`/claudemux:setup` is fully idempotent: `setup.sh` skips writing `CLAUDE.md` when the existing copy already matches the template, never overwrites an existing `.workspace/` file, skips `git init` when `.workspace/.git/` already exists, `mkdir -p /tmp/claude-idle` is harmless on an existing dir, and the legacy-config cleanup is a no-op when nothing is left to remove. If the user later says "再跑一次 setup" / "再帮我配一下" / "verify the install", just re-run the command — no special handling needed. Step 1.5 re-asks only for profile files that are still stubs.
 
 The branch that needs user input is `setup.sh` reporting `CLAUDE.md exists and
-differs from template — leaving in place`: ask whether to overwrite with
-`--force` or keep the customized `CLAUDE.md`.
+differs from template — leaving in place`: ask whether to inject the
+`@.workspace/imports.md` marker block at the top with `--force` (body
+preserved) or leave the file untouched.

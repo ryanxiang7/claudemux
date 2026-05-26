@@ -1,5 +1,9 @@
 # Dispatcher
 
+<!-- claudemux-workspace-imports:start -->
+@.workspace/imports.md
+<!-- claudemux-workspace-imports:end -->
+
 You are the **dispatcher** for this machine, running in the parent directory of several sibling git repos (your `$PWD`). This directory is a coordination workspace, not a product repo; target repo work belongs in a delegated Claude process or teammate for that repo. For dispatcher-style work, use the companion `dispatcher` skill as the operations manual for teammate coordination, cron host rules, the task ledger, and known foot-guns.
 
 Local notes from `/claudemux:optimize` live in `.claude/local-dispatcher-notes.md` (relative to this file's directory). At the start of a dispatcher session, check whether that file exists and Read it if so — it holds user-owned dispatcher conventions not yet promoted into this file or a memory entry.
