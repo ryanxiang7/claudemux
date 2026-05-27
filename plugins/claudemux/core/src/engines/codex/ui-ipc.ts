@@ -5,6 +5,9 @@ import { join } from 'node:path'
 
 export const CODEX_UI_IPC_VERSION = 0
 const INITIALIZING_CLIENT_ID = 'initializing-client'
+const BROADCAST_METHOD_VERSIONS = new Map<string, number>([
+  ['thread-stream-state-changed', 6],
+])
 
 type PendingResponse = {
   readonly method: string
@@ -166,7 +169,7 @@ export class CodexUiIpcClient {
     this.send({
       type: 'broadcast',
       sourceClientId: this.requireClientId(),
-      version: CODEX_UI_IPC_VERSION,
+      version: ipcMethodVersion(method),
       method,
       params,
     })
@@ -321,6 +324,10 @@ function extractClientId(result: unknown): string | null {
   if (typeof result !== 'object' || result === null) return null
   const clientId = (result as { clientId?: unknown }).clientId
   return typeof clientId === 'string' && clientId.length > 0 ? clientId : null
+}
+
+function ipcMethodVersion(method: string): number {
+  return BROADCAST_METHOD_VERSIONS.get(method) ?? CODEX_UI_IPC_VERSION
 }
 
 function errorMessage(value: unknown): string | null {

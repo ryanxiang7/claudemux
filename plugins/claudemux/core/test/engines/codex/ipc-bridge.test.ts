@@ -280,6 +280,55 @@ describe('codex UI IPC bridge', () => {
     client.close()
   })
 
+  test('uses Codex method versions on outgoing stream broadcasts', async () => {
+    const dir = mkdtempSync('/tmp/cmxipc-')
+    tempDirs.push(dir)
+    const socketPath = join(dir, 'ipc.sock')
+    const received: Record<string, unknown>[] = []
+    const server = createServer((socket: Socket) => {
+      const parser = { buffer: Buffer.alloc(0) }
+      socket.on('data', (chunk) => {
+        parseFrames(chunk, parser, (env) => {
+          received.push(env)
+          if (env['method'] !== 'initialize') return
+          socket.write(frame({
+            type: 'response',
+            requestId: env['requestId'],
+            resultType: 'success',
+            method: 'initialize',
+            result: { clientId: 'client-1' },
+          }))
+        })
+      })
+    })
+    servers.push(server)
+    await listen(server, socketPath)
+
+    const client = new CodexUiIpcClient({
+      socketPath,
+      clientType: 'test-client',
+      canHandle: async () => false,
+      handleRequest: async () => ({}),
+    })
+
+    await expect(client.connect()).resolves.toBe('client-1')
+    client.broadcast('thread-stream-state-changed', {
+      conversationId: 'thread-1',
+      hostId: 'local',
+      change: { type: 'snapshot', conversationState: {} },
+      version: 6,
+    })
+
+    await waitFor(() => received.some((env) => env['type'] === 'broadcast'))
+    const broadcast = received.find((env) => env['type'] === 'broadcast')
+    expect(broadcast).toMatchObject({
+      type: 'broadcast',
+      method: 'thread-stream-state-changed',
+      version: 6,
+    })
+    client.close()
+  })
+
   test('rebroadcasts snapshots when a new UI client connects', () => {
     const bridge = makeBridgeInternals()
     bridge.ipcClient = { id: 'bridge-client' }
