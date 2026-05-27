@@ -1,5 +1,12 @@
 # claudemux
 
+## 1.0.0-beta.5
+
+### Patch Changes
+
+- 50ea451: fix Codex UI IPC live snapshot broadcasts by sending the method schema version
+- d7515cf: switch next beta release workflow to direct push without GitHub App credentials
+
 ## 1.0.0-beta.4
 
 ### Minor Changes

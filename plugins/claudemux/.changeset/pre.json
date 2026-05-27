@@ -7,8 +7,10 @@
   "changesets": [
     "codex-ipc-bridge",
     "cute-lamps-brush",
+    "fix-codex-ipc-broadcast-version",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
+    "release-next-direct-push",
     "swift-balloons-search"
   ]
 }
