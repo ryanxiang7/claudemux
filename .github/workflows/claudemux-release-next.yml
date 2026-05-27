@@ -9,7 +9,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   release:
@@ -33,26 +32,20 @@ jobs:
       - name: Install claudemux release tooling
         run: pnpm --dir plugins/claudemux install --frozen-lockfile
 
-      - id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.CLAUDEMUX_RELEASE_APP_ID }}
-          private-key: ${{ secrets.CLAUDEMUX_RELEASE_APP_PRIVATE_KEY }}
-
-      - id: changesets
-        uses: changesets/action@v1
-        with:
-          cwd: plugins/claudemux
-          branch: next
-          title: "chore(release): claudemux beta"
-          commit: "chore(release): claudemux beta"
-          version: pnpm version-packages
-          github-token: ${{ steps.app-token.outputs.token }}
+      - name: Version and push if changesets exist
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-
-      - name: Enable auto-merge for the release PR
-        if: steps.changesets.outputs.pullRequestNumber != ''
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh pr merge "${{ steps.changesets.outputs.pullRequestNumber }}" --auto --squash
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd plugins/claudemux
+          # check if there are any changesets to consume
+          if [ -z "$(ls .changeset/*.md 2>/dev/null | grep -v README.md)" ]; then
+            echo 'No changesets found, skipping bump.'
+            exit 0
+          fi
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git config user.name 'github-actions[bot]'
+          pnpm version-packages
+          git add -A
+          git diff --staged --quiet && echo 'Nothing to commit.' && exit 0
+          git commit -m 'chore(release): claudemux beta'
+          git push
