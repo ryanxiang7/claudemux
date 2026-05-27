@@ -74,17 +74,39 @@ function teammateLaunchFlags(mdExcludes: string): string {
 }
 
 /**
- * Run `tm spawn`'s readiness poll: block until `<name>.ready` appears
- * or 18s (60 × 0.3s) elapse. Returns the ms it took to fire, or `null`
- * on timeout — the caller prints the verb's stderr accordingly.
+ * The maximum time `tm spawn` blocks waiting for the SessionStart hook
+ * to touch `<name>.ready`. 36s comfortably covers the slowest cold boot
+ * observed for `claude` on Opus 4.7 with a 1M context window and a
+ * stack of user-scope plugins (~19s on the reporter's machine), while
+ * still being short enough that "claude is definitely wedged" is the
+ * only thing this bound can legitimately mask.
  */
-async function pollReady(name: string): Promise<number | null> {
+export const READY_POLL_BUDGET_MS = 36_000
+export const READY_POLL_INTERVAL_MS = 300
+
+/**
+ * Run `tm spawn`'s readiness poll: block until `<name>.ready` appears
+ * or `READY_POLL_BUDGET_MS` elapse. Returns the ms it took to fire, or
+ * `null` on timeout — the caller prints the verb's stderr accordingly.
+ *
+ * The loop is deadline-based, not iteration-count-based: a count loop
+ * that does `existsSync → sleep` for N iterations only covers the
+ * window `[0, N * INTERVAL)` — a ready file that appears in the final
+ * `INTERVAL` ms before the deadline is missed because the loop returns
+ * `null` without doing the trailing `existsSync`. Here, every iteration
+ * does `existsSync` first; the deadline check decides whether to sleep
+ * and loop or give up. The final `existsSync` at `t ≈ BUDGET_MS` is the
+ * one that catches a ready file landing just under the budget.
+ */
+export async function pollReady(name: string): Promise<number | null> {
   const rf = readyFile(name)
-  for (let i = 1; i <= 60; i++) {
-    if (existsSync(rf)) return i * 300
-    await sleepMs(300)
+  const start = Date.now()
+  const deadline = start + READY_POLL_BUDGET_MS
+  for (;;) {
+    if (existsSync(rf)) return Date.now() - start
+    if (Date.now() >= deadline) return null
+    await sleepMs(READY_POLL_INTERVAL_MS)
   }
-  return null
 }
 
 /**
@@ -293,14 +315,14 @@ async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<
   if (readyAfter !== null) {
     stderr += `ready: ${repo} (tmux=${name}, SessionStart fired after ~${readyAfter} ms)\n`
   } else {
+    const budgetSec = Math.round(READY_POLL_BUDGET_MS / 1000)
     stderr +=
-      `WARN: ${repo} (tmux=${name}) did not signal ready within 18s ` +
-      "(no SessionStart hook fire — the plugin's on-session-start.sh may not " +
-      'be loaded, or claude failed to boot). Continuing, but if the REPL is ' +
-      "actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / " +
-      "'tm compact' will block until its --timeout expires (default 1800s) " +
-      `and then exit ${EXIT_SYNC_WAIT_EXPIRED} (sync wait expired). ` +
-      `'tm status ${repo}' shows the live pane if you need to verify.\n`
+      `WARN: ${repo} (tmux=${name}) has not signalled ready in ${budgetSec}s. ` +
+      'claude may still be starting (1M context, plugin discovery) or wedged ' +
+      "on a permission dialog — the verb continues. A subsequent sync 'tm send' / " +
+      "'tm spawn --prompt' / 'tm compact' will surface a real hang: it blocks " +
+      `until its --timeout expires (default 1800s) and exits ${EXIT_SYNC_WAIT_EXPIRED} ` +
+      `(sync wait expired). 'tm status ${repo}' shows the live pane if you need to verify.\n`
   }
 
   if (!hasPrompt) {

@@ -148,8 +148,8 @@ describe('readLastAssistantText — pre-fix the resume seed source-of-truth', ()
 describe('claudeSpawn — `.last` seeding on resume', () => {
   // Fake tmux runner: respond ok to `new-session` (returning a synthetic
   // pane id) and to `send-keys` (and as a side effect, touch the ready
-  // file so `pollReady` returns on its first iteration without the full
-  // 18s wait). All other tmux invocations get a no-op success.
+  // file so `pollReady` returns on its first iteration without paying the
+  // full ready-poll budget). All other tmux invocations get a no-op success.
   function makeRunTmux(repo: string): (
     args: readonly string[],
   ) => Promise<TmuxResult> {

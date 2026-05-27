@@ -9,7 +9,7 @@ Read this only when debugging `.sid` drift, a stuck `tm spawn`, or surprising `t
 
 ## Spawn readiness
 
-`tm spawn` pre-removes `/tmp/teammate-<repo>.ready`, launches `tmux`+`claude`, then polls that file (60 × 0.3 s = 18 s cap) before returning. The SessionStart hook touches the file the moment the new claude session signals start — typically 2–4 s on a warm Mac — and the poll returns the moment it lands. On timeout, spawn prints a `WARN` and returns anyway so the caller can probe with `tm send` and get a real error if claude failed to boot. The file is per-repo (not per-sid) and lives outside the `/tmp/claude-idle/` namespace.
+`tm spawn` pre-removes `/tmp/teammate-<repo>.ready`, launches `tmux`+`claude`, then polls that file (120 × 0.3 s = 36 s cap) before returning. The SessionStart hook touches the file the moment the new claude session signals start — typically 2–4 s on a warm Mac, and up to ~19 s for an Opus 4.7 cold boot with a 1M context window and a stack of user-scope plugins. The poll returns the moment the file lands. On timeout, spawn prints a `WARN` describing what it observed (claude has not signalled ready yet) and returns anyway so the caller can probe with `tm send` and get a real error if claude is actually wedged. The file is per-repo (not per-sid) and lives outside the `/tmp/claude-idle/` namespace.
 
 ## `/clear` and sid rotation
 

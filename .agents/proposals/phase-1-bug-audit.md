@@ -33,6 +33,11 @@ codex prefix > SessionStart hook > MCP > anything else.
 
 ## B. SessionStart hook "did not fire" warning is a false alarm
 
+> **Status:** landed. `READY_POLL_BUDGET_MS` in
+> [`plugins/claudemux/core/src/engines/claude/spawn.ts`](/plugins/claudemux/core/src/engines/claude/spawn.ts)
+> is now 36s (120 × 300 ms) and the timeout copy describes what was
+> actually observed instead of guessing a load failure.
+
 - **Observation.** `tm spawn claudemux-doc` printed
   `WARN: claudemux-doc … did not signal ready within 18s (no SessionStart
   hook fire — the plugin's on-session-start.sh may not be loaded …)`. The
