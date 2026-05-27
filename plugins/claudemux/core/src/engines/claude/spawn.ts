@@ -81,22 +81,32 @@ function teammateLaunchFlags(mdExcludes: string): string {
  * still being short enough that "claude is definitely wedged" is the
  * only thing this bound can legitimately mask.
  */
-const READY_POLL_BUDGET_MS = 36_000
-const READY_POLL_INTERVAL_MS = 300
+export const READY_POLL_BUDGET_MS = 36_000
+export const READY_POLL_INTERVAL_MS = 300
 
 /**
  * Run `tm spawn`'s readiness poll: block until `<name>.ready` appears
  * or `READY_POLL_BUDGET_MS` elapse. Returns the ms it took to fire, or
  * `null` on timeout — the caller prints the verb's stderr accordingly.
+ *
+ * The loop is deadline-based, not iteration-count-based: a count loop
+ * that does `existsSync → sleep` for N iterations only covers the
+ * window `[0, N * INTERVAL)` — a ready file that appears in the final
+ * `INTERVAL` ms before the deadline is missed because the loop returns
+ * `null` without doing the trailing `existsSync`. Here, every iteration
+ * does `existsSync` first; the deadline check decides whether to sleep
+ * and loop or give up. The final `existsSync` at `t ≈ BUDGET_MS` is the
+ * one that catches a ready file landing just under the budget.
  */
-async function pollReady(name: string): Promise<number | null> {
+export async function pollReady(name: string): Promise<number | null> {
   const rf = readyFile(name)
-  const attempts = Math.ceil(READY_POLL_BUDGET_MS / READY_POLL_INTERVAL_MS)
-  for (let i = 1; i <= attempts; i++) {
-    if (existsSync(rf)) return i * READY_POLL_INTERVAL_MS
+  const start = Date.now()
+  const deadline = start + READY_POLL_BUDGET_MS
+  for (;;) {
+    if (existsSync(rf)) return Date.now() - start
+    if (Date.now() >= deadline) return null
     await sleepMs(READY_POLL_INTERVAL_MS)
   }
-  return null
 }
 
 /**
