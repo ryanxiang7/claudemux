@@ -10,6 +10,7 @@
     "codex-ipc-follower-controls",
     "cute-lamps-brush",
     "fix-codex-ipc-broadcast-version",
+    "fix-cron-host-rule",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
     "release-next-app-token",

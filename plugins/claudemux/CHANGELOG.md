@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.8
+
+### Patch Changes
+
+- 413b638: fix: correct cron host rule — `tm`-spawned Claude tmux sessions can also host CronCreate jobs; only `claude -p` and Agent Teams subagents silently fail to fire
+
 ## 1.0.0-beta.7
 
 ### Patch Changes
