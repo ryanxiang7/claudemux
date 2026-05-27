@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.6
+
+### Patch Changes
+
+- dba2a9b: raise `tm spawn`'s SessionStart readiness poll budget from 18s to 36s and rewrite the timeout WARN copy to describe what was actually observed instead of guessing a hook load failure
+
 ## 1.0.0-beta.5
 
 ### Patch Changes
