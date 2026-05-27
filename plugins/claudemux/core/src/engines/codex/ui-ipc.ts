@@ -54,10 +54,7 @@ interface IpcBroadcastEnvelope {
 interface IpcDiscoveryRequestEnvelope {
   readonly type: 'client-discovery-request'
   readonly requestId: string
-  readonly sourceClientId: string
-  readonly version?: number
-  readonly method: string
-  readonly params?: unknown
+  readonly request?: Partial<IpcRequestEnvelope>
 }
 
 type IpcIncomingEnvelope =
@@ -221,8 +218,12 @@ export class CodexUiIpcClient {
 
   private onEnvelope(payload: Buffer): void {
     let parsed: unknown
+    const text = payload.toString('utf8')
+    if (process.env['CLAUDEMUX_DEBUG_IPC'] !== undefined) {
+      console.error(`[codex-ui-ipc] inbound ${text}`)
+    }
     try {
-      parsed = JSON.parse(payload.toString('utf8'))
+      parsed = JSON.parse(text)
     } catch {
       return
     }
@@ -271,17 +272,34 @@ export class CodexUiIpcClient {
   }
 
   private async onDiscoveryRequest(env: IpcDiscoveryRequestEnvelope): Promise<void> {
+    const request = env.request
+    if (request === undefined || typeof request.method !== 'string') {
+      this.send({
+        type: 'client-discovery-response',
+        requestId: env.requestId,
+        response: { canHandle: false },
+      })
+      return
+    }
+    // Codex.app wraps discovery around the original request; the method
+    // version lives on request.version, not on the discovery envelope.
+    if ((request.version ?? 0) !== ipcMethodVersion(request.method)) {
+      this.send({
+        type: 'client-discovery-response',
+        requestId: env.requestId,
+        response: { canHandle: false },
+      })
+      return
+    }
     const canHandle = await this.opts.canHandle({
-      sourceClientId: env.sourceClientId,
-      method: env.method,
-      params: env.params,
+      sourceClientId: typeof request.sourceClientId === 'string' ? request.sourceClientId : '',
+      method: request.method,
+      params: request.params,
     })
     this.send({
       type: 'client-discovery-response',
       requestId: env.requestId,
-      sourceClientId: this.requireClientId(),
-      version: ipcMethodVersion(env.method),
-      canHandle,
+      response: { canHandle },
     })
   }
 

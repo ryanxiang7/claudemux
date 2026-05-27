@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { ThreadResumeResponse } from '../../../src/codex-protocol/v2/ThreadResumeResponse'
 import type { Thread } from '../../../src/codex-protocol/v2/Thread'
@@ -46,10 +46,27 @@ type BridgeInternals = {
   scheduleSnapshot(): void
 }
 
+type UiIpcClientInternals = {
+  onDiscoveryRequest(env: unknown): Promise<void>
+  onEnvelope(payload: Buffer): void
+  send(envelope: unknown): void
+}
+
 let tempDirs: string[] = []
 let servers: Server[] = []
+let consoleErrorSpy: ReturnType<typeof vi.spyOn>
+let previousDebugIpc: string | undefined
+
+beforeEach(() => {
+  previousDebugIpc = process.env['CLAUDEMUX_DEBUG_IPC']
+  delete process.env['CLAUDEMUX_DEBUG_IPC']
+  consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+})
 
 afterEach(async () => {
+  consoleErrorSpy.mockRestore()
+  if (previousDebugIpc === undefined) delete process.env['CLAUDEMUX_DEBUG_IPC']
+  else process.env['CLAUDEMUX_DEBUG_IPC'] = previousDebugIpc
   for (const server of servers) await closeServer(server)
   servers = []
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
@@ -214,6 +231,95 @@ describe('codex UI IPC bridge', () => {
     expect(isCodexFollowerIpcMethod('thread-stream-state-changed')).toBe(false)
   })
 
+  test('answers Codex router discovery requests with the nested response shape', async () => {
+    const sent: unknown[] = []
+    const canHandle = vi.fn(async () => true)
+    const client = new CodexUiIpcClient({
+      socketPath: '/unused.sock',
+      clientType: 'test-client',
+      canHandle,
+      handleRequest: async () => ({}),
+    }) as unknown as UiIpcClientInternals
+    client.send = (envelope) => {
+      sent.push(envelope)
+    }
+
+    // Protocol source: /Applications/Codex.app/Contents/Resources/app.asar,
+    // .vite/build/workspace-root-drop-handler-DJwLZgXt.js line 669.
+    // sendClientDiscoveryRequest builds { type, requestId, request }, and
+    // handleClientDiscoveryRequest reads the method version from request.version.
+    await client.onDiscoveryRequest({
+      type: 'client-discovery-request',
+      requestId: 'discovery-1',
+      request: {
+        type: 'request',
+        requestId: 'request-original',
+        sourceClientId: 'router',
+        version: 1,
+        method: 'thread-follower-interrupt-turn',
+        params: { conversationId: 'thread-1' },
+      },
+    })
+
+    expect(canHandle).toHaveBeenCalledWith({
+      sourceClientId: 'router',
+      method: 'thread-follower-interrupt-turn',
+      params: { conversationId: 'thread-1' },
+    })
+    expect(sent).toEqual([{
+      type: 'client-discovery-response',
+      requestId: 'discovery-1',
+      response: { canHandle: true },
+    }])
+
+    sent.length = 0
+    canHandle.mockClear()
+    await client.onDiscoveryRequest({
+      type: 'client-discovery-request',
+      requestId: 'discovery-2',
+      request: {
+        type: 'request',
+        requestId: 'request-original',
+        sourceClientId: 'router',
+        version: 0,
+        method: 'thread-follower-interrupt-turn',
+        params: { conversationId: 'thread-1' },
+      },
+    })
+
+    expect(canHandle).not.toHaveBeenCalled()
+    expect(sent).toEqual([{
+      type: 'client-discovery-response',
+      requestId: 'discovery-2',
+      response: { canHandle: false },
+    }])
+  })
+
+  test('gates raw inbound IPC frame logging behind CLAUDEMUX_DEBUG_IPC', () => {
+    const client = new CodexUiIpcClient({
+      socketPath: '/unused.sock',
+      clientType: 'test-client',
+      canHandle: async () => false,
+      handleRequest: async () => ({}),
+    }) as unknown as UiIpcClientInternals
+    const payload = Buffer.from(JSON.stringify({
+      type: 'broadcast',
+      sourceClientId: 'other-client',
+      version: 0,
+      method: 'client-status-changed',
+      params: { clientId: 'other-client', status: 'connected' },
+    }), 'utf8')
+
+    client.onEnvelope(payload)
+    expect(consoleErrorSpy).not.toHaveBeenCalled()
+
+    process.env['CLAUDEMUX_DEBUG_IPC'] = '1'
+    client.onEnvelope(payload)
+    expect(consoleErrorSpy.mock.calls.some(([message]) =>
+      String(message).startsWith('[codex-ui-ipc] inbound '),
+    )).toBe(true)
+  })
+
   test('converts a codex thread/read snapshot into the UI stream snapshot shape', () => {
     const thread = sampleThread()
     const state = conversationStateFromThread(sampleResume(thread), thread, [
@@ -352,13 +458,21 @@ describe('codex UI IPC bridge', () => {
     await expect(client.connect()).resolves.toBe('client-1')
     const socket = connectedSocket as Socket | null
     if (socket === null) throw new Error('test server did not accept a socket')
+    // Protocol source: /Applications/Codex.app/Contents/Resources/app.asar,
+    // .vite/build/workspace-root-drop-handler-DJwLZgXt.js line 669.
+    // The router wraps the original request under request and does not copy
+    // method version to the discovery envelope top level.
     socket.write(frame({
       type: 'client-discovery-request',
       requestId: 'discovery-1',
-      sourceClientId: 'router',
-      version: 1,
-      method: 'thread-follower-interrupt-turn',
-      params: { conversationId: 'thread-1' },
+      request: {
+        type: 'request',
+        requestId: 'request-original',
+        sourceClientId: 'router',
+        version: 1,
+        method: 'thread-follower-interrupt-turn',
+        params: { conversationId: 'thread-1' },
+      },
     }))
     socket.write(frame({
       type: 'request',
@@ -376,8 +490,7 @@ describe('codex UI IPC bridge', () => {
     expect(received.find((env) => env['type'] === 'client-discovery-response')).toMatchObject({
       type: 'client-discovery-response',
       requestId: 'discovery-1',
-      version: 1,
-      canHandle: true,
+      response: { canHandle: true },
     })
     expect(received.find((env) => env['type'] === 'response' && env['requestId'] === 'request-1')).toMatchObject({
       type: 'response',

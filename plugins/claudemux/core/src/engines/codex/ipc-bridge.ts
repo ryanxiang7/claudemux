@@ -31,6 +31,8 @@ import {
   type IpcRequestContext,
 } from './ui-ipc.js'
 
+// Codex UI's local AppServerManager only consumes stream broadcasts whose hostId matches
+// its own hostId; follower routing is derived from the IPC broadcast sourceClientId.
 const CODEX_UI_HOST_ID = 'local'
 // Matches Codex extension 26.519.x's IPC schema version for thread-stream-state-changed.
 const CODEX_UI_STREAM_VERSION = 6
