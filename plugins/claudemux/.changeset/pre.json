@@ -11,6 +11,7 @@
     "cute-lamps-brush",
     "fix-codex-ipc-broadcast-version",
     "fix-cron-host-rule",
+    "fix-prerelease-workflow-consumption",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
     "release-next-app-token",

@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.9
+
+### Patch Changes
+
+- fe1b73e: fix next beta release workflow prerelease changeset consumption
+
 ## 1.0.0-beta.8
 
 ### Patch Changes
