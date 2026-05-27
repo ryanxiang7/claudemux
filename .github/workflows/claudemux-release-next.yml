@@ -14,8 +14,16 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - name: Create claudemux release app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CLAUDEMUX_RELEASE_APP_ID }}
+          private-key: ${{ secrets.CLAUDEMUX_RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
+          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
           ref: next
 
@@ -34,7 +42,7 @@ jobs:
 
       - name: Version and push if changesets exist
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           cd plugins/claudemux
           # check if there are any changesets to consume
@@ -48,4 +56,5 @@ jobs:
           git add -A
           git diff --staged --quiet && echo 'Nothing to commit.' && exit 0
           git commit -m 'chore(release): claudemux beta'
-          git push
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:next
