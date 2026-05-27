@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.6
+
+### Patch Changes
+
+- 2c59de8: fix Codex UI IPC follower interrupt and steering controls
+
 ## 1.0.0-beta.5
 
 ### Patch Changes

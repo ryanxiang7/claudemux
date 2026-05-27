@@ -6,6 +6,7 @@
   },
   "changesets": [
     "codex-ipc-bridge",
+    "codex-ipc-follower-controls",
     "cute-lamps-brush",
     "fix-codex-ipc-broadcast-version",
     "mighty-grapes-ask",
