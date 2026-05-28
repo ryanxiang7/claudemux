@@ -57,6 +57,16 @@ Match the user's intent to one row below, then **read the listed reference befor
 
 For any verb's flag/output contract: `tm <verb> --help`. Do not reason about `tm` from prior-conversation memory or model priors.
 
+## Default to parallel dispatch
+
+The dispatcher exists to fan work out across teammates, worktrees, and engines at the same time. When the user names N independent tasks, default to parallel execution — N teammates handle N tasks and the user gets the results back in roughly the time of the slowest one. Serializing the work matches the wall-clock of not routing through a dispatcher at all.
+
+- **One long-running verb per Bash call; fire N calls in parallel.** Every `tm` verb that can block past a few seconds (`tm send`, `tm wait`, `tm spawn --prompt`, `tm resume --prompt`, `tm compact`, `tm poll`, `tm reload` — full set in the next section) goes in its own Bash tool call with `run_in_background: true`. To run N of them concurrently, issue N independent Bash calls in the same model response; the harness fires a separate completion notification per call, so the dispatcher reacts to each teammate's result the moment it arrives instead of waiting for the slowest. Do NOT combine multiple long-running verbs in one Bash command (no `tm send A && tm send B`, no `tm send A &; tm send B &; wait`, no for-loop wrapper) — combining them collapses N notifications into one and serializes the dispatcher's response cadence behind the slowest task. Short dispatcher-local work (`gh` post, file write, `git -C <repo>` probe) rides along as additional Bash calls in the same model response.
+- **State the parallel plan before the batch.** A user reading the dispatcher's reply should see the parallelism, not merely experience it. "Two in parallel: ① fix-auth in `<repo-a>`; ② regen-types in `<repo-b>`" beats "I'll do A first, then B" — serial framing reads as serial work even when the actual tool batch is concurrent. Drop "first … then …" wording from the plan when the tasks are independent; if there is a true sequential dependency, name it.
+- **Serialize only on a named cause.** Real data dependency (B reads A's output), shared mutable state that would conflict (same teammate name in the `tm` namespace, same git worktree, same shared lock file), or an explicit user ask. Otherwise default to parallel framing.
+
+This pairs with the `run_in_background: true` mechanics in the next section (that flag is what keeps the parallel batch non-blocking) and with the prompt-composition checklist in `references/dispatch-task.md` (each prompt in a parallel batch still needs its own intent, workspace state, hard context, and deliverable shape).
+
 ## Long-running waits
 
 Run every verb that may block longer than a couple of seconds with `run_in_background: true` on the Bash tool. This covers `tm send` (sync default, blocks until Stop), `tm wait`, `tm spawn --prompt`, `tm resume --prompt`, `tm compact` (default 1800 s cap), `tm poll`, `tm reload`, and any file-polling loop you write yourself. After the call is backgrounded, wait for the task notification; do not chain `sleep N && cat <output-file>` to peek at the background output file.
