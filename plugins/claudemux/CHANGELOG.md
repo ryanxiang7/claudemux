@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.15
+
+### Patch Changes
+
+- 05377ec: docs: clarify that the "AutoMemory directory" in the dispatcher template and skill references is `~/.claude/projects/<encoded-cwd>/memory/`, not a project-local path
+
 ## 1.0.0-beta.14
 
 ### Major Changes

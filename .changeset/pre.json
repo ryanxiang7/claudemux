@@ -7,6 +7,7 @@
     "claude-channel-feishu": "0.1.0"
   },
   "changesets": [
+    "clarify-automemory-directory-path",
     "codex-ipc-bridge",
     "codex-ipc-discovery",
     "codex-ipc-follower-controls",
