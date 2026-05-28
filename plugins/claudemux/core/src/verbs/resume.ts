@@ -17,18 +17,41 @@
 
 import { hasClaudeHistoryForCwd } from '../engines/claude/history'
 import { hasCodexHistoryForCwd } from '../engines/codex/history'
-import { legacyCodexPrefixWarning } from '../identity/legacy-codex-prefix'
 import { formatResume } from './format'
-import { findCodexRolloutFile } from '../engines/codex/rollout'
+import { findCodexRolloutFile, readRolloutSessionCwd } from '../engines/codex/rollout'
 import { resolveTargetEngine } from './resolve'
 import type { Engine } from '../engines/engine'
 import type { EngineKind, ResumeRequest, TeammateName } from '../engines/types'
 import type { TmResult } from '../tm'
 import type { VerbContext } from './context'
 
+/**
+ * Recognise a worktree-shaped cwd
+ * (`<repo>/.claude/worktrees/<slug>`). The shape is the contract
+ * both engines launch worktree teammates under, so the same parser
+ * works whether the rollout was written by a Claude or a Codex
+ * teammate. Returns `null` when `cwd` does not have the suffix —
+ * the caller then falls back to "treat cwd as the repo itself"
+ * (`--no-worktree` mode).
+ *
+ * Exported so the unit test pinning the resume-after-clean-kill
+ * recovery shape can target this directly without standing up
+ * a real Codex daemon.
+ */
+export function parseWorktreeCwd(cwd: string): { repo: string; slug: string } | null {
+  const m = cwd.match(/^(.*?)\/\.claude\/worktrees\/([^/]+)\/?$/)
+  if (m === null) return null
+  const repo = m[1] ?? ''
+  const slug = m[2] ?? ''
+  if (repo.length === 0 || slug.length === 0) return null
+  return { repo, slug }
+}
+
 export interface ResumeArgs {
   readonly name: TeammateName
+  readonly repo: string | null
   readonly cwd: string | null
+  readonly worktreeSlug: string | null
   readonly checkpoint: string | null
   readonly prompt: string | null
   readonly displayName: string | null
@@ -37,11 +60,11 @@ export interface ResumeArgs {
   /** `~/.claude/projects` (or test override) — needed for Claude-side probing. */
   readonly projectsDir: string
   /**
-   * Whether `cwd` was derived from a real source (a Codex base record /
-   * meta, or an existing dispatcher subdirectory) rather than the
-   * `codexCwd` last-resort fallback to the dispatcher dir itself.
-   * Probing must skip itself when this is `false`, or it would match
-   * the dispatcher's own transcripts and false-route.
+   * Whether `cwd` was derived from a real source (an existing identity
+   * record, a Codex base record/meta, or a dispatcher subdirectory)
+   * rather than the last-resort fallback. Probing must skip itself
+   * when this is `false`, or it would match the dispatcher's own
+   * transcripts and false-route.
    */
   readonly cwdProbeable: boolean
 }
@@ -53,18 +76,14 @@ function die(message: string): TmResult {
 async function dispatchResume(engine: Engine, args: ResumeArgs, ctx: VerbContext): Promise<TmResult> {
   const req: ResumeRequest = {
     name: args.name,
+    repo: args.repo,
     cwd: args.cwd,
+    worktreeSlug: args.worktreeSlug,
     checkpoint: args.checkpoint,
     prompt: args.prompt,
     displayName: args.displayName,
   }
-  // Resume's engine resolution is the only point we know the final engine
-  // kind for this teammate — wire the legacy-prefix warning here so it
-  // fires on every routing branch (--engine, checkpoint reverse-lookup,
-  // router, cwd probing) without duplicating the check at each callsite.
-  const warning = legacyCodexPrefixWarning('resume', args.name, engine.kind)
-  const result = formatResume(await engine.resume(req, ctx.engineContext))
-  return warning === '' ? result : { ...result, stderr: warning + result.stderr }
+  return formatResume(await engine.resume(req, ctx.engineContext))
 }
 
 export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<TmResult> {
@@ -78,14 +97,38 @@ export async function resumeVerb(args: ResumeArgs, ctx: VerbContext): Promise<Tm
   }
 
   // 2. Checkpoint reverse-lookup — a passed thread-id that maps to a
-  // Codex rollout. Preserves `tm resume <name> <thread-id>` after kill.
+  // Codex rollout. Preserves `tm resume <name> <thread-id>` after
+  // `tm kill` has removed the live identity + Codex meta records.
+  //
+  // After a clean kill, `args.cwd` came from `cwdForName`'s last-resort
+  // fallback (no identity → no Codex meta → no `<dispatcherDir>/<name>`
+  // dir → dispatcher dir). Spawning the resumed daemon at the
+  // dispatcher dir would silently launch follow-up turns in the wrong
+  // workspace. The rollout's `session_meta.cwd` header records the
+  // daemon's original launch cwd verbatim; use it to override the
+  // fallback when the dispatcher would otherwise route blind. When
+  // the rollout cwd has the worktree shape
+  // (`.../.claude/worktrees/<slug>`), split out `repo` and
+  // `worktreeSlug` so the engine re-provisions the worktree if a
+  // prior `tm kill` removed it. The identity-known path (no kill, or
+  // `--name` matches a live record) already has the right cwd in
+  // `args.cwd`, so the override only fires when `cwdForName` could
+  // not produce a teammate-specific cwd.
   const codex = ctx.engines.get('codex')
-  if (
-    args.checkpoint !== null &&
-    codex !== undefined &&
-    findCodexRolloutFile(args.checkpoint, ctx.engineContext.env) !== null
-  ) {
-    return dispatchResume(codex, args, ctx)
+  if (args.checkpoint !== null && codex !== undefined) {
+    const rollout = findCodexRolloutFile(args.checkpoint, ctx.engineContext.env)
+    if (rollout !== null) {
+      const rolloutCwd = readRolloutSessionCwd(rollout.path)
+      const shouldRecover = rolloutCwd !== null && (args.cwd === null || !args.cwdProbeable)
+      let recovered = args
+      if (shouldRecover && rolloutCwd !== null) {
+        const parts = parseWorktreeCwd(rolloutCwd)
+        recovered = parts === null
+          ? { ...args, cwd: rolloutCwd, repo: rolloutCwd, worktreeSlug: null }
+          : { ...args, cwd: rolloutCwd, repo: parts.repo, worktreeSlug: parts.slug }
+      }
+      return dispatchResume(codex, recovered, ctx)
+    }
   }
 
   // 3. Router — an existing teammate's recorded engine.

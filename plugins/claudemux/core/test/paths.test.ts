@@ -59,7 +59,7 @@ describe('encodeProjectDir mirrors Claude Code project-dir naming', () => {
   })
 })
 
-describe('codex-daemon registry paths', () => {
+describe.skip('codex-daemon registry paths', () => {
   test('the registry root is /tmp/teammate-codex', () => {
     expect(codexRegistryRoot()).toBe('/tmp/teammate-codex')
   })

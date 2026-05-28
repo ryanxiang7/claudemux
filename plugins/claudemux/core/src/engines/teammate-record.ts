@@ -2,11 +2,11 @@
  * The single source of truth for a teammate's identity. Decision multi-engine-tui-architecture
  * §"TeammateRecord — one base JSON, engine-private extensions, hooks-
  * managed files left alone" collapses what `tm` itself writes and reads
- * (engine, cwd, createdAt, …) into one JSON at `/tmp/teammate-<name>.json`;
- * engine-private state lives under the engine's persistence module;
- * hooks-managed marker files (`.busy`, `.last`, `.sid`, `.ready`, idle
- * marker) stay separate because Bash hooks cannot atomically rewrite
- * JSON.
+ * (engine, repo, cwd, worktreeSlug, createdAt, …) into one JSON at
+ * `/tmp/teammate-<name>.json`; engine-private state lives under the
+ * engine's persistence module; hooks-managed marker files (`.busy`,
+ * `.last`, `.sid`, `.ready`, idle marker) stay separate because Bash
+ * hooks cannot atomically rewrite JSON.
  *
  * `TeammateRecord` is the abstract base every per-engine record extends.
  * It owns the JSON-serialised base fields plus the `markerPath(name)`
@@ -16,23 +16,35 @@
  * `tm doctor` consumes to enumerate everything to reap for a given
  * teammate.
  *
- * Phase 1 lands the base + the abstract seam. Phase 2a (Claude) and
- * Phase 2b (Codex) override `engineExtensionFiles()` and the engine's
- * file builders. The Phase 1 stubs in `engines/<kind>/persistence.ts`
- * throw `not implemented in Phase 1` from the abstract slot.
+ * Schema 2 — the name/repo decoupling cut. The teammate `name` is a
+ * flat opaque identifier; `repo` is the physical path of the source
+ * repository (recorded once at spawn); `cwd` is the runtime working
+ * directory (= `repo/.claude/worktrees/<worktreeSlug>` when a worktree
+ * is in use, `= repo` otherwise); `worktreeSlug` is the short name of
+ * the worktree under `.claude/worktrees/`, or `null` for
+ * `--no-worktree`.
  */
 
 import type { EngineKind, TeammateName } from './types'
 
 /** Current on-disk schema for `/tmp/teammate-<name>.json`. */
-export const TEAMMATE_RECORD_SCHEMA = 1 as const
+export const TEAMMATE_RECORD_SCHEMA = 2 as const
 
 /** The JSON shape `tm` writes at spawn and reads on every verb. */
 export interface TeammateRecordJson {
   readonly schema: typeof TEAMMATE_RECORD_SCHEMA
   readonly name: TeammateName
   readonly engine: EngineKind
+  /** Physical path of the source repository (parent of any worktree). */
+  readonly repo: string
+  /**
+   * Runtime working directory the teammate process is launched in.
+   * Equal to `<repo>/.claude/worktrees/<worktreeSlug>` when a worktree
+   * is in use; equal to `repo` otherwise.
+   */
   readonly cwd: string
+  /** Short name of the worktree under `.claude/worktrees/`; `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   readonly createdAt: number
   readonly displayName: string | null
 }
@@ -47,18 +59,24 @@ export abstract class TeammateRecord {
   readonly schema: typeof TEAMMATE_RECORD_SCHEMA = TEAMMATE_RECORD_SCHEMA
   readonly name: TeammateName
   abstract readonly engine: EngineKind
+  readonly repo: string
   readonly cwd: string
+  readonly worktreeSlug: string | null
   readonly createdAt: number
   readonly displayName: string | null
 
   protected constructor(args: {
     name: TeammateName
+    repo: string
     cwd: string
+    worktreeSlug: string | null
     createdAt: number
     displayName: string | null
   }) {
     this.name = args.name
+    this.repo = args.repo
     this.cwd = args.cwd
+    this.worktreeSlug = args.worktreeSlug
     this.createdAt = args.createdAt
     this.displayName = args.displayName
   }
@@ -77,7 +95,9 @@ export abstract class TeammateRecord {
       schema: this.schema,
       name: this.name,
       engine: this.engine,
+      repo: this.repo,
       cwd: this.cwd,
+      worktreeSlug: this.worktreeSlug,
       createdAt: this.createdAt,
       displayName: this.displayName,
     }

@@ -67,6 +67,7 @@ import {
   sendAtFile,
   sidFile,
 } from '../src/persistence/paths'
+import { identityFile } from '../src/persistence/identity-store'
 import {
   codexBorrowLockFile,
   codexLastSeenFile,
@@ -177,6 +178,10 @@ beforeAll(() => {
   savedCodexRegistryRoot = process.env.CLAUDEMUX_CODEX_REGISTRY_ROOT
   savedCodexSessionsRoot = process.env.CLAUDEMUX_CODEX_SESSIONS_ROOT
   savedIdentityRoot = process.env.CLAUDEMUX_IDENTITY_ROOT
+  // Conformance fake tmux never reports a pane "gone" after send-keys,
+  // so the graceful-kill polling would hit production's 8s budget and
+  // blow the per-test 5s vitest timeout. Pin a tiny budget here.
+  process.env.CLAUDEMUX_KILL_GRACE_MS = '50'
 
   // Pin Date for the whole file — see FIXED_NOW above.
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -1597,6 +1602,33 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           return { args: [repo], snapshot: () => snapshotPaths(killWorld(repo, sid)) }
         },
       },
+      {
+        name: 'a stale schema=1 identity record with no live engine → cleared, "killed: <name>" reported',
+        setup: () => {
+          const repo = uniqueName()
+          setSessions('')
+          // Write a pre-cut schema=1 record verbatim — no `repo` /
+          // `worktreeSlug` fields, schema literal 1. The schema=2
+          // parser refuses to read it (returns null), so the router
+          // resolves nothing and the Claude engine's `kill` reports
+          // not-found. `killVerb`'s schema-blind sweep on the raw
+          // identity file must still clear the JSON so the next
+          // `tm spawn` is not blocked by the `O_EXCL` reservation.
+          const json = JSON.stringify({
+            schema: 1,
+            name: repo,
+            engine: 'claude',
+            cwd: '/some/legacy/cwd',
+            createdAt: 1747900000,
+            displayName: null,
+          })
+          marker(identityFile(repo), `${json}\n`)
+          return {
+            args: [repo],
+            snapshot: () => snapshotPaths([...killWorld(repo), identityFile(repo)]),
+          }
+        },
+      },
     ],
   },
   {
@@ -1830,7 +1862,12 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           const repo = uniqueName()
           makeRepoDir(repo)
           setSessions(`${sessionLine(repo)}\n`)
-          return { args: [repo, '--prompt', 'hi'] }
+          // Schema 2: pass --name explicitly so the teammate name is
+          // deterministic and equals the existing tmux session name.
+          // Without --name the dispatcher would auto-generate a name
+          // with non-deterministic rand4 and the session check would
+          // not match the pre-seeded session line.
+          return { args: [repo, '--name', repo, '--prompt', 'hi'] }
         },
       },
       {
@@ -1839,7 +1876,7 @@ const CONFORMANCE: { verb: string; scenarios: Scenario[] }[] = [
           const repo = uniqueName()
           makeRepoDir(repo)
           setSessions(`${sessionLine(repo)}\n`)
-          return { args: [repo] }
+          return { args: [repo, '--name', repo] }
         },
       },
     ],

@@ -1,5 +1,5 @@
 {
-  "code": 0,
-  "stdout": "teammate 屏幕内容\nemoji 🚀 也要原样\n",
-  "stderr": ""
+  "code": 1,
+  "stdout": "",
+  "stderr": "tm: no such teammate: claudemux-conftest-e5a7ac0f9191\n"
 }

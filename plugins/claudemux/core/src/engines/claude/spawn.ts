@@ -1,29 +1,40 @@
 /**
- * `tm spawn` — launch a teammate (or relaunch via `--resume <sid>`),
- * record its sid + cwd, and either return as soon as `SessionStart`
- * fires or hand off to a sync `tm send` when `--prompt` is set.
+ * `tm spawn` — launch a Claude teammate (optionally inside a git
+ * worktree), record its sid + cwd, and either return as soon as
+ * `SessionStart` fires or hand off to a sync `tm send` when
+ * `--prompt` is set.
+ *
+ * Worktree integration: when `--worktree-slug <slug>` is passed,
+ * `claude` itself receives `--worktree <slug>` and creates
+ * `<repo>/.claude/worktrees/<slug>` (a real `git worktree add` under
+ * the hood, branch `worktree-<slug>`, baseRef `head` per the engine
+ * `--settings` block). claudemux predicts the worktree path before
+ * launch, writes it to `/tmp/teammate-<name>.cwd` so the
+ * SessionStart hook's byte-match succeeds when Claude reports its
+ * runtime cwd, and points the tmux pane at the parent repo so
+ * Claude can perform the chdir itself.
  *
  * Repository discipline: this verb writes the `<name>.cwd` /
  * `<name>.sid` markers and the empty `<sid>.last` sentinel; the
- * SessionStart hook separately produces the `<name>.ready` marker the
- * poll below blocks on. Tearing those apart is what makes
+ * SessionStart hook separately produces the `<name>.ready` marker
+ * the poll below blocks on. Tearing those apart is what makes
  * `tm spawn --prompt` atomic — the pre-send sleep happens against a
  * REPL that has already booted.
  *
- * This module is Claude-only. The engine router owns cross-engine dispatch.
+ * This module is Claude-only. The engine router owns cross-engine
+ * dispatch.
  */
 
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { claudeSend } from './send'
 import { readLastAssistantText, transcriptFile } from './ctx'
 import { clearIdle, isDirectory } from './idle'
-import { newSid, randSuffix, sanitizeTaskSlug } from './identifiers'
+import { newSid } from './identifiers'
 import { sleepMs } from './clock'
 import { dieRepoNotFound } from './repo-fs'
 import { die, sessionExists } from './tmux'
-import { parseSpawnArgs } from '../../shared/verb-args'
 import {
   cwdFile,
   idleDir,
@@ -31,16 +42,21 @@ import {
   readyFile,
   sidFile,
   tmuxSessionName,
+  worktreePathFor,
 } from '../../persistence/paths'
-import { join } from 'node:path'
 import type { ClaudeVerbEnv } from './env'
 import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
 
 interface ClaudeLaunchArgs {
+  /** Physical repo path (the parent of the worktree, or the cwd itself). */
   readonly repo: string
+  /** Runtime cwd — equals `worktreePathFor(repo, worktreeSlug)` when set, else `repo`. */
+  readonly cwd: string
+  /** Worktree slug; `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   readonly resumeSid: string
   readonly continueLatest: boolean
-  readonly task: string
+  readonly displayName: string
   readonly prompt: string
   readonly hasPrompt: boolean
   /**
@@ -65,12 +81,43 @@ function shellSingleQuote(value: string): string {
 
 /**
  * `tm`'s `teammate_launch_flags`: the flag string between
- * `claude --session-id|--resume <sid>` and an optional `-n '<name>'`.
- * A bare tool name in `--disallowedTools` drops it from the model's
- * context entirely.
+ * `claude --session-id|--resume <sid>` and the optional `-n '<name>'`
+ * / `--worktree <slug>` extras. A bare tool name in
+ * `--disallowedTools` drops it from the model's context entirely.
  */
 function teammateLaunchFlags(mdExcludes: string): string {
   return `--settings ${shellSingleQuote(mdExcludes)} --disallowedTools AskUserQuestion`
+}
+
+/**
+ * The settings JSON merged into every teammate launch. Two
+ * behaviours live here:
+ *
+ *  - `claudeMdExcludes` keeps the dispatcher's CLAUDE.md /
+ *    CLAUDE.local.md out of the teammate's context (a teammate
+ *    inherits its own repo's CLAUDE.md, not the dispatcher's).
+ *
+ *  - `worktree.baseRef = "head"` pins the worktree's base to local
+ *    HEAD, not `origin/<default>`. Dispatchers often spawn teammates
+ *    on top of branches with local commits not yet pushed; `fresh`
+ *    would silently rewind that work. The block is only emitted when
+ *    a worktree is actually requested — `--no-worktree` runs leave
+ *    the user's global `worktree.*` settings undisturbed.
+ */
+function teammateSettingsJson(
+  dispatcherDir: string,
+  worktreeSlug: string | null,
+): string {
+  const settings: Record<string, unknown> = {
+    claudeMdExcludes: [
+      `${dispatcherDir}/CLAUDE.md`,
+      `${dispatcherDir}/CLAUDE.local.md`,
+    ],
+  }
+  if (worktreeSlug !== null) {
+    settings['worktree'] = { baseRef: 'head' }
+  }
+  return JSON.stringify(settings)
 }
 
 /**
@@ -88,134 +135,201 @@ async function pollReady(name: string): Promise<number | null> {
 }
 
 /**
- * The Claude-side `tm spawn` body. Callers must have already routed
- * the codex fork; this function handles only the Claude / tmux path.
- *
- * `args` is the full arg vector — `<repo>` then `--task` / `--prompt`
- * / `--resume` etc. (Same shape `NATIVE_VERBS.spawn` accepted.)
+ * Public Claude spawn entrypoint. Argument shape matches the engine
+ * router's `argv = [name, --repo R, --cwd C, --worktree-slug S,
+ * --resume SID, --display-name DN, --prompt P, --timeout N]`.
  */
 export async function claudeSpawn(
   args: readonly string[],
   env: ClaudeVerbEnv,
 ): Promise<TmResult> {
-  const repo = args[0] ?? ''
-  if (repo.length === 0) {
-    return die('usage: tm spawn <repo> [--task <slug>] [--prompt "..."]')
+  const name = args[0] ?? ''
+  if (name.length === 0) {
+    return die('usage: tm spawn <path> [--name <id>] [--prompt "..."]')
   }
-  const parsed = parseSpawnArgs(args.slice(1))
-  if ('error' in parsed) return parsed.error
+  const launch = parseClaudeLaunchArgs(args.slice(1))
+  if ('error' in launch) return launch.error
   return claudeLaunch({
-    repo,
-    resumeSid: parsed.resumeSid,
+    repo: launch.repo,
+    cwd: launch.cwd,
+    worktreeSlug: launch.worktreeSlug,
+    resumeSid: launch.resumeSid,
     continueLatest: false,
-    task: parsed.task,
-    prompt: parsed.prompt,
-    hasPrompt: parsed.hasPrompt,
-    timeout: parsed.timeout,
-  }, env)
+    displayName: launch.displayName,
+    prompt: launch.prompt,
+    hasPrompt: launch.hasPrompt,
+    timeout: launch.timeout,
+  }, env, name)
 }
 
+/**
+ * Equivalent of `claudeSpawn` for the `--continue` flavour. The
+ * engine router calls this from the resume verb on the Claude
+ * continue-latest path.
+ */
 export async function claudeContinue(
-  repo: string,
-  opts: {
-    readonly task: string
-    readonly prompt: string
-    readonly hasPrompt: boolean
-    readonly timeout: string | null
-  },
+  name: string,
+  args: readonly string[],
   env: ClaudeVerbEnv,
 ): Promise<TmResult> {
+  const launch = parseClaudeLaunchArgs(args)
+  if ('error' in launch) return launch.error
   return claudeLaunch({
-    repo,
+    repo: launch.repo,
+    cwd: launch.cwd,
+    worktreeSlug: launch.worktreeSlug,
     resumeSid: '',
     continueLatest: true,
-    task: opts.task,
-    prompt: opts.prompt,
-    hasPrompt: opts.hasPrompt,
-    timeout: opts.timeout,
-  }, env)
+    displayName: launch.displayName,
+    prompt: launch.prompt,
+    hasPrompt: launch.hasPrompt,
+    timeout: launch.timeout,
+  }, env, name)
 }
 
-async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<TmResult> {
-  const { repo, resumeSid, continueLatest, task, prompt, hasPrompt, timeout } = req
-  const path = join(env.dispatcherDir, repo)
-  if (!isDirectory(path)) return dieRepoNotFound('spawn', repo, path, env.dispatcherDir)
+interface ParsedClaudeLaunch {
+  repo: string
+  cwd: string
+  worktreeSlug: string | null
+  resumeSid: string
+  displayName: string
+  prompt: string
+  hasPrompt: boolean
+  timeout: string | null
+}
 
-  // Physical-path normalization (`cd && pwd -P`) — the SessionStart hook
-  // byte-matches against the cwd Claude Code emits in its hook payload,
-  // which is always the physical path (macOS resolves `/tmp` → `/private/
-  // tmp` at that level), so the recorded `.cwd` must be physical too.
-  const cwdPhys = realpathSync(path)
-  const dispatcherPhys = realpathSync(env.dispatcherDir)
-  const mdExcludes = JSON.stringify({
-    claudeMdExcludes: [
-      `${dispatcherPhys}/CLAUDE.md`,
-      `${dispatcherPhys}/CLAUDE.local.md`,
-    ],
-  })
-
-  // Display-name selection: `--task` → `<repo>-<sanitized>`, else
-  // `<repo>-<rand4>` for a fresh spawn, else empty (preserve on resume/continue).
+/**
+ * Decode the engine-router argv into a `ParsedClaudeLaunch`. The
+ * Claude engine's `spawn()` builds these args from the SpawnRequest
+ * fields the CLI dispatcher resolved; this is the matching unpack.
+ *
+ * Any flag the router does not currently emit (e.g. legacy
+ * `--repo-relative`) is rejected, surfaced via `parseSpawnArgs` for
+ * the legacy paths still exercised by `claudeSpawn` consumers.
+ */
+function parseClaudeLaunchArgs(
+  args: readonly string[],
+): ParsedClaudeLaunch | { error: TmResult } {
+  let repo = ''
+  let cwd = ''
+  let worktreeSlug: string | null = null
   let displayName = ''
-  if (task.length > 0) {
-    const slug = sanitizeTaskSlug(task)
-    if (slug.length === 0) {
-      return die(
-        `tm spawn: --task '${task}' has no usable characters after sanitization ` +
-          '(allowlist: ASCII letters/digits + CJK Unified Ideographs)',
-      )
+  let resumeSid = ''
+  let prompt = ''
+  let hasPrompt = false
+  let timeout: string | null = null
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    const consumeValue = (): string | null => {
+      const next = args[i + 1]
+      if (next === undefined) return null
+      i++
+      return next
     }
-    displayName = `${repo}-${slug}`
-  } else if (resumeSid.length === 0 && !continueLatest) {
-    displayName = `${repo}-${randSuffix()}`
+    if (arg === '--repo') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --repo requires a value') }
+      repo = v
+    } else if (arg === '--cwd') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --cwd requires a value') }
+      cwd = v
+    } else if (arg === '--worktree-slug') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --worktree-slug requires a value') }
+      worktreeSlug = v
+    } else if (arg === '--display-name') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --display-name requires a value') }
+      displayName = v
+    } else if (arg === '--resume') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --resume requires a value') }
+      resumeSid = v
+    } else if (arg === '--prompt') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --prompt requires a value') }
+      prompt = v
+      hasPrompt = true
+    } else if (arg === '--timeout') {
+      const v = consumeValue()
+      if (v === null) return { error: die('claude spawn: --timeout requires a value') }
+      timeout = v
+    } else {
+      return { error: die(`claude spawn: unknown flag: ${arg}`) }
+    }
   }
+  if (repo.length === 0) return { error: die('claude spawn: missing --repo') }
+  if (cwd.length === 0) cwd = repo
+  return { repo, cwd, worktreeSlug, resumeSid, displayName, prompt, hasPrompt, timeout }
+}
 
-  const name = tmuxSessionName(repo)
-  if (await sessionExists(name, env.runTmux)) {
+async function claudeLaunch(
+  req: ClaudeLaunchArgs,
+  env: ClaudeVerbEnv,
+  name: string,
+): Promise<TmResult> {
+  const { repo, cwd, worktreeSlug, resumeSid, continueLatest, displayName, prompt, hasPrompt, timeout } = req
+  if (!isDirectory(repo)) return dieRepoNotFound('spawn', name, repo, env.dispatcherDir)
+
+  // The tmux pane is anchored at the repo root. When a worktree is
+  // requested, `claude --worktree <slug>` performs the chdir into
+  // `<repo>/.claude/worktrees/<slug>` itself; the recorded `.cwd`
+  // matches that final runtime path so the SessionStart hook's
+  // byte-match against the hook payload succeeds.
+  const paneCwd = repo
+  const mdExcludes = teammateSettingsJson(env.dispatcherDir, worktreeSlug)
+
+  const session = tmuxSessionName(name)
+  if (await sessionExists(session, env.runTmux)) {
     if (hasPrompt) {
       return die(
-        `${repo} already exists (tmux=${name}) — atomic bootstrap rejected ` +
+        `${name} already exists (tmux=${session}) — atomic bootstrap rejected ` +
           'because the teammate is already running. Use ' +
-          `'tm send ${repo} --prompt "…"' to drive an existing teammate, or ` +
-          `'tm kill ${repo}' first to start over.`,
+          `'tm send ${name} --prompt "…"' to drive an existing teammate, or ` +
+          `'tm kill ${name}' first to start over.`,
       )
     }
     return {
       code: 0,
       stdout:
-        `${repo} already exists (tmux=${name}; use 'tm status ${repo}' to view, ` +
-        `or 'tm kill ${repo}' first)\n`,
+        `${name} already exists (tmux=${session}; use 'tm status ${name}' to view, ` +
+        `or 'tm kill ${name}' first)\n`,
       stderr: '',
     }
   }
 
-  // Clear the readiness signal BEFORE launching `claude`. The SessionStart
-  // hook re-touches the file once the REPL is up; the poll below blocks on it.
-  const rf = readyFile(repo)
+  // Clear the readiness signal BEFORE launching `claude`. The
+  // SessionStart hook re-touches the file once the REPL is up; the
+  // poll below blocks on it.
+  const rf = readyFile(name)
   rmSync(rf, { force: true })
 
-  // Record the teammate's physical cwd in place *before* spawning so the
-  // hook fires can find it on its first attempt.
-  const cf = cwdFile(repo)
+  // Record the teammate's runtime cwd in place *before* spawning so
+  // the SessionStart hook finds it on its first attempt. The runtime
+  // cwd already reflects the worktree path (Claude's `--worktree`
+  // chdir target) when one is in use.
+  const cf = cwdFile(name)
   mkdirSync(dirname(cf), { recursive: true })
-  writeFileSync(cf, `${cwdPhys}\n`)
+  writeFileSync(cf, `${cwd}\n`)
 
-  // `-P -F '#{session_id}'` returns the new session's internal id; use it
-  // as the subsequent `send-keys` target so prefix-match cannot wrong-route.
-  // `-e CLAUDEMUX_TEAMMATE_REPO=...` is the positive identity gate the
-  // on-session-start hook reads to discriminate "this teammate" from "the
-  // dispatcher happens to share the cwd".
+  // `-P -F '#{session_id}'` returns the new session's internal id;
+  // use it as the subsequent `send-keys` target so prefix-match
+  // cannot wrong-route. `-e CLAUDEMUX_TEAMMATE_NAME=...` is the
+  // positive identity gate the on-session-start hook reads to
+  // discriminate "this teammate" from "the dispatcher happens to
+  // share the cwd".
   let paneId = ''
   try {
     const newSession = await env.runTmux([
       'new-session',
       '-d',
       '-s',
-      name,
+      session,
       '-c',
-      cwdPhys,
+      paneCwd,
       '-e',
-      `CLAUDEMUX_TEAMMATE_REPO=${repo}`,
+      `CLAUDEMUX_TEAMMATE_NAME=${name}`,
       '-P',
       '-F',
       '#{session_id}',
@@ -227,45 +341,46 @@ async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<
   } catch (err) {
     return die(`tmux new-session failed: ${err instanceof Error ? err.message : String(err)}`)
   }
-  if (paneId.length === 0) return die(`tmux new-session returned no session id for ${repo}`)
+  if (paneId.length === 0) return die(`tmux new-session returned no session id for ${name}`)
 
   const sid = resumeSid.length > 0 ? resumeSid : continueLatest ? '' : newSid()
   const launchFlags = teammateLaunchFlags(mdExcludes)
-  const nameArg = displayName.length > 0 ? ` -n ${shellSingleQuote(displayName)}` : ''
+  const nameArg =
+    displayName.length > 0 ? ` -n ${shellSingleQuote(displayName)}` : ` -n ${shellSingleQuote(name)}`
+  const worktreeArg = worktreeSlug !== null ? ` --worktree ${shellSingleQuote(worktreeSlug)}` : ''
   const launchCmd =
     continueLatest
-      ? `claude --continue ${launchFlags}${nameArg}`
+      ? `claude --continue ${launchFlags}${nameArg}${worktreeArg}`
       : resumeSid.length > 0
-      ? `claude --resume ${sid} ${launchFlags}${nameArg}`
-      : `claude --session-id ${sid} ${launchFlags}${nameArg}`
+      ? `claude --resume ${sid} ${launchFlags}${nameArg}${worktreeArg}`
+      : `claude --session-id ${sid} ${launchFlags}${nameArg}${worktreeArg}`
   await env.runTmux(['send-keys', '-t', paneId, launchCmd, 'Enter'])
 
   let stderr = ''
+  const worktreeNote = worktreeSlug !== null ? `, worktree=${worktreePathFor(repo, worktreeSlug)}` : ''
   if (continueLatest) {
-    const nameNote = displayName.length > 0 ? `, name=${displayName}` : ''
     stderr +=
-      `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, continued latest sid=pending${nameNote})\n`
+      `spawned: ${name} (tmux=${session}, cwd=${cwd}${worktreeNote}, continued latest sid=pending)\n`
   } else if (resumeSid.length > 0) {
-    const nameNote = displayName.length > 0 ? `, name=${displayName}` : ''
-    stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, resumed sid=${sid}${nameNote})\n`
+    stderr += `spawned: ${name} (tmux=${session}, cwd=${cwd}${worktreeNote}, resumed sid=${sid})\n`
   } else {
-    const nameNote = displayName.length > 0 ? `, name=${displayName}` : ''
-    stderr += `spawned: ${repo} (tmux=${name}, cwd=${cwdPhys}, sid=${sid}${nameNote})\n`
+    stderr += `spawned: ${name} (tmux=${session}, cwd=${cwd}${worktreeNote}, sid=${sid})\n`
   }
 
   if (!continueLatest) {
-    const sf = sidFile(repo)
+    const sf = sidFile(name)
     mkdirSync(dirname(sf), { recursive: true })
     writeFileSync(sf, `${sid}\n`)
     clearIdle(sid)
   }
 
-  // `.last` seed. `clearIdle` above just removed the prior file; without
-  // a re-seed here, `tm last` / `tm send`'s "(no text reply…)" sentinel
-  // is the only thing the dispatcher can observe until the on-stop hook
-  // writes a fresh extraction — and that hook can return empty (tool-only
-  // turn, transcript-walk halting on a meta user entry) and `rm` the
-  // file, leaving the dispatcher with nothing.
+  // `.last` seed. `clearIdle` above just removed the prior file;
+  // without a re-seed here, `tm last` / `tm send`'s "(no text
+  // reply…)" sentinel is the only thing the dispatcher can observe
+  // until the on-stop hook writes a fresh extraction — and that
+  // hook can return empty (tool-only turn, transcript-walk halting
+  // on a meta user entry) and `rm` the file, leaving the
+  // dispatcher with nothing.
   //
   //   - Fresh spawn: write the empty sentinel. `tm last` reports the
   //     "no reply yet" state until the first real Stop.
@@ -283,41 +398,33 @@ async function claudeLaunch(req: ClaudeLaunchArgs, env: ClaudeVerbEnv): Promise<
     if (resumeSid.length === 0) {
       writeFileSync(lastFileFor(sid), '')
     } else {
-      const jsonl = transcriptFile(env.projectsDir, cwdPhys, sid)
+      const jsonl = transcriptFile(env.projectsDir, cwd, sid)
       const prior = readLastAssistantText(jsonl)
       writeFileSync(lastFileFor(sid), prior.length > 0 ? `${prior}\n` : '')
     }
   }
 
-  const readyAfter = await pollReady(repo)
+  const readyAfter = await pollReady(name)
   if (readyAfter !== null) {
-    stderr += `ready: ${repo} (tmux=${name}, SessionStart fired after ~${readyAfter} ms)\n`
+    stderr += `ready: ${name} (tmux=${session}, SessionStart fired after ~${readyAfter} ms)\n`
   } else {
     stderr +=
-      `WARN: ${repo} (tmux=${name}) did not signal ready within 18s ` +
+      `WARN: ${name} (tmux=${session}) did not signal ready within 18s ` +
       "(no SessionStart hook fire — the plugin's on-session-start.sh may not " +
       'be loaded, or claude failed to boot). Continuing, but if the REPL is ' +
       "actually dead, a subsequent sync 'tm send' / 'tm spawn --prompt' / " +
       "'tm compact' will block until its --timeout expires (default 1800s) " +
       `and then exit ${EXIT_SYNC_WAIT_EXPIRED} (sync wait expired). ` +
-      `'tm status ${repo}' shows the live pane if you need to verify.\n`
+      `'tm status ${name}' shows the live pane if you need to verify.\n`
   }
 
   if (!hasPrompt) {
     return { code: 0, stdout: '', stderr }
   }
 
-  // Atomic bootstrap: settle, then hand off to `tm send`. `cmd_send`'s
-  // stdout (and its `ctx:` stderr echo) become the spawn verb's
-  // stdout/stderr so the dispatcher sees one round-trip's worth of
-  // output for the whole sequence.
-  //
-  // `--timeout` MUST ride along — without it, `tm spawn --prompt --timeout N`
-  // silently waits the 1800s send default and the dispatcher's 124 classifier
-  // never fires inside the window it was scheduled against. The Codex engine
-  // already propagates the same field; this keeps the two engines symmetric.
+  // Atomic bootstrap: settle, then hand off to `tm send`.
   await sleepMs(3000)
-  const sendArgs: string[] = [repo, '--prompt', prompt]
+  const sendArgs: string[] = [name, '--prompt', prompt]
   if (timeout !== null) sendArgs.push('--timeout', timeout)
   const sendResult = await claudeSend(sendArgs, env)
   return {

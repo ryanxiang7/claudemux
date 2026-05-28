@@ -19,16 +19,18 @@ export interface RepoFsEnv {
 }
 
 /**
- * The Claude Code project directory for a teammate repo — `tm`'s
- * `project_dir_for_repo`. The repo's *physical* path (symlinks resolved,
- * as `cd && pwd -P` does) is encoded, so a symlinked dispatcher tree
- * still addresses the directory Claude Code actually wrote on disk.
+ * The Claude Code project directory for a teammate, keyed on its
+ * runtime cwd. The cwd's *physical* path (symlinks resolved, as
+ * `cd && pwd -P` does) is encoded — Claude Code writes transcripts
+ * under that exact encoding. Worktree teammates therefore land at
+ * `~/.claude/projects/<repo-with-worktree-suffix>/`; `--no-worktree`
+ * teammates land at the repo's bare encoded path.
  *
- * The caller must have already confirmed `<dispatcherDir>/<name>`
- * exists — `realpathSync` needs a real path.
+ * The caller must have already confirmed `cwd` exists —
+ * `realpathSync` needs a real path.
  */
-export function projectDirForRepo(name: TeammateName, env: RepoFsEnv): string {
-  const phys = realpathSync(join(env.dispatcherDir, name))
+export function projectDirForCwd(cwd: string, env: RepoFsEnv): string {
+  const phys = realpathSync(cwd)
   return join(env.projectsDir, encodeProjectDir(phys))
 }
 

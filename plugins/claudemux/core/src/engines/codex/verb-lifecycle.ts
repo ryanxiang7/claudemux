@@ -30,10 +30,13 @@ export async function codexSpawn(
   const invalidName = validateCodexName(name)
   if (invalidName !== null) return invalidName
   const engine = resolveEngine(opts.engine)
+  const cwd = opts.cwd ?? process.cwd()
   const result = await engine.spawn(
     {
       name,
-      cwd: opts.cwd ?? process.cwd(),
+      repo: cwd,
+      cwd,
+      worktreeSlug: null,
       resumeCheckpoint: null,
       prompt: opts.prompt ?? null,
       timeoutMs: timeoutMsFromSeconds(opts.timeoutSec ?? null),

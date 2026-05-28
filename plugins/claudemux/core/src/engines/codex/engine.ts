@@ -8,6 +8,7 @@
  */
 
 import { Buffer } from 'node:buffer'
+import { existsSync } from 'node:fs'
 
 import type { Engine } from '../engine'
 import type {
@@ -92,6 +93,7 @@ import {
 } from './rollout.js'
 import { validateTeammateName } from '../../identity/name.js'
 import { looksLikeUuidPrefix } from '../../identity/uuid-prefix.js'
+import { provisionCodexWorktree, reapCodexWorktree } from '../git-worktree.js'
 
 export const CODEX_CLIENT_INFO: ClientInfo = {
   name: 'claudemux',
@@ -589,7 +591,9 @@ export class CodexEngine implements Engine {
     const createdAt = Math.floor(ctx.now() / 1000)
     const record = new CodexTeammateRecord({
       name: req.name,
+      repo: req.repo,
       cwd: req.cwd,
+      worktreeSlug: req.worktreeSlug,
       createdAt,
       displayName: req.displayName,
     })
@@ -598,6 +602,14 @@ export class CodexEngine implements Engine {
       return { kind: 'already-exists', existingEngine: reserved.existing.engine }
     }
     if (reserved.kind === 'failed') return { kind: 'failed', message: reserved.message }
+
+    if (req.worktreeSlug !== null) {
+      const worktreeError = await provisionCodexWorktree(req.repo, req.worktreeSlug)
+      if (worktreeError !== null) {
+        removeBaseRecord(req.name)
+        return { kind: 'failed', message: worktreeError }
+      }
+    }
 
     try {
       await spawnDaemon({
@@ -838,7 +850,32 @@ export class CodexEngine implements Engine {
     if (state === null && base === null && meta === null) return { kind: 'not-found' }
     try {
       await reapDaemon(req.name)
+      let worktreeNote = ''
+      if (base !== null && base.worktreeSlug !== null) {
+        const reap = await reapCodexWorktree(base.repo, base.worktreeSlug)
+        if (reap.kind === 'preserved-dirty') {
+          worktreeNote =
+            `worktree preserved at ${reap.path} ` +
+            `(uncommitted changes — run 'git -C ${base.repo} worktree remove --force ${reap.path}' once safe)\n`
+        } else if (reap.kind === 'preserved-unmerged') {
+          worktreeNote =
+            `worktree preserved at ${reap.path} ` +
+            `(branch '${reap.branch}' has commits not merged into HEAD — ` +
+            `merge or rebase the branch first, then ` +
+            `'git -C ${base.repo} worktree remove --force ${reap.path} && ` +
+            `git -C ${base.repo} branch -D ${reap.branch}' to clean up)\n`
+        } else if (reap.kind === 'failed') {
+          worktreeNote = `worktree cleanup failed: ${reap.message}\n`
+        }
+      }
       removeBaseRecord(req.name)
+      if (worktreeNote.length > 0) {
+        // We still return `killed` — the teammate is gone, the
+        // worktree leftover is communicated separately so a stale
+        // dirty checkout never blocks `tm kill` from completing.
+        // The verb layer surfaces the note through stderr.
+        return { kind: 'killed', note: worktreeNote }
+      }
       return { kind: 'killed' }
     } catch (e) {
       return { kind: 'failed', message: e instanceof Error ? e.message : String(e) }
@@ -861,7 +898,9 @@ export class CodexEngine implements Engine {
         name,
         engine: 'codex',
         state: daemonState,
+        repo: base?.repo ?? base?.cwd ?? meta?.cwd ?? '',
         cwd: base?.cwd ?? meta?.cwd ?? '',
+        worktreeSlug: base?.worktreeSlug ?? null,
         displayName: base?.displayName ?? meta?.displayName ?? null,
         extras: codexListExtras(nowSec, state, daemonState, rollout, runtime),
       }
@@ -939,9 +978,12 @@ export class CodexEngine implements Engine {
 
     const createdAt = Math.floor(ctx.now() / 1000)
     const cwd = req.cwd ?? process.cwd()
+    const repo = req.repo ?? cwd
     const record = new CodexTeammateRecord({
       name: req.name,
+      repo,
       cwd,
+      worktreeSlug: req.worktreeSlug,
       createdAt,
       displayName: req.displayName,
     })
@@ -950,6 +992,26 @@ export class CodexEngine implements Engine {
       return { kind: 'failed', message: `'${req.name}' already exists as a ${reserved.existing.engine} teammate` }
     }
     if (reserved.kind === 'failed') return { kind: 'failed', message: reserved.message }
+
+    // Resume-after-clean-kill recovery: if the resumed teammate ran
+    // in a worktree and that worktree path was cleared by the prior
+    // `tm kill` (default for clean state), re-create it from `repo` +
+    // `worktreeSlug` now so the daemon's `spawnDaemon` cwd actually
+    // exists. The `tm resume` verb layer parses the rollout's
+    // `session_meta.cwd` and forwards repo / worktreeSlug for exactly
+    // this path. If `--no-worktree`, or the worktree dir still
+    // exists, the provision is a no-op.
+    if (req.worktreeSlug !== null && !existsSync(cwd)) {
+      const error = await provisionCodexWorktree(repo, req.worktreeSlug)
+      if (error !== null) {
+        removeBaseRecord(req.name)
+        return {
+          kind: 'failed',
+          message:
+            `failed to re-provision worktree for resume at ${cwd}: ${error}`,
+        }
+      }
+    }
 
     let client: CodexWsClient | null = null
     try {

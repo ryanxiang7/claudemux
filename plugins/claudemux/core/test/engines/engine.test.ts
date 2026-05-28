@@ -152,17 +152,21 @@ describe('TeammateRecord subclasses', () => {
   test('ClaudeTeammateRecord carries the base fields and reports kind=claude', () => {
     const rec = new ClaudeTeammateRecord({
       name: 'alpha',
+      repo: '/tmp/alpha',
       cwd: '/tmp/alpha',
+      worktreeSlug: null,
       createdAt: 1700000000,
       displayName: 'Alpha',
     })
     expect(rec.engine).toBe('claude')
     expect(rec.name).toBe('alpha')
     expect(rec.toJson()).toEqual({
-      schema: 1,
+      schema: 2,
       name: 'alpha',
       engine: 'claude',
+      repo: '/tmp/alpha',
       cwd: '/tmp/alpha',
+      worktreeSlug: null,
       createdAt: 1700000000,
       displayName: 'Alpha',
     })
@@ -171,7 +175,9 @@ describe('TeammateRecord subclasses', () => {
   test('CodexTeammateRecord reports kind=codex with the same base shape', () => {
     const rec = new CodexTeammateRecord({
       name: 'beta',
+      repo: '/tmp/beta',
       cwd: '/tmp/beta',
+      worktreeSlug: null,
       createdAt: 1700000001,
       displayName: null,
     })
@@ -183,7 +189,9 @@ describe('TeammateRecord subclasses', () => {
   test('ClaudeTeammateRecord.engineExtensionFiles enumerates the four Phase 2a extension files', () => {
     const rec = new ClaudeTeammateRecord({
       name: 'alpha',
+      repo: '/tmp/alpha',
       cwd: '/tmp/alpha',
+      worktreeSlug: null,
       createdAt: 0,
       displayName: null,
     })
@@ -195,21 +203,23 @@ describe('TeammateRecord subclasses', () => {
     ])
   })
 
-  test('ClaudeTeammateRecord.tmuxSession encodes / as __', () => {
+  test('ClaudeTeammateRecord.tmuxSession composes the flat name without encoding', () => {
     const rec = new ClaudeTeammateRecord({
-      name: 'flow/flow-1',
-      cwd: '/tmp/flow/flow-1',
+      name: 'flow-1',
+      repo: '/tmp/flow',
+      cwd: '/tmp/flow/.claude/worktrees/flow-1',
+      worktreeSlug: 'flow-1',
       createdAt: 0,
       displayName: null,
     })
-    expect(rec.tmuxSession()).toBe('teammate-flow__flow-1')
+    expect(rec.tmuxSession()).toBe('teammate-flow-1')
   })
 
-  test('tmuxSessionName / decodeTmuxSessionName round-trip', () => {
+  test('tmuxSessionName / decodeTmuxSessionName round-trip flat names', () => {
     expect(tmuxSessionName('foo')).toBe('teammate-foo')
-    expect(tmuxSessionName('flow/flow-1')).toBe('teammate-flow__flow-1')
+    expect(tmuxSessionName('flow-1')).toBe('teammate-flow-1')
     expect(decodeTmuxSessionName('teammate-foo')).toBe('foo')
-    expect(decodeTmuxSessionName('teammate-flow__flow-1')).toBe('flow/flow-1')
+    expect(decodeTmuxSessionName('teammate-flow-1')).toBe('flow-1')
     expect(decodeTmuxSessionName('not-a-teammate')).toBeNull()
   })
 })

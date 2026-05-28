@@ -14,7 +14,7 @@
 #
 # Safety check 1 — env identity gate:
 #   `tm spawn` launches its tmux session with
-#   `tmux new-session -e CLAUDEMUX_TEAMMATE_REPO=<repo>`. claude inherits
+#   `tmux new-session -e CLAUDEMUX_TEAMMATE_NAME=<name>`. claude inherits
 #   that env, hooks inherit it from claude. The env survives /clear and
 #   /resume because they don't restart the claude process. If the env is
 #   not set, this is some other claude session (the dispatcher itself,
@@ -26,11 +26,13 @@
 #
 # Safety check 2 — recorded-cwd byte match:
 #   Even with the env set, we still verify the firing claude's cwd
-#   byte-equals the content of /tmp/teammate-<env-repo>.cwd. `tm spawn`
+#   byte-equals the content of /tmp/teammate-<env-name>.cwd. `tm spawn`
 #   writes that file at spawn time with the PHYSICAL path of the
-#   teammate's directory (via `cd && pwd -P`), and Claude Code emits cwd
-#   in the hook payload also as the physical path. The match also acts
-#   as a safety against a stray `cd packages/foo && /clear` inside a
+#   teammate's working directory (the worktree path under
+#   <repo>/.claude/worktrees/<slug> when a worktree is in use, the
+#   repo itself otherwise), and Claude Code emits cwd in the hook
+#   payload as the same physical path. The match also acts as a
+#   safety against a stray `cd packages/foo && /clear` inside a
 #   teammate — different cwd → no sid rotation, the .sid pointer stays
 #   pinned to the teammate's real workspace.
 
@@ -50,25 +52,27 @@ cwd=$(extract_field cwd)
 src=$(extract_field source)
 [[ -n "$sid" && -n "$cwd" ]] || exit 0
 
-# Env identity gate (see file header). Without CLAUDEMUX_TEAMMATE_REPO,
+# Env identity gate (see file header). Without CLAUDEMUX_TEAMMATE_NAME,
 # this claude was not launched by `tm spawn` — exit before doing any
 # .sid / .ready work, even if the cwd happens to match a recorded
 # teammate.cwd. This is what protects against the dispatcher (running in
-# a cwd that coincides with a sibling repo) hijacking the sid pointer.
-env_repo="${CLAUDEMUX_TEAMMATE_REPO:-}"
-[[ -n "$env_repo" ]] || exit 0
+# a cwd that coincides with a teammate workspace) hijacking the sid
+# pointer.
+env_name="${CLAUDEMUX_TEAMMATE_NAME:-}"
+[[ -n "$env_name" ]] || exit 0
 
-# Recorded-cwd byte match. The env tells us WHICH repo we should be;
-# the .cwd file tells us where that repo actually lives on disk. If the
-# firing cwd doesn't match the recorded cwd for env_repo, something is
-# off (e.g. someone `cd`'d into a subdir before /clear) — refuse to
-# rotate, leaving the .sid pointer pinned to the teammate's workspace.
-cf="/tmp/teammate-${env_repo}.cwd"
+# Recorded-cwd byte match. The env tells us WHICH teammate this is;
+# the .cwd file tells us where that teammate's working directory lives
+# on disk. If the firing cwd doesn't match the recorded cwd for
+# env_name, something is off (e.g. someone `cd`'d into a subdir before
+# /clear) — refuse to rotate, leaving the .sid pointer pinned to the
+# teammate's workspace.
+cf="/tmp/teammate-${env_name}.cwd"
 [[ -f "$cf" ]] || exit 0
 [[ "$(cat "$cf" 2>/dev/null)" == "$cwd" ]] || exit 0
-repo="$env_repo"
+name="$env_name"
 
-sf="/tmp/teammate-${repo}.sid"
+sf="/tmp/teammate-${name}.sid"
 
 # Sid rotation. Write only when the sid actually changes — that keeps
 # the steady-state startup case quiet (dispatcher's `tm spawn` already
@@ -79,7 +83,7 @@ old=""
 if [[ "$old" != "$sid" ]]; then
     echo "$sid" > "$sf"
     ts=$(date +%Y-%m-%dT%H:%M:%S)
-    printf '%s repo=%s source=%s old=%s new=%s\n' "$ts" "$repo" "${src:-?}" "${old:-<none>}" "$sid" \
+    printf '%s name=%s source=%s old=%s new=%s\n' "$ts" "$name" "${src:-?}" "${old:-<none>}" "$sid" \
         >> /tmp/claudemux-sid-changes.log 2>/dev/null
 fi
 
@@ -87,6 +91,6 @@ fi
 # `tm spawn` rm's this file BEFORE launching claude and polls for it to
 # reappear; subsequent SessionStarts (clear / compact / resume) also
 # touch but no one polls at that time, so they're harmless mtime bumps.
-touch "/tmp/teammate-${repo}.ready" 2>/dev/null
+touch "/tmp/teammate-${name}.ready" 2>/dev/null
 
 exit 0

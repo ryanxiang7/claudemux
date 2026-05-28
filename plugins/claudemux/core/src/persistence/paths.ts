@@ -64,28 +64,42 @@ export function sendAtFile(name: TeammateName): string {
 export const TMUX_SESSION_PREFIX = 'teammate-'
 
 /**
- * Encode a (possibly nested) teammate name into a tmux session name.
- * Decision multi-engine-tui-architecture §"Nested teammate names" — the only place `/` becomes
- * `__`. `identity/name.ts`'s validator rejects nested names that already
- * contain `__`, so nested-name encoding is unambiguous.
+ * Compose a teammate name into its tmux session name. Schema 2 made
+ * names flat, so the prefix is the only transformation.
  *
- * Example: `flow/flow-1` → `teammate-flow__flow-1`.
+ * Example: `flow-auth-7d3a` → `teammate-flow-auth-7d3a`.
  */
 export function tmuxSessionName(name: TeammateName): string {
-  return `${TMUX_SESSION_PREFIX}${name.replace(/\//g, '__')}`
+  return `${TMUX_SESSION_PREFIX}${name}`
 }
 
 /**
- * Approximate inverse of `tmuxSessionName`. Lossy by construction: a raw
- * teammate name `flow__1` and a nested name `flow/1` both encode to
- * `teammate-flow__1`, so the reverse path cannot recover the original
- * once a `__` appears. Production listing code reads names from the
- * base TeammateRecord JSON instead; this helper is a convenience for
- * tests and diagnostics that already know no nested decoding is needed.
+ * Recover the teammate name from a tmux session string, or `null` if
+ * the session does not carry the teammate prefix. Schema 2's flat
+ * names make this an exact round-trip.
  */
 export function decodeTmuxSessionName(session: string): string | null {
   if (!session.startsWith(TMUX_SESSION_PREFIX)) return null
-  return session.slice(TMUX_SESSION_PREFIX.length).replace(/__/g, '/')
+  return session.slice(TMUX_SESSION_PREFIX.length)
+}
+
+/**
+ * The on-disk worktree path for a teammate. Mirrors Claude Code's
+ * `claude --worktree <slug>` layout — `<repo>/.claude/worktrees/<slug>`
+ * — so the Claude engine's pre-spawn `.cwd` write and the Codex
+ * engine's self-managed `git worktree add` use the same builder.
+ */
+export function worktreePathFor(repo: string, slug: string): string {
+  return `${repo}/.claude/worktrees/${slug}`
+}
+
+/**
+ * The git branch name `claude --worktree <slug>` creates. Codex's
+ * self-managed `git worktree add -b` uses the same branch name so a
+ * teammate's worktree layout looks identical whichever engine owns it.
+ */
+export function worktreeBranchFor(slug: string): string {
+  return `worktree-${slug}`
 }
 
 /** Per-teammate file fan-out for the Claude engine. */

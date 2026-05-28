@@ -1,5 +1,5 @@
 {
-  "code": 0,
+  "code": 1,
   "stdout": "",
-  "stderr": ""
+  "stderr": "tm: no such teammate: claudemux-conftest-01f0b7243733\n"
 }

@@ -1,5 +1,5 @@
 {
-  "code": 0,
+  "code": 1,
   "stdout": "",
-  "stderr": "tm mem: no auto-memory recorded for claudemux-conftest-7ce362cdff9e (looked at <HOME>/.claude/projects/<SCRATCH-ENC>-dispatcher-claudemux-conftest-7ce362cdff9e/memory/MEMORY.md)\n"
+  "stderr": "tm: tm mem: no identity record for 'claudemux-conftest-7ce362cdff9e'. Spawn it with 'tm spawn <path> --name claudemux-conftest-7ce362cdff9e' first, or check 'tm ls'.\n"
 }

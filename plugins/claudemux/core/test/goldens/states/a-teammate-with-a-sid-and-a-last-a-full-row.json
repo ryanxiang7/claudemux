@@ -1,5 +1,5 @@
 {
   "code": 0,
-  "stdout": "REPO                             SID       BUSY  LAST    PREVIEW\nclaudemux-conftest-c1f46f974223  claudemu  no    38B/2h  the last reply line\n",
+  "stdout": "NAME                             REPO  WORKTREE  ENGINE  STATE    LAST    PREVIEW\nclaudemux-conftest-c1f46f974223  -     -         claude  unknown  38B/2h  the last reply line\n",
   "stderr": ""
 }

@@ -15,7 +15,9 @@ export class ClaudeTeammateRecord extends TeammateRecord {
 
   constructor(args: {
     name: TeammateName
+    repo: string
     cwd: string
+    worktreeSlug: string | null
     createdAt: number
     displayName: string | null
   }) {

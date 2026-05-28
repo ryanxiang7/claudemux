@@ -51,14 +51,32 @@ export function noEngineRegistered(): TmResult {
   }
 }
 
+/** Last path segment, or `-` when the path is empty / "/". */
+function repoLeaf(path: string): string {
+  if (path.length === 0) return '-'
+  const trimmed = path.replace(/\/+$/, '')
+  const slash = trimmed.lastIndexOf('/')
+  const leaf = slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+  return leaf.length === 0 ? '-' : leaf
+}
+
 export function formatListing(rows: readonly TeammateListing[]): TmResult {
   if (rows.length === 0) {
-    // Legacy `tm ls` printed a one-line "use spawn" pointer when the fleet
-    // was empty; the cli path keeps that affordance so an empty `tm ls`
-    // is informative rather than silent.
-    return { code: 0, stdout: "(no teammate sessions; use 'tm spawn <repo>')\n", stderr: '' }
+    return {
+      code: 0,
+      stdout: "(no teammate sessions; use 'tm spawn <path>')\n",
+      stderr: '',
+    }
   }
-  const lines = rows.map((r) => `${r.name}\t${r.engine}\t${r.state}\t${r.cwd}`)
+  const lines = rows.map((r) =>
+    [
+      r.name,
+      repoLeaf(r.repo),
+      r.worktreeSlug ?? '-',
+      r.engine,
+      r.state,
+    ].join('\t'),
+  )
   return { code: 0, stdout: `${lines.join('\n')}\n`, stderr: '' }
 }
 
@@ -81,7 +99,11 @@ export function formatStatus(status: TeammateStatus): TmResult {
 export function formatKill(name: TeammateName, result: KillResult): TmResult {
   switch (result.kind) {
     case 'killed':
-      return { code: 0, stdout: `killed: ${name}\n`, stderr: '' }
+      return {
+        code: 0,
+        stdout: `killed: ${name}\n`,
+        stderr: result.note ?? '',
+      }
     case 'not-found':
       return { code: 0, stdout: `not running: ${name}\n`, stderr: '' }
     case 'failed':

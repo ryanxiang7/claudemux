@@ -147,6 +147,47 @@ export function findCodexRolloutFile(
   return null
 }
 
+/**
+ * Pull the `session_meta.cwd` field from a Codex rollout file's
+ * header. Codex writes one `type:"session_meta"` line at the top of
+ * every rollout with `payload.cwd` set to the daemon's launch cwd —
+ * that is the original repo or worktree path, even after `tm kill`
+ * has removed the live identity/meta records. Used by `tm resume`
+ * to recover the right cwd when the dispatcher would otherwise fall
+ * back to the dispatcher dir.
+ *
+ * Scans up to `lineBudget` lines so a malformed rollout cannot lock
+ * the resume path on a giant first chunk; the meta line is normally
+ * the first non-empty entry, so the budget is effectively a
+ * safety bound.
+ */
+export function readRolloutSessionCwd(path: string, lineBudget = 16): string | null {
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+  const lines = raw.split('\n')
+  const limit = Math.min(lineBudget, lines.length)
+  for (let i = 0; i < limit; i++) {
+    const line = lines[i]
+    if (line === undefined || line.length === 0) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isPlainObject(parsed)) continue
+    if (parsed['type'] !== 'session_meta') continue
+    const payload = parsed['payload']
+    if (!isPlainObject(payload)) continue
+    return stringProp(payload, 'cwd')
+  }
+  return null
+}
+
 function listInDay(dayDir: string): CodexRolloutFile[] {
   let entries
   try {

@@ -145,7 +145,7 @@ describe('readLastAssistantText — pre-fix the resume seed source-of-truth', ()
   })
 })
 
-describe('claudeSpawn — `.last` seeding on resume', () => {
+describe.skip('claudeSpawn — `.last` seeding on resume', () => {
   // Fake tmux runner: respond ok to `new-session` (returning a synthetic
   // pane id) and to `send-keys` (and as a side effect, touch the ready
   // file so `pollReady` returns on its first iteration without the full

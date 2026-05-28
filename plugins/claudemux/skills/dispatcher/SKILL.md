@@ -32,7 +32,9 @@ The dispatcher routes work into sibling repos; it does not investigate target-re
 
 `tm` resolves the dispatcher directory from `TM_DISPATCHER_DIR` if set, otherwise `$PWD`. `/claudemux:setup` writes `TM_DISPATCHER_DIR` into the dispatcher root's `.claude/settings.json` so Claude Code injects it on dispatcher launch. If `tm doctor` reports `TM_DISPATCHER_DIR: unset` or points at the wrong directory, run `/claudemux:setup` from the dispatcher root or ask the user to relaunch there.
 
-For Claude teammates, `<repo>` is the short name of a sibling subdirectory directly under the dispatcher dir; `tm spawn my-repo` starts tmux session `teammate-my-repo` with cwd `<dispatcher-dir>/my-repo`. Codex teammates are daemons, not tmux sessions; spawn them explicitly with `tm spawn <name> --engine codex`. For Codex, `<name>` is first interpreted as a path relative to the dispatcher dir: if that path resolves to a directory, the daemon cwd is that realpath, including nested names such as `web-project/flow-web-monorepo`; otherwise cwd falls back to the dispatcher dir. The same `<name>` also composes `/tmp/teammate-codex/<name>/` for daemon registry and socket state.
+`tm spawn <path>` is the only verb that takes a filesystem path; every other teammate verb takes the flat `<name>` returned by spawn. The path may be absolute or relative to the dispatcher dir; `realpath` resolves it and `identity.repo` records the result. The teammate name is auto-generated as `<basename(path)>-<rand4>` unless you pass `--name <id>` (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, globally unique). Spawn returns `spawned: <name>` on stderr — **capture it and record it in the active-task ledger**; every subsequent `tm send` / `tm wait` / `tm kill` / `tm last` / `tm mem` routes by name, not by path.
+
+By default a Claude teammate runs inside a worktree at `<path>/.claude/worktrees/<name>/` (branch `worktree-<name>`, base ref `HEAD`); pass `--no-worktree` for repo-wide tasks where worktree isolation is a hindrance. Codex teammates default to a self-managed git worktree at the same `.claude/worktrees/<name>/` layout (claudemux drives `git worktree add` directly because Codex has no native worktree flag). Codex teammates are daemons, not tmux sessions; spawn them explicitly with `tm spawn <path> --engine codex`. Names are flat — nested `codex/foo` form is no longer supported.
 
 ## Scenario routing
 
@@ -40,18 +42,18 @@ Match the user's intent to one row below, then **read the listed reference befor
 
 | When you're doing this | Read | Primary verb(s) |
 |---|---|---|
-| Pushing work into a repo via Claude tmux teammate | `references/dispatch-task.md` | `tm spawn <repo> --prompt "..."` / `tm send <repo> --prompt "..."` |
+| Pushing work into a repo via Claude tmux teammate | `references/dispatch-task.md` | `tm spawn <path> --prompt "..."` / `tm send <name> --prompt "..."` |
 | Pushing work into a persistent Codex daemon teammate | `references/dispatch-task.md` | `tm spawn <name> --engine codex` / `tm send <name> --prompt "..."` |
 | Borrowing an idle Codex daemon for one fresh ephemeral turn | `references/dispatch-task.md` | `tm ask "..."` |
-| Composing a spawn / send prompt that references sibling-repo state | `references/sibling-memory.md` | `tm mem <repo>` |
-| Waiting for a turn an external actor drove | `references/wait-and-readback.md` | `tm wait --fresh <repo>` / `tm wait <codex-name>` |
+| Composing a spawn / send prompt that references sibling-repo state | `references/sibling-memory.md` | `tm mem <name>` |
+| Waiting for a turn an external actor drove | `references/wait-and-readback.md` | `tm wait --fresh <name>` / `tm wait <name>` |
 | Reading the fleet snapshot | `references/inspect-and-resume.md` | `tm states` |
-| A teammate looks hung mid-turn and needs pane/process ground truth | `references/wait-and-readback.md` | `tm status <repo>` |
-| Looking up past sessions or threads / resuming / re-reading a reply | `references/inspect-and-resume.md` | `tm history <repo>` / `tm resume <repo> <id>` / `tm last <repo>` |
-| Compacting a Claude teammate's context window | `references/compact-a-teammate.md` | `tm compact <repo>` |
+| A teammate looks hung mid-turn and needs pane/process ground truth | `references/wait-and-readback.md` | `tm status <name>` |
+| Looking up past sessions or threads / resuming / re-reading a reply | `references/inspect-and-resume.md` | `tm history <name>` / `tm resume <name> <id>` / `tm last <name>` |
+| Compacting a Claude teammate's context window | `references/compact-a-teammate.md` | `tm compact <name>` |
 | Appending a new active task or archiving a finished one | `references/ledger-and-archive.md` | `tm archive <id>` |
 | Diagnosing `.sid` drift, a stuck Claude spawn, or surprising `tm states` output | `references/sid-rotation.md` | (debugging) |
-| Fanning `/reload-plugins` to teammates after a plugin update | (no reference) | `tm reload --all` (or `tm reload <repo>...`) |
+| Fanning `/reload-plugins` to teammates after a plugin update | (no reference) | `tm reload --all` (or `tm reload <name>...`) |
 
 For any verb's flag/output contract: `tm <verb> --help`. Do not reason about `tm` from prior-conversation memory or model priors.
 

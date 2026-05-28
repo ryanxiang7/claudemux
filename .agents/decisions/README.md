@@ -37,6 +37,7 @@ never collide on a sequence number.
 | [research-hazard-dispositions](/.agents/decisions/research-hazard-dispositions.md) | Every research hazard reaches a recorded disposition before it leaves the research layer | Accepted |
 | [teammates-launch-without-askuserquestion](/.agents/decisions/teammates-launch-without-askuserquestion.md) | Teammates launch with the `AskUserQuestion` tool disabled | Accepted |
 | [tm-quality-hardening](/.agents/decisions/tm-quality-hardening.md) | `tm` was hardened with CI, bats tests, lint, and shared path/encoding helpers | Accepted |
+| [worktree-default-and-name-repo-decoupling](/.agents/decisions/worktree-default-and-name-repo-decoupling.md) | Schema 2 cut: every teammate launches inside a git worktree by default, and the teammate `name` is a flat opaque identifier independent of the repo path | Accepted |
 | [zero-install-type-stripping](/.agents/decisions/zero-install-type-stripping.md) | `tm` runs TypeScript sources directly under Node `--experimental-transform-types`; `ws` is vendored under `core/third_party/` so there is no `npm install` and no build step | Accepted |
 
 ## When to add a record

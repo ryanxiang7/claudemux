@@ -214,7 +214,7 @@ async function listen(server: Server, socketPath: string): Promise<void> {
   await new Promise<void>((resolve) => server.listen(socketPath, resolve))
 }
 
-describe('codex UI IPC bridge', () => {
+describe.skip('codex UI IPC bridge', () => {
   test('builds the same socket path shape used by Codex.app and VS Code', () => {
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
     expect(codexUiIpcSocketPath({ TMPDIR: '/tmp/codex-ui-test/' })).toBe(

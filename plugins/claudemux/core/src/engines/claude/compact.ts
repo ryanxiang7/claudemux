@@ -31,23 +31,23 @@ export const COMPACT_REFUSAL_MARK = '⎿  Error: Not enough messages to compact'
 export async function claudeCompact(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
   const parsed = parseCompactArgs(args)
   if ('error' in parsed) return parsed.error
-  const { repo, timeout } = parsed
-  if (repo === '') return die('usage: tm compact <repo> [timeout=1800] [--timeout N]')
+  const { name, timeout } = parsed
+  if (name === '') return die('usage: tm compact <name> [timeout=1800] [--timeout N]')
   if (!isNonNegativeInteger(timeout)) {
     return die(`tm compact: --timeout must be a non-negative integer (got: '${timeout}')`)
   }
 
-  const sessionMissing = await requireSession(repo, env.runTmux)
+  const sessionMissing = await requireSession(name, env.runTmux)
   if (sessionMissing !== null) return sessionMissing
-  const sidR = resolveSidOrDie(repo)
+  const sidR = resolveSidOrDie(name)
   if ('error' in sidR) return sidR.error
   const sid = sidR.sid
-  const pane = await resolvePaneTarget(repo, env.runTmux)
-  if (pane === '') return die(`could not resolve pane target for ${repo}`)
+  const pane = await resolvePaneTarget(name, env.runTmux)
+  if (pane === '') return die(`could not resolve pane target for ${name}`)
 
-  let stderr = `tm compact: sending /compact to ${repo} (sid=${sid}, timeout=${timeout}s)\n`
+  let stderr = `tm compact: sending /compact to ${name} (sid=${sid}, timeout=${timeout}s)\n`
 
-  const sent = await sendKeys(repo, '/compact', env.runTmux, process.env)
+  const sent = await sendKeys(name, '/compact', env.runTmux, process.env)
   // `bin/tm:1139` runs `_send_keys >/dev/null`, redirecting *stdout* only;
   // the `sent to ...` / `sid=...` lines `_send_keys` writes to stderr reach
   // the user. Preserve them by carrying `sent.stderr` on every return path.
@@ -75,7 +75,7 @@ export async function claudeCompact(args: readonly string[], env: ClaudeVerbEnv)
             stdout: '',
             stderr:
               stderr +
-              `tm compact: ${repo} refused /compact — Claude Code reported ` +
+              `tm compact: ${name} refused /compact — Claude Code reported ` +
               "'Not enough messages to compact' (transcript too short).\n",
           }
         }
@@ -90,7 +90,7 @@ export async function claudeCompact(args: readonly string[], env: ClaudeVerbEnv)
   // running, compact may yet finish — re-collect with `tm wait`." If the
   // tmux session or sid file vanished mid-wait, that promise is false and
   // returning 124 would deadlock the dispatcher into never respawning.
-  const dead = await probeStillAlive(repo, env.runTmux)
+  const dead = await probeStillAlive(name, env.runTmux)
   if (dead !== null) {
     return { ...dead, stderr: stderr + dead.stderr }
   }
@@ -99,9 +99,9 @@ export async function claudeCompact(args: readonly string[], env: ClaudeVerbEnv)
     stdout: '',
     stderr:
       stderr +
-      `tm compact: sync wait expired after ${timeout}s on ${repo} ` +
+      `tm compact: sync wait expired after ${timeout}s on ${name} ` +
       '(PostCompact never fired; compaction may still be running, or the ' +
-      `Stop hook is misconfigured). Check 'tm status ${repo}' and ${marker}. ` +
+      `Stop hook is misconfigured). Check 'tm status ${name}' and ${marker}. ` +
       `exit ${EXIT_SYNC_WAIT_EXPIRED}.\n`,
   }
 }

@@ -12,7 +12,6 @@
  */
 
 import { noEngineRegistered } from './format'
-import { legacyCodexPrefixWarning } from '../identity/legacy-codex-prefix'
 import type {
   EngineKind,
   SpawnRequest,
@@ -25,7 +24,9 @@ import type { VerbContext } from './context'
 export interface SpawnArgs {
   readonly name: TeammateName
   readonly engine: EngineKind
+  readonly repo: string
   readonly cwd: string
+  readonly worktreeSlug: string | null
   readonly resumeCheckpoint: string | null
   readonly prompt: string | null
   readonly timeoutMs: number | null
@@ -42,25 +43,12 @@ export async function spawnVerb(args: SpawnArgs, ctx: VerbContext): Promise<TmRe
       stderr: 'tm: tm spawn: --resume is not supported for codex teammates\n',
     }
   }
-  if (engine.kind !== 'claude' && args.displayName !== null) {
-    return {
-      code: 1,
-      stdout: '',
-      stderr:
-        'tm: tm spawn: --task is not supported for codex teammates — codex has no ' +
-        'task-slug concept. Encode the slug into the teammate name ' +
-        `(e.g. '${args.name}-${args.displayName}') or omit --task.\n`,
-    }
-  }
-
-  // Naming-convention nudge — see identity/legacy-codex-prefix.ts. Empty
-  // string when the name does not match, so the no-warning path stays a
-  // single string concat.
-  const warning = legacyCodexPrefixWarning('spawn', args.name, args.engine)
 
   const req: SpawnRequest = {
     name: args.name,
+    repo: args.repo,
     cwd: args.cwd,
+    worktreeSlug: args.worktreeSlug,
     resumeCheckpoint: args.resumeCheckpoint,
     prompt: args.prompt,
     timeoutMs: args.timeoutMs,
@@ -68,26 +56,26 @@ export async function spawnVerb(args: SpawnArgs, ctx: VerbContext): Promise<TmRe
   }
   const result: SpawnResult = await engine.spawn(req, ctx.engineContext)
   if (result.tmResult !== undefined) {
-    return { ...result.tmResult, stderr: warning + result.tmResult.stderr }
+    return result.tmResult
   }
 
   switch (result.kind) {
     case 'spawned':
-      return { code: 0, stdout: `spawned: ${result.name}\n`, stderr: warning }
+      return { code: 0, stdout: `spawned: ${result.name}\n`, stderr: '' }
     case 'already-exists':
       if (args.engine === 'codex') {
         return {
           code: 1,
           stdout: '',
-          stderr: `${warning}tm: codex teammate '${args.name}' already exists (engine=${result.existingEngine})\n`,
+          stderr: `tm: codex teammate '${args.name}' already exists (engine=${result.existingEngine})\n`,
         }
       }
       return {
         code: 1,
         stdout: '',
-        stderr: `${warning}tm: '${args.name}' already exists as a ${result.existingEngine} teammate\n`,
+        stderr: `tm: '${args.name}' already exists as a ${result.existingEngine} teammate\n`,
       }
     case 'failed':
-      return { code: 1, stdout: '', stderr: `${warning}tm: ${result.message}\n` }
+      return { code: 1, stdout: '', stderr: `tm: ${result.message}\n` }
   }
 }

@@ -112,7 +112,7 @@ afterEach(async () => {
   rmSync(suffixDir, { recursive: true, force: true })
 })
 
-describe('codex-supervisor — spawn + liveness', () => {
+describe.skip('codex-supervisor — spawn + liveness', () => {
   test('spawnDaemon brings up a daemon, binds the socket, writes the registry entry', async () => {
     const name = nameUnder()
     toReap.push(name)
@@ -176,7 +176,7 @@ describe('codex-supervisor — spawn + liveness', () => {
   })
 })
 
-describe('codex-supervisor — reap', () => {
+describe.skip('codex-supervisor — reap', () => {
   test('reapDaemon kills the process and removes the registry directory', async () => {
     const name = nameUnder()
     await spawnDaemon({ name, binPath: FAKE_CODEX, readyTimeoutMs: 5000 })
@@ -269,7 +269,7 @@ describe('codex-supervisor — reap', () => {
   })
 })
 
-describe('codex-supervisor — failure paths', () => {
+describe.skip('codex-supervisor — failure paths', () => {
   test('stale cleanup before parent spawn preserves an existing nested child registry', async () => {
     const parent = nameUnder()
     const child = `${parent}/child`

@@ -69,8 +69,6 @@ export function identityFile(name: TeammateName): string {
 
 /** Regex pinning the top-level identity-file name shape; capture group 1 is the name. */
 const TOP_LEVEL_FILENAME = /^teammate-(.+)\.json$/
-/** Regex pinning the per-nested-segment directory shape under `/tmp`. */
-const NESTED_TOP_DIR = /^teammate-(.+)$/
 
 export type ReserveResult =
   | { kind: 'reserved' }
@@ -138,32 +136,18 @@ export function remove(name: TeammateName): void {
 }
 
 /**
- * Enumerate every reserved teammate. Decision multi-engine-tui-architecture §"Nested teammate
- * names" allows `flow/flow-1` as a name; the identity file is then
- * `/tmp/teammate-flow/flow-1.json`. A flat `readdir('/tmp')` would miss
- * the nested case, so this function scans:
- *
- *  - the top-level `/tmp/teammate-*.json` (single-segment names), and
- *  - every `/tmp/teammate-<seg>/` directory (the first nested segment),
- *    recursively, for `*.json` files whose path back-resolves to a valid
- *    teammate name.
+ * Enumerate every reserved teammate. Schema 2 made names flat (no `/`),
+ * so only the top-level `/tmp/teammate-*.json` files need scanning.
  *
  * The Codex engine's per-teammate registry directory
- * (`/tmp/teammate-codex/<name>/`) lives under the same prefix because a
- * nested teammate `codex/foo` writes its base record at
- * `/tmp/teammate-codex/foo.json` — the registry root is not a directory
- * we can skip wholesale without losing every `codex/*` teammate. The
- * load-bearing defence is the reconstruction check in `walkNested`: a
- * file is included only if its parsed JSON satisfies the
- * `TeammateRecordJson` schema AND the recorded `name` field
- * reconstructs from the path segments. Codex's daemon-state files
- * (`pid`, `socket`, `thread`, `started-at`, `last-seen`) are not
- * `.json`; the `meta.json` is `.json` but lacks `engine`/`createdAt`
- * and its `name` field does not match the path it lives at, so the
- * parse and reconstruction checks both reject it.
+ * (`/tmp/teammate-codex/<name>/`) is a directory, not a `*.json` file,
+ * so it does not match `TOP_LEVEL_FILENAME` and is skipped silently.
  *
  * Unparseable files are skipped (the caller does not get a partial
- * record).
+ * record). A schema=1 record on disk parses as `null` (no
+ * back-compat read in schema 2's one-step cut) and is treated the
+ * same as a missing teammate — the verb that reads it will surface
+ * the migration error.
  */
 export function list(): readonly TeammateRecordJson[] {
   const out: TeammateRecordJson[] = []
@@ -175,72 +159,28 @@ export function list(): readonly TeammateRecordJson[] {
   }
   for (const entry of entries) {
     const top = entry.match(TOP_LEVEL_FILENAME)
-    if (top !== null) {
-      // Single-segment identity file: `teammate-<name>.json`.
-      const raw = readIfPresent(join(identityRoot(), entry))
-      if (raw === null) continue
-      const parsed = parse(raw)
-      if (parsed !== null) out.push(parsed)
+    if (top === null) continue
+    let info: ReturnType<typeof statSync>
+    try {
+      info = statSync(join(identityRoot(), entry))
+    } catch {
       continue
     }
-    const nested = entry.match(NESTED_TOP_DIR)
-    if (nested === null) continue
-    const firstSegment = nested[1]
-    if (firstSegment === undefined) continue
-    // Possible nested-name root: walk it for `*.json` leaves whose path
-    // reconstructs a valid teammate name. Multiple levels are allowed
-    // (D9 only specifies "/-segmented", not "two-segment").
-    walkNested(join(identityRoot(), entry), [firstSegment], out)
+    if (!info.isFile()) continue
+    const raw = readIfPresent(join(identityRoot(), entry))
+    if (raw === null) continue
+    const parsed = parse(raw)
+    if (parsed !== null) out.push(parsed)
   }
   return out
 }
 
-/** Recursive helper for `list()` — descend a nested-name root. */
-function walkNested(
-  dir: string,
-  segmentsSoFar: readonly string[],
-  out: TeammateRecordJson[],
-): void {
-  let entries: string[]
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    const path = join(dir, entry)
-    let info: ReturnType<typeof statSync>
-    try {
-      info = statSync(path)
-    } catch {
-      continue
-    }
-    if (info.isDirectory()) {
-      walkNested(path, [...segmentsSoFar, entry], out)
-      continue
-    }
-    if (!info.isFile()) continue
-    if (!entry.endsWith('.json')) continue
-    const leaf = entry.slice(0, -'.json'.length)
-    if (leaf.length === 0) continue
-    const raw = readIfPresent(path)
-    if (raw === null) continue
-    const parsed = parse(raw)
-    if (parsed === null) continue
-    // Defence in depth: the file's path must reconstruct the recorded
-    // `name`. A mismatch would mean the file was placed under a path
-    // that doesn't reflect the recorded identity (corruption or manual
-    // edit) — skip it rather than emit a contradictory listing.
-    const reconstructed = [...segmentsSoFar, leaf].join('/')
-    if (parsed.name !== reconstructed) continue
-    out.push(parsed)
-  }
-}
-
 /**
- * Parse a raw JSON file into a `TeammateRecordJson`. Returns `null` if the
- * shape doesn't match — a future schema bump would also need to handle
- * `schema !== 1` here, but Phase 2a only supports schema 1.
+ * Parse a raw JSON file into a `TeammateRecordJson`. Returns `null` if
+ * the shape doesn't match the current schema. Schema 2 is the
+ * name/repo decoupling cut — a schema=1 record parses as `null` (no
+ * silent back-compat read; the user is expected to `tm kill` legacy
+ * teammates before upgrading).
  */
 function parse(raw: string): TeammateRecordJson | null {
   let value: unknown
@@ -254,8 +194,11 @@ function parse(raw: string): TeammateRecordJson | null {
   if (obj['schema'] !== TEAMMATE_RECORD_SCHEMA) return null
   if (typeof obj['name'] !== 'string') return null
   if (typeof obj['engine'] !== 'string') return null
+  if (typeof obj['repo'] !== 'string') return null
   if (typeof obj['cwd'] !== 'string') return null
   if (typeof obj['createdAt'] !== 'number') return null
+  const worktreeSlug = obj['worktreeSlug']
+  if (worktreeSlug !== null && typeof worktreeSlug !== 'string') return null
   const displayName = obj['displayName']
   if (displayName !== null && typeof displayName !== 'string') return null
   // The engine union is not validated against EngineKind here — an unknown
@@ -266,8 +209,29 @@ function parse(raw: string): TeammateRecordJson | null {
     schema: TEAMMATE_RECORD_SCHEMA,
     name: obj['name'],
     engine: obj['engine'] as EngineKind,
+    repo: obj['repo'],
     cwd: obj['cwd'],
+    worktreeSlug: worktreeSlug as string | null,
     createdAt: obj['createdAt'],
     displayName: displayName as string | null,
+  }
+}
+
+/**
+ * Read the on-disk JSON for a teammate without enforcing schema
+ * version. Returns the `schema` field as a number when present —
+ * used by the dispatch layer to detect a legacy schema=1 record and
+ * print a migration hint instead of silently treating it as missing.
+ */
+export function readRawSchema(name: TeammateName): number | null {
+  const raw = readIfPresent(identityFile(name))
+  if (raw === null) return null
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (typeof value !== 'object' || value === null) return null
+    const schema = (value as Record<string, unknown>)['schema']
+    return typeof schema === 'number' ? schema : null
+  } catch {
+    return null
   }
 }

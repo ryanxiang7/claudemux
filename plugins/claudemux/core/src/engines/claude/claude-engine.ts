@@ -16,7 +16,6 @@
  */
 
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
 
 import type {
   CompactRequest,
@@ -126,6 +125,23 @@ function readCwd(name: string): string | null {
   return raw === null ? null : rstrip(raw)
 }
 
+/**
+ * Production grace budget (ms) for the graceful kill path —
+ * 5s wait for SessionEnd after `/exit`, plus 3s wait for SessionEnd
+ * after the Enter that confirms the dirty-worktree "Keep" prompt.
+ * Override via `CLAUDEMUX_KILL_GRACE_MS` so the conformance harness
+ * (fake tmux that never reports a pane gone) can keep tests under
+ * vitest's default 5s timeout.
+ */
+function killGraceMs(): number {
+  const override = process.env['CLAUDEMUX_KILL_GRACE_MS']
+  if (override !== undefined && override !== '') {
+    const parsed = Number(override)
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed
+  }
+  return 8000
+}
+
 /** Whether the teammate's tmux session is alive. */
 async function hasTmuxSession(env: NativeEnv, sessionName: string): Promise<boolean> {
   try {
@@ -143,7 +159,12 @@ type ClaudeIdentityReservation =
 
 function reserveClaudeIdentityForLaunch(args: {
   readonly name: TeammateName
-  readonly cwd: string | null
+  /** Physical repo path (parent of the worktree, or the cwd itself for `--no-worktree`). */
+  readonly repo: string
+  /** Runtime cwd — worktree path or repo. */
+  readonly cwd: string
+  /** Worktree slug under `.claude/worktrees/`; `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   readonly displayName: string | null
   readonly env: NativeEnv
   readonly nowMs: number
@@ -156,24 +177,28 @@ function reserveClaudeIdentityForLaunch(args: {
       : { kind: 'already-exists', existingEngine: existing.engine }
   }
 
-  const launchCwd = args.cwd ?? join(args.env.dispatcherDir, args.name)
+  // The repo must already exist on disk; the worktree path may not (the
+  // Claude engine creates it via `claude --worktree`). Validate the
+  // repo, not the runtime cwd.
   try {
-    if (!statSync(launchCwd).isDirectory()) {
+    if (!statSync(args.repo).isDirectory()) {
       return {
         kind: 'failed',
-        result: dieRepoNotFound(args.verb, args.name, launchCwd, args.env.dispatcherDir),
+        result: dieRepoNotFound(args.verb, args.name, args.repo, args.env.dispatcherDir),
       }
     }
   } catch {
     return {
       kind: 'failed',
-      result: dieRepoNotFound(args.verb, args.name, launchCwd, args.env.dispatcherDir),
+      result: dieRepoNotFound(args.verb, args.name, args.repo, args.env.dispatcherDir),
     }
   }
 
   const record = new ClaudeTeammateRecord({
     name: args.name,
-    cwd: realpathSync(launchCwd),
+    repo: realpathSync(args.repo),
+    cwd: args.cwd,
+    worktreeSlug: args.worktreeSlug,
     createdAt: Math.floor(args.nowMs / 1000),
     displayName: args.displayName,
   })
@@ -214,28 +239,25 @@ export class ClaudeEngine implements Engine {
     } catch {
       listing = ''
     }
-    // Sample `now` once per `list()` call so a multi-row scan reports the
-    // same clock reading across every teammate's LAST age, matching the
-    // legacy `cmd_states`'s pre-loop `now=$(date +%s)`.
+    // Sample `now` once per `list()` call so a multi-row scan reports
+    // the same clock reading across every teammate's LAST age.
     const now = Math.floor(ctx.now() / 1000)
     const out: TeammateListing[] = []
     for (const line of listing.split('\n')) {
       const colon = line.indexOf(':')
       const session = colon >= 0 ? line.slice(0, colon) : line
       if (!session.startsWith(TMUX_SESSION_PREFIX)) continue
-      // Strip the tmux prefix but keep the raw session-name suffix as the
-      // listing's `name`. Decoding `__` → `/` here would mis-identify a
-      // legacy single-segment teammate like `flow__1` as a nested name
-      // `flow/1`; listings therefore surface tmux session names verbatim.
-      // A future iteration may read the base TeammateRecord JSON instead.
       const name = session.slice(TMUX_SESSION_PREFIX.length)
       const extras = listingExtras(name, now)
+      const identity = readIdentity(name)
       out.push({
         name,
         engine: 'claude',
         state: deriveState(name),
-        cwd: readCwd(name) ?? '',
-        displayName: null,
+        repo: identity?.repo ?? readCwd(name) ?? '',
+        cwd: identity?.cwd ?? readCwd(name) ?? '',
+        worktreeSlug: identity?.worktreeSlug ?? null,
+        displayName: identity?.displayName ?? null,
         extras: {
           sidShort: extras.sidShort,
           busy: extras.busy,
@@ -303,8 +325,20 @@ export class ClaudeEngine implements Engine {
   async kill(req: KillRequest, _ctx: EngineContext): Promise<KillResult> {
     const sessionName = tmuxSessionName(req.name)
     const sid = readSid(req.name)
+
+    let running = false
+    try {
+      running = (await this.env.runTmux(['has-session', '-t', `=${sessionName}`])).code === 0
+    } catch {
+      running = false
+    }
+
+    let exitMode: 'graceful' | 'forced' | 'absent' = 'absent'
+    if (running) {
+      exitMode = await this.runGracefulExit(sessionName, sid)
+    }
+
     if (sid !== null) {
-      // Clear the three hook artifacts together — idle marker, .last, .busy.
       rmSync(idleMarkerFor(sid), { force: true })
       rmSync(lastFileFor(sid), { force: true })
       rmSync(busyMarkerFor(sid), { force: true })
@@ -313,20 +347,92 @@ export class ClaudeEngine implements Engine {
       rmSync(file, { force: true })
     }
 
-    let running = false
-    try {
-      running = (await this.env.runTmux(['has-session', '-t', `=${sessionName}`])).code === 0
-    } catch {
-      running = false
-    }
-    if (!running) return { kind: 'not-found' }
-
-    try {
-      await this.env.runTmux(['kill-session', '-t', `=${sessionName}`])
-    } catch (err) {
-      return { kind: 'failed', message: err instanceof Error ? err.message : String(err) }
+    if (exitMode === 'absent') return { kind: 'not-found' }
+    if (exitMode === 'forced') {
+      return {
+        kind: 'killed',
+        note:
+          `${req.name}: /exit did not return SessionEnd within 8s — fell back to ` +
+          `tmux kill-session (SIGHUP). Any worktree Claude created is preserved; ` +
+          `remove with 'git worktree remove --force' if no longer needed.\n`,
+      }
     }
     return { kind: 'killed' }
+  }
+
+  /**
+   * Graceful Claude exit:
+   *   1. send `/exit\n` to the pane — clean worktree → auto-clean +
+   *      SessionEnd; dirty worktree → TUI prompt waits for input.
+   *   2. poll the tmux session for up to the first budget.
+   *   3. if still alive, send `Enter` (picks the default "Keep
+   *      worktree" choice on the dirty prompt) and poll for the
+   *      second budget.
+   *   4. if still alive, fall back to `tmux kill-session` (SIGHUP).
+   *
+   * Budgets default to 5s + 3s in production. The conformance
+   * harness sets `CLAUDEMUX_KILL_GRACE_MS` to a short value so the
+   * fake tmux (which never reports a pane gone after send-keys) does
+   * not blow the per-test timeout — production is unaffected.
+   *
+   * Returns `'graceful'` when SessionEnd was reached cleanly,
+   * `'forced'` when the SIGHUP fallback fired, `'absent'` when the
+   * session was gone to begin with.
+   */
+  private async runGracefulExit(
+    sessionName: string,
+    _sid: string | null,
+  ): Promise<'graceful' | 'forced' | 'absent'> {
+    const totalGrace = killGraceMs()
+    const exitWait = Math.max(50, Math.floor(totalGrace * 0.625))
+    const keepWait = Math.max(50, totalGrace - exitWait)
+    try {
+      const sendExit = await this.env.runTmux(['send-keys', '-t', sessionName, '/exit', 'Enter'])
+      if (sendExit.code !== 0) {
+        return 'absent'
+      }
+    } catch {
+      return 'absent'
+    }
+    if (await this.waitForPaneGone(sessionName, exitWait)) return 'graceful'
+    try {
+      await this.env.runTmux(['send-keys', '-t', sessionName, 'Enter'])
+    } catch {
+      // best-effort; keep going to the SIGHUP fallback.
+    }
+    if (await this.waitForPaneGone(sessionName, keepWait)) return 'graceful'
+    try {
+      await this.env.runTmux(['kill-session', '-t', `=${sessionName}`])
+    } catch {
+      // ignore — caller treats this as a forced kill regardless.
+    }
+    return 'forced'
+  }
+
+  /**
+   * Poll `tmux has-session` until the session reports gone, or until
+   * `budgetMs` elapses. Returns `true` on cleanup, `false` on
+   * timeout.
+   *
+   * Wall-clock is read via `process.hrtime.bigint()` so the
+   * conformance harness's `vi.useFakeTimers({ toFake: ['Date'] })`
+   * does not freeze the loop. The 200ms interval matches `pollReady`
+   * — fast enough to surface a clean exit immediately, cheap enough
+   * not to flood tmux during the dirty-prompt wait.
+   */
+  private async waitForPaneGone(sessionName: string, budgetMs: number): Promise<boolean> {
+    const start = process.hrtime.bigint()
+    const budgetNs = BigInt(budgetMs) * 1_000_000n
+    while (process.hrtime.bigint() - start < budgetNs) {
+      try {
+        const present = (await this.env.runTmux(['has-session', '-t', `=${sessionName}`])).code === 0
+        if (!present) return true
+      } catch {
+        return true
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    return false
   }
 
   // ─── Hot path / session-shape — real bodies in engines/claude/<verb>.ts
@@ -334,7 +440,9 @@ export class ClaudeEngine implements Engine {
   async spawn(req: SpawnRequest, _ctx: EngineContext): Promise<SpawnResult> {
     const identity = reserveClaudeIdentityForLaunch({
       name: req.name,
+      repo: req.repo,
       cwd: req.cwd,
+      worktreeSlug: req.worktreeSlug,
       displayName: req.displayName,
       env: this.env,
       nowMs: _ctx.now(),
@@ -351,9 +459,10 @@ export class ClaudeEngine implements Engine {
       }
     }
 
-    const argv: string[] = [req.name]
+    const argv: string[] = [req.name, '--repo', req.repo, '--cwd', req.cwd]
+    if (req.worktreeSlug !== null) argv.push('--worktree-slug', req.worktreeSlug)
     if (req.resumeCheckpoint !== null) argv.push('--resume', req.resumeCheckpoint)
-    if (req.displayName !== null) argv.push('--task', req.displayName)
+    if (req.displayName !== null) argv.push('--display-name', req.displayName)
     if (req.prompt !== null) argv.push('--prompt', req.prompt)
     // `--timeout` MUST reach the inner `tm send` on the --prompt sync path —
     // CLI parses it into `SpawnRequest.timeoutMs` for a reason. Without this,
@@ -415,9 +524,13 @@ export class ClaudeEngine implements Engine {
   }
 
   async resume(req: ResumeRequest, _ctx: EngineContext): Promise<ResumeResult> {
+    const resumeRepo = req.repo ?? req.cwd ?? this.env.dispatcherDir
+    const resumeCwd = req.cwd ?? resumeRepo
     const identity = reserveClaudeIdentityForLaunch({
       name: req.name,
-      cwd: req.cwd,
+      repo: resumeRepo,
+      cwd: resumeCwd,
+      worktreeSlug: req.worktreeSlug,
       displayName: req.displayName,
       env: this.env,
       nowMs: _ctx.now(),
@@ -437,9 +550,10 @@ export class ClaudeEngine implements Engine {
       }
     }
 
-    const argv = [req.name]
+    const argv = [req.name, '--repo', resumeRepo, '--cwd', resumeCwd]
+    if (req.worktreeSlug !== null) argv.push('--worktree-slug', req.worktreeSlug)
     if (req.checkpoint !== null) argv.push(req.checkpoint)
-    if (req.displayName !== null) argv.push('--task', req.displayName)
+    if (req.displayName !== null) argv.push('--display-name', req.displayName)
     if (req.prompt !== null) argv.push('--prompt', req.prompt)
     const result = await claudeResume(argv, this.env)
     if (result.code === 0) return { kind: 'resumed', checkpoint: req.checkpoint, tmResult: result }
@@ -475,9 +589,12 @@ export class ClaudeEngine implements Engine {
   async history(req: HistoryRequest, _ctx: EngineContext): Promise<HistoryResult> {
     // List mode shares one project-dir walk with `claudeHistoryList`;
     // detail mode keeps the path through `claudeHistory` (which itself
-    // routes to `historyDetail` after a single repo-dir check).
+    // routes to `historyDetail` after a single cwd check). Both modes
+    // use the runtime cwd (worktree path when applicable) — Claude
+    // Code writes transcripts there.
+    const cwd = req.cwd
     if (req.index === null) {
-      const { tmResult, entries } = await claudeHistoryList(req.name, this.env)
+      const { tmResult, entries } = await claudeHistoryList(req.name, cwd, this.env)
       if (tmResult.code !== 0) {
         return { kind: 'failed', message: rstrip(tmResult.stderr) || rstrip(tmResult.stdout), tmResult }
       }
@@ -488,7 +605,7 @@ export class ClaudeEngine implements Engine {
         tmResult,
       }
     }
-    const result = await claudeHistory([req.name, req.index], this.env)
+    const result = await claudeHistory([req.name, req.index, cwd ?? ''], this.env)
     if (result.code !== 0) {
       return { kind: 'failed', message: rstrip(result.stderr) || rstrip(result.stdout), tmResult: result }
     }

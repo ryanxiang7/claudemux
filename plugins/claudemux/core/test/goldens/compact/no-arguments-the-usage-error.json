@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm compact <repo> [timeout=1800] [--timeout N]\n"
+  "stderr": "tm: usage: tm compact <name> [timeout=1800] [--timeout N]\n"
 }

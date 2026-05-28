@@ -33,16 +33,21 @@ import { formatContext, formatReload, noEngineRegistered } from '../verbs/format
 import { productionVerbContext } from './context'
 import { die, removedVerb, runHelpVerb, unknownVerb } from './errors'
 import {
-  codexCwd,
+  autoGenerateName,
   codexNameFailure,
+  cwdForName,
   inferSpawnEngine,
+  legacySchemaError,
   parseCtxArgs,
   parseReloadTargets,
   parseTimeoutMs,
+  resolveRepoPath,
   resumeCwdProbeable,
-  spawnCwd,
+  spawnCwdFor,
   triggersHelp,
 } from './parse'
+import { read as readIdentity } from '../persistence/identity-store'
+import { validateTeammateName } from '../identity/name'
 
 interface FleetTarget {
   readonly name: string
@@ -112,39 +117,60 @@ async function dispatchEngineVerb(
       return statesVerb(ctx)
     case 'status': {
       if (rest.length === 0) {
-        return { code: 1, stdout: '', stderr: 'tm: usage: tm status <repo> [lines=80]\n' }
+        return { code: 1, stdout: '', stderr: 'tm: usage: tm status <name> [lines=80]\n' }
       }
+      const legacy = legacySchemaError(rest[0]!, 'status')
+      if (legacy !== null) return legacy
       const lines = rest[1]
       const parsed = lines === undefined ? null : Number(lines)
       const linesArg = parsed === null || !Number.isFinite(parsed) ? null : parsed
       return statusVerb(rest[0]!, ctx, { lines: linesArg })
     }
-    case 'kill':
-      if (rest.length === 0) return { code: 1, stdout: '', stderr: 'tm: usage: tm kill <repo>\n' }
+    case 'kill': {
+      if (rest.length === 0) return { code: 1, stdout: '', stderr: 'tm: usage: tm kill <name>\n' }
+      // No `legacySchemaError` guard here on purpose: the migration
+      // message for a schema=1 record is literally "run `tm kill`",
+      // so this verb must be reachable on a legacy record. The
+      // claude engine's `kill()` cleans tmux + the bash-side marker
+      // files unconditionally, and `ctx.identity.remove(name)`
+      // sweeps the JSON regardless of its on-disk schema version.
       return killVerb(rest[0]!, ctx)
+    }
     case 'spawn': {
-      const name = rest[0] ?? ''
-      if (name.length === 0) {
-        return die('usage: tm spawn <repo> [--task <slug>] [--prompt "..."]')
+      const rawPath = rest[0] ?? ''
+      if (rawPath.length === 0) {
+        return die('usage: tm spawn <path> [--name <id>] [--prompt "..."] [--no-worktree]')
       }
       const parsed = parseSpawnArgs(rest.slice(1))
       if ('error' in parsed) return parsed.error
       const timeoutMs = parseTimeoutMs('tm spawn', parsed.timeout)
       if (timeoutMs !== null && typeof timeoutMs === 'object') return timeoutMs.error
-      const engine = await inferSpawnEngine(name, parsed.engine, ctx)
+      const repoResolved = resolveRepoPath(rawPath, env)
+      if ('error' in repoResolved) return repoResolved.error
+      const repo = repoResolved.repo
+      const name = parsed.name.length > 0 ? parsed.name : autoGenerateName(repo)
+      const validation = validateTeammateName(name)
+      if (validation.kind !== 'ok') {
+        return die(`tm spawn: invalid name '${name}': ${validation.reason}`)
+      }
+      const engine = await inferSpawnEngine(parsed.engine)
       if (engine === 'codex') {
         const invalidName = codexNameFailure(name)
         if (invalidName !== null) return die(invalidName)
       }
+      const worktreeSlug = parsed.noWorktree ? null : name
+      const cwd = spawnCwdFor(repo, worktreeSlug)
       return spawnVerb(
         {
           name,
           engine,
-          cwd: spawnCwd(name, engine, env),
+          repo,
+          cwd,
+          worktreeSlug,
           resumeCheckpoint: parsed.resumeSid.length === 0 ? null : parsed.resumeSid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
           timeoutMs,
-          displayName: parsed.task.length === 0 ? null : parsed.task,
+          displayName: null,
         },
         ctx,
       )
@@ -152,23 +178,25 @@ async function dispatchEngineVerb(
     case 'send': {
       const parsed = parseSendArgs(rest)
       if ('error' in parsed) return parsed.error
-      if (parsed.repo === '') {
+      if (parsed.name === '') {
         return die(
-          'tm send: missing <repo>. Usage: tm send <repo> --prompt "..." ' +
+          'tm send: missing <name>. Usage: tm send <name> --prompt "..." ' +
             '[--pane-quiet] [--timeout N]',
         )
       }
       if (!parsed.hasPrompt) {
         return die(
-          'tm send: missing --prompt. Usage: tm send <repo> --prompt "..." ' +
+          'tm send: missing --prompt. Usage: tm send <name> --prompt "..." ' +
             '[--pane-quiet] [--timeout N]',
         )
       }
+      const legacy = legacySchemaError(parsed.name, 'send')
+      if (legacy !== null) return legacy
       const timeoutMs = parseTimeoutMs('tm send', parsed.timeout)
       if (timeoutMs !== null && typeof timeoutMs === 'object') return timeoutMs.error
       return sendVerb(
         {
-          name: parsed.repo,
+          name: parsed.name,
           prompt: parsed.prompt,
           timeoutMs,
           paneQuiet: parsed.paneQuiet,
@@ -179,14 +207,16 @@ async function dispatchEngineVerb(
     case 'wait': {
       const parsed = parseWaitArgs(rest)
       if ('error' in parsed) return parsed.error
-      if (parsed.repo === '') {
-        return die('usage: tm wait <repo> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]')
+      if (parsed.name === '') {
+        return die('usage: tm wait <name> [timeout=1800] [--fresh] [--pane-quiet] [--timeout N]')
       }
+      const legacy = legacySchemaError(parsed.name, 'wait')
+      if (legacy !== null) return legacy
       const timeoutMs = parseTimeoutMs('tm wait', parsed.timeout)
       if (timeoutMs !== null && typeof timeoutMs === 'object') return timeoutMs.error
       return waitVerb(
         {
-          name: parsed.repo,
+          name: parsed.name,
           recoverFor: null,
           timeoutMs,
           fresh: parsed.fresh,
@@ -198,39 +228,38 @@ async function dispatchEngineVerb(
     case 'compact': {
       const parsed = parseCompactArgs(rest)
       if ('error' in parsed) return parsed.error
+      const legacy = legacySchemaError(parsed.name, 'compact')
+      if (legacy !== null) return legacy
       const timeoutMs = parseTimeoutMs('tm compact', parsed.timeout)
       if (timeoutMs !== null && typeof timeoutMs === 'object') return timeoutMs.error
-      return compactVerb(parsed.repo, ctx, { timeoutMs })
+      return compactVerb(parsed.name, ctx, { timeoutMs })
     }
     case 'resume': {
       const parsed = parseResumeArgs(rest)
       if ('error' in parsed) return parsed.error
-      if (parsed.repo === '') {
+      if (parsed.name === '') {
         return die(
-          'usage: tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "..."] ' +
+          'usage: tm resume <name> [<sid-or-thread-id>] [--prompt "..."] ' +
             '[--engine claude|codex]  (id may be omitted: claudemux probes both engines ' +
             'for a resumable session and routes the single candidate; if both engines have ' +
             'history, use --engine to disambiguate)',
         )
       }
-      // `codexCwd`'s last-resort fallback is the dispatcher dir itself (when
-      // neither a Codex record nor a real repo subdirectory exists). That
-      // fallback is fine for the checkpoint-reverse path — the engine never
-      // reads `cwd` if `checkpoint` matches a rollout — but it would make
-      // the Claude-side probe match the dispatcher's own transcripts and
-      // false-route. Flag whether the cwd is trustworthy so the probing
-      // branch can skip itself in the dispatcher-fallback case and avoid
-      // guessing an engine from the dispatcher's own transcripts.
+      const legacy = legacySchemaError(parsed.name, 'resume')
+      if (legacy !== null) return legacy
+      const identity = readIdentity(parsed.name)
       return resumeVerb(
         {
-          name: parsed.repo,
-          cwd: codexCwd(parsed.repo, env),
+          name: parsed.name,
+          repo: identity?.repo ?? null,
+          cwd: cwdForName(parsed.name, env),
+          worktreeSlug: identity?.worktreeSlug ?? null,
           checkpoint: parsed.sid.length === 0 ? null : parsed.sid,
           prompt: parsed.hasPrompt ? parsed.prompt : null,
-          displayName: parsed.task.length === 0 ? null : parsed.task,
+          displayName: null,
           engineHint: parsed.engine,
           projectsDir: env.projectsDir,
-          cwdProbeable: resumeCwdProbeable(parsed.repo, env),
+          cwdProbeable: resumeCwdProbeable(parsed.name, env),
         },
         ctx,
       )
@@ -246,10 +275,12 @@ async function dispatchEngineVerb(
         } else if (name.length === 0) {
           name = arg
         } else {
-          return die('usage: tm last <repo> [--verbose]')
+          return die('usage: tm last <name> [--verbose]')
         }
       }
-      if (name.length === 0) return die('usage: tm last <repo> [--verbose]')
+      if (name.length === 0) return die('usage: tm last <name> [--verbose]')
+      const legacy = legacySchemaError(name, 'last')
+      if (legacy !== null) return legacy
       return lastVerb(name, ctx, { verbose })
     }
     case 'ctx': {
@@ -273,18 +304,22 @@ async function dispatchEngineVerb(
         )
       }
       if (results.length === 0) {
-        return die('usage: tm ctx <repo> [<repo>...] | --all  [--window 200k|1m]')
+        return die('usage: tm ctx <name> [<name>...] | --all  [--window 200k|1m]')
       }
       return combineResults(results)
     }
     case 'history': {
       const name = rest[0] ?? ''
-      if (name.length === 0) return die('usage: tm history <repo> [<sid-or-thread-prefix>]')
-      return historyVerb({ name, cwd: codexCwd(name, env), index: rest[1] ?? null }, ctx)
+      if (name.length === 0) return die('usage: tm history <name> [<sid-or-thread-prefix>]')
+      const legacy = legacySchemaError(name, 'history')
+      if (legacy !== null) return legacy
+      return historyVerb({ name, cwd: cwdForName(name, env), index: rest[1] ?? null }, ctx)
     }
     case 'mem': {
       const name = rest[0] ?? ''
-      if (name.length === 0) return die('usage: tm mem <repo>')
+      if (name.length === 0) return die('usage: tm mem <name>')
+      const legacy = legacySchemaError(name, 'mem')
+      if (legacy !== null) return legacy
       return memVerb(name, ctx)
     }
     case 'reload': {

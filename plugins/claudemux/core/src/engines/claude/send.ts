@@ -29,16 +29,16 @@ import { EXIT_SYNC_WAIT_EXPIRED, type TmResult } from '../../tm'
 export async function claudeSend(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
   const parsed = parseSendArgs(args)
   if ('error' in parsed) return parsed.error
-  const { repo, prompt, hasPrompt, paneQuiet, timeout } = parsed
-  if (repo === '') {
+  const { name, prompt, hasPrompt, paneQuiet, timeout } = parsed
+  if (name === '') {
     return die(
-      'tm send: missing <repo>. Usage: tm send <repo> --prompt "..." ' +
+      'tm send: missing <name>. Usage: tm send <name> --prompt "..." ' +
         '[--pane-quiet] [--timeout N]',
     )
   }
   if (!hasPrompt) {
     return die(
-      'tm send: missing --prompt. Usage: tm send <repo> --prompt "..." ' +
+      'tm send: missing --prompt. Usage: tm send <name> --prompt "..." ' +
         '[--pane-quiet] [--timeout N]',
     )
   }
@@ -46,13 +46,13 @@ export async function claudeSend(args: readonly string[], env: ClaudeVerbEnv): P
     return die(`tm send: --timeout must be a non-negative integer (got: '${timeout}')`)
   }
 
-  const sentResult = await sendKeys(repo, prompt, env.runTmux, process.env)
+  const sentResult = await sendKeys(name, prompt, env.runTmux, process.env)
   if (sentResult.code !== 0) return sentResult
 
   const timeoutSec = timeout === null ? 1800 : Number(timeout)
   const verdict = paneQuiet
-    ? await waitPaneQuiet(repo, timeoutSec, env.runTmux)
-    : await waitIdleSignal(repo, timeoutSec, false, env.runTmux)
+    ? await waitPaneQuiet(name, timeoutSec, env.runTmux)
+    : await waitIdleSignal(name, timeoutSec, false, env.runTmux)
   if ('code' in verdict) return verdict
   if (!verdict.ok) {
     // Re-probe at the timeout moment: a teammate that died mid-wait must
@@ -60,27 +60,27 @@ export async function claudeSend(args: readonly string[], env: ClaudeVerbEnv): P
     // bg classifier will (correctly per the documented 124 contract)
     // decide not to respawn and silently wait forever on a corpse. Only
     // promise 124 ("still running") when the session + sid are still there.
-    const dead = await probeStillAlive(repo, env.runTmux)
+    const dead = await probeStillAlive(name, env.runTmux)
     if (dead !== null) {
       return { ...dead, stderr: sentResult.stderr + dead.stderr }
     }
     const kind = paneQuiet ? 'pane-quiet' : 'Stop hook'
     return {
       code: EXIT_SYNC_WAIT_EXPIRED,
-      stdout: printLastOrEmpty(repo),
+      stdout: printLastOrEmpty(name),
       stderr:
         sentResult.stderr +
-        `tm send: sync wait expired after ${timeoutSec}s on ${repo} ` +
+        `tm send: sync wait expired after ${timeoutSec}s on ${name} ` +
         `(no ${kind} fired; the teammate is still running — tail with ` +
-        `'tm wait ${repo}' or check 'tm status ${repo}'). exit ${EXIT_SYNC_WAIT_EXPIRED}.\n`,
+        `'tm wait ${name}' or check 'tm status ${name}'). exit ${EXIT_SYNC_WAIT_EXPIRED}.\n`,
     }
   }
 
   let trailingStderr = ''
-  if (!paneQuiet) trailingStderr = echoCtxToStderr(repo, env)
+  if (!paneQuiet) trailingStderr = echoCtxToStderr(name, env)
   return {
     code: 0,
-    stdout: printLastOrEmpty(repo),
+    stdout: printLastOrEmpty(name),
     stderr: sentResult.stderr + trailingStderr,
   }
 }

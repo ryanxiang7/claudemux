@@ -83,8 +83,20 @@ export type InteractionItem =
 
 export interface SpawnRequest {
   readonly name: TeammateName
-  /** Absolute working directory the engine launches the teammate in. */
+  /**
+   * Physical path of the source repository. Equal to `cwd` when
+   * `worktreeSlug` is `null` (`--no-worktree`); otherwise the parent
+   * of the worktree path.
+   */
+  readonly repo: string
+  /**
+   * Runtime working directory the engine launches the teammate in.
+   * `repo/.claude/worktrees/<worktreeSlug>` when a worktree is in use,
+   * `repo` otherwise.
+   */
   readonly cwd: string
+  /** Short name of the worktree under `.claude/worktrees/`; `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   /** Optional engine-specific resume checkpoint. */
   readonly resumeCheckpoint: string | null
   /** Optional first-turn prompt — when present, spawn is an atomic round-trip. */
@@ -147,7 +159,7 @@ export interface KillRequest {
 }
 
 export type KillResult =
-  | { kind: 'killed' }
+  | { kind: 'killed'; note?: string }
   | { kind: 'not-found' }
   | { kind: 'failed'; message: string }
 
@@ -166,8 +178,12 @@ export type CompactResult =
 
 export interface ResumeRequest {
   readonly name: TeammateName
+  /** Physical repo path the teammate is bound to; `null` when unknown. */
+  readonly repo: string | null
   /** Absolute working directory used by engines that relaunch a process. */
   readonly cwd: string | null
+  /** Worktree slug under `.claude/worktrees/`; `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   /** Engine-specific identifier (Claude sid / Codex thread id); null lets the engine auto-pick when supported. */
   readonly checkpoint: string | null
   /** Optional first-turn prompt after the resumed teammate is relaunched. */
@@ -262,7 +278,12 @@ export interface TeammateListing {
   readonly name: TeammateName
   readonly engine: EngineKind
   readonly state: 'idle' | 'busy' | 'unknown'
+  /** Physical repo path the teammate is bound to. */
+  readonly repo: string
+  /** Runtime working directory (worktree path or `repo`). */
   readonly cwd: string
+  /** Worktree slug, or `null` for `--no-worktree`. */
+  readonly worktreeSlug: string | null
   readonly displayName: string | null
   readonly extras: Readonly<Record<string, string>>
 }

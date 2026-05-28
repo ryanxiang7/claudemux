@@ -138,7 +138,9 @@ describe('ProductionTeammateRouter', () => {
       schema: TEAMMATE_RECORD_SCHEMA,
       name: 'worker',
       engine: 'codex',
+      repo: '/tmp',
       cwd: '/tmp',
+      worktreeSlug: null,
       createdAt: 1,
       displayName: null,
     })
@@ -157,7 +159,9 @@ describe('ProductionTeammateRouter', () => {
         schema: TEAMMATE_RECORD_SCHEMA,
         name,
         engine: 'claude',
+        repo: '/tmp',
         cwd: '/tmp',
+        worktreeSlug: null,
         createdAt: 1,
         displayName: null,
       })

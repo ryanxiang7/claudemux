@@ -1,13 +1,18 @@
-import { realpathSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 
 import { isNonNegativeInteger } from '../engines/claude/clock'
+import { randSuffix } from '../engines/claude/identifiers'
 import { readBaseRecord, readCodexMeta } from '../engines/codex/persistence'
+import { worktreePathFor } from '../persistence/paths'
+import {
+  read as readIdentity,
+  readRawSchema,
+} from '../persistence/identity-store'
 import type { EngineKind } from '../engines/types'
 import type { NativeEnv } from '../env'
 import { validateTeammateName } from '../identity/name'
 import type { TmResult } from '../tm'
-import type { VerbContext } from '../verbs/context'
 import { die } from './errors'
 
 /**
@@ -62,22 +67,90 @@ export function codexNameFailure(name: string): string | null {
 }
 
 export async function inferSpawnEngine(
-  name: string,
   requested: EngineKind | null,
-  ctx: VerbContext,
 ): Promise<EngineKind> {
   if (requested !== null) return requested
-  const resolved = await ctx.router.resolve(name)
-  if (resolved !== null) return resolved.engine.kind
+  // Schema-2 default: no name-based pre-routing — Claude unless --engine codex.
+  // (Resume probes engines explicitly via verbs/resume.ts.)
   return 'claude'
 }
 
-export function spawnCwd(name: string, engine: EngineKind, env: NativeEnv): string {
-  if (engine === 'codex') {
-    const repoPath = join(env.dispatcherDir, name)
-    return isDirectory(repoPath) ? realpathSync(repoPath) : realpathSync(env.dispatcherDir)
+/**
+ * Resolve a CLI `<path>` positional into an absolute repo path. An
+ * absolute path is taken as-is; a relative path is resolved against
+ * the dispatcher dir. `realpathSync` collapses symlinks so the
+ * recorded `repo` matches what the SessionStart hook will report.
+ */
+export function resolveRepoPath(
+  rawPath: string,
+  env: NativeEnv,
+): { repo: string } | { error: TmResult } {
+  if (rawPath.length === 0) {
+    return { error: die('tm spawn: <path> is required') }
   }
-  return join(env.dispatcherDir, name)
+  const absolute = isAbsolute(rawPath) ? rawPath : resolve(env.dispatcherDir, rawPath)
+  if (!existsSync(absolute)) {
+    return {
+      error: die(
+        `tm spawn: <path> '${rawPath}' does not exist (resolved to ${absolute})`,
+      ),
+    }
+  }
+  if (!isDirectory(absolute)) {
+    return {
+      error: die(`tm spawn: <path> '${rawPath}' is not a directory (resolved to ${absolute})`),
+    }
+  }
+  return { repo: realpathSync(absolute) }
+}
+
+/**
+ * Generate a default teammate name from a resolved repo path. The
+ * shape is `<leaf>-<rand4>`, where `<leaf>` is `path.basename(repo)`
+ * sanitized to ASCII alnum + `-` / `_`. The trailing `-<rand4>`
+ * ensures a fresh spawn never collides with a prior teammate of the
+ * same leaf even when the user does not pass `--name`.
+ */
+export function autoGenerateName(repo: string): string {
+  const raw = basename(repo)
+  // Drop anything outside the flat-name charset; collapse runs of `-`.
+  let leaf = raw.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  if (leaf.length === 0) leaf = 'tm'
+  // Make sure the result starts with an alnum — the validator rejects
+  // leading `-` / `_`. A sanitized leaf may start with `-` if the
+  // basename was `_foo` or `-foo`; trim until alnum.
+  while (leaf.length > 0 && !/^[A-Za-z0-9]/.test(leaf)) leaf = leaf.slice(1)
+  if (leaf.length === 0) leaf = 'tm'
+  return `${leaf}-${randSuffix()}`
+}
+
+/**
+ * The runtime cwd for a spawn. Worktree mode places the teammate in
+ * `<repo>/.claude/worktrees/<slug>`; `--no-worktree` keeps it at the
+ * repo root.
+ */
+export function spawnCwdFor(
+  repo: string,
+  worktreeSlug: string | null,
+): string {
+  return worktreeSlug === null ? repo : worktreePathFor(repo, worktreeSlug)
+}
+
+/**
+ * Detect a stale schema=1 identity record. Returns a `TmResult`
+ * error that the spawn / send / wait / kill / etc dispatchers can
+ * surface verbatim so the user sees a clear "kill and respawn"
+ * migration hint instead of a silent not-found.
+ */
+export function legacySchemaError(name: string, verb: string): TmResult | null {
+  const schema = readRawSchema(name)
+  if (schema === null) return null
+  if (schema === 2) return null
+  return die(
+    `tm ${verb}: teammate '${name}' has a legacy schema=${schema} identity ` +
+      "record (pre name/repo decoupling). Kill and respawn: " +
+      `'tm kill ${name}' then 'tm spawn <path> --name ${name}'.`,
+  )
 }
 
 function normalizeExistingCwd(cwd: string): string {
@@ -88,23 +161,40 @@ function normalizeExistingCwd(cwd: string): string {
   }
 }
 
-export function codexCwd(name: string, env: NativeEnv): string {
-  const baseCwd = readBaseRecord(name)?.cwd
-  if (baseCwd !== undefined) return normalizeExistingCwd(baseCwd)
-  const metaCwd = readCodexMeta(name)?.cwd
-  if (metaCwd !== undefined) return normalizeExistingCwd(metaCwd)
-  try {
-    // Killed non-prefix Codex teammates have no base record; use the same cwd
-    // inference as spawn/resume so rollout-history routing can still find them.
-    return spawnCwd(name, 'codex', env)
-  } catch {
-    return process.cwd()
-  }
+/**
+ * Resolve the runtime cwd for a verb that targets an existing
+ * teammate by name. Reads the identity record, then the Codex
+ * registry's cwd hint, then a `<dispatcherDir>/<name>` probe (the
+ * shape `tm resume` accepts after a clean kill that erased the
+ * identity but left the source directory on disk), and finally
+ * the dispatcher dir itself.
+ *
+ * The fallback is **never** `process.cwd()`: a `tm` invocation that
+ * lands here typically runs from somewhere unrelated to the
+ * teammate's repo (vitest runs from the package dir, a dispatcher
+ * may run from a parent), and a `process.cwd()` fallback leaks
+ * the caller's absolute path into resume / history error
+ * messages — which the conformance harness then bakes into goldens.
+ */
+export function cwdForName(name: string, env: NativeEnv): string {
+  const identity = readIdentity(name)
+  if (identity !== null) return normalizeExistingCwd(identity.cwd)
+  const codexMetaCwd = readCodexMeta(name)?.cwd
+  if (codexMetaCwd !== undefined) return normalizeExistingCwd(codexMetaCwd)
+  const codexBaseCwd = readBaseRecord(name)?.cwd
+  if (codexBaseCwd !== undefined) return normalizeExistingCwd(codexBaseCwd)
+  const dispatcherChild = join(env.dispatcherDir, name)
+  if (isDirectory(dispatcherChild)) return normalizeExistingCwd(dispatcherChild)
+  return normalizeExistingCwd(env.dispatcherDir)
 }
 
+/** Whether `tm resume` can probe a teammate's cwd for resumable history. */
 export function resumeCwdProbeable(name: string, env: NativeEnv): boolean {
-  const repoPath = join(env.dispatcherDir, name)
-  return readBaseRecord(name) !== null || readCodexMeta(name) !== null || isDirectory(repoPath)
+  if (readIdentity(name) !== null) return true
+  if (readBaseRecord(name) !== null) return true
+  if (readCodexMeta(name) !== null) return true
+  const dispatcherChild = join(env.dispatcherDir, name)
+  return isDirectory(dispatcherChild)
 }
 
 export type CtxWindowOverride = '' | '200k' | '1m'
@@ -148,7 +238,7 @@ export function parseReloadTargets(rest: readonly string[]): ReloadArgs {
   for (const arg of rest) {
     if (arg === '--all') all = true
     else if (arg === '-h' || arg === '--help') {
-      return { error: die('usage: tm reload <repo>... | --all') }
+      return { error: die('usage: tm reload <name>... | --all') }
     } else if (arg.startsWith('-')) {
       return { error: die(`tm reload: unknown flag: ${arg}`) }
     } else {
@@ -157,9 +247,9 @@ export function parseReloadTargets(rest: readonly string[]): ReloadArgs {
   }
 
   if (all) {
-    if (repos.length > 0) return { error: die('tm reload: --all conflicts with explicit repos') }
+    if (repos.length > 0) return { error: die('tm reload: --all conflicts with explicit names') }
   } else if (repos.length === 0) {
-    return { error: die('usage: tm reload <repo>... | --all') }
+    return { error: die('usage: tm reload <name>... | --all') }
   }
   return { all, repos }
 }

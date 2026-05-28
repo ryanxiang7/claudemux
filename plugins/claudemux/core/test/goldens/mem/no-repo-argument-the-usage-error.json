@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm mem <repo>\n"
+  "stderr": "tm: usage: tm mem <name>\n"
 }

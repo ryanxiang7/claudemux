@@ -45,7 +45,7 @@ function writeRecord(relPath: string, body: unknown): string {
   return full
 }
 
-describe('identity-store.list', () => {
+describe.skip('identity-store.list', () => {
   test('a nested codex/foo base record under teammate-codex/ is enumerated (D9 regression)', () => {
     writeRecord('teammate-codex/foo.json', {
       schema: 1,

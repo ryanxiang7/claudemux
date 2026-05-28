@@ -1,5 +1,5 @@
 /**
- * `tm history` — inspect a teammate repo's past Claude Code sessions.
+ * `tm history` — inspect a teammate name's past Claude Code sessions.
  *
  * Two modes: a list view (every transcript jsonl, newest first) and a
  * detail view (one chosen transcript's headers + first prompt + last
@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { encodeProjectDir } from '../../persistence/paths'
 import { fmtAge, fmtLocalDateTime } from './clock'
 import { isDirectory, isRegularFile, resolveSid } from './idle'
-import { dieRepoNotFound, projectDirForRepo } from './repo-fs'
+import { dieRepoNotFound, projectDirForCwd } from './repo-fs'
 import { die } from './tmux'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
@@ -262,7 +262,7 @@ function readHistoryData(content: string): HistoryData {
  * no transcript files.
  */
 function claudeHistoryListEntries(
-  repo: string,
+  name: string,
   projectDir: string,
 ): readonly HistoryListEntry[] | null {
   if (!isDirectory(projectDir)) {
@@ -278,7 +278,7 @@ function claudeHistoryListEntries(
     return []
   }
 
-  const liveSid = resolveSid(repo) ?? ''
+  const liveSid = resolveSid(name) ?? ''
   const entries = names.map((name) => {
     const full = join(projectDir, name)
     const sidFull = name.replace(/\.jsonl$/, '')
@@ -326,23 +326,23 @@ export interface ClaudeHistoryListResult {
 }
 
 /**
- * `tm history <repo>` — list a teammate repo's past Claude Code
+ * `tm history <name>` — list a teammate name's past Claude Code
  * sessions, one per transcript jsonl, newest first. One project-dir
  * walk produces both the structured entries (returned for engine-level
  * consumers like `Engine.history`'s `HistoryResult.entries`) and the
  * `column -t`-aligned text rows. Repo-missing surfaces as `{ tmResult:
  * die..., entries: [] }`.
  */
-export async function claudeHistoryList(repo: string, env: ClaudeVerbEnv): Promise<ClaudeHistoryListResult> {
-  const path = join(env.dispatcherDir, repo)
-  if (!isDirectory(path)) {
-    return { tmResult: dieRepoNotFound('history', repo, path, env.dispatcherDir), entries: [] }
+export async function claudeHistoryList(name: string, cwd: string | null, env: ClaudeVerbEnv): Promise<ClaudeHistoryListResult> {
+  const target = cwd ?? join(env.dispatcherDir, name)
+  if (!isDirectory(target)) {
+    return { tmResult: dieRepoNotFound('history', name, target, env.dispatcherDir), entries: [] }
   }
-  const projectDir = projectDirForRepo(repo, env)
-  const entries = claudeHistoryListEntries(repo, projectDir)
+  const projectDir = projectDirForCwd(target, env)
+  const entries = claudeHistoryListEntries(name, projectDir)
   if (entries === null || entries.length === 0) {
     return {
-      tmResult: { code: 0, stdout: `(no past sessions for ${repo})\n`, stderr: '' },
+      tmResult: { code: 0, stdout: `(no past sessions for ${name})\n`, stderr: '' },
       entries: entries ?? [],
     }
   }
@@ -367,44 +367,44 @@ export async function claudeHistoryList(repo: string, env: ClaudeVerbEnv): Promi
 }
 
 /**
- * `tm history <repo> <sid-or-prefix>` — the detail view of one past
+ * `tm history <name> <sid-or-prefix>` — the detail view of one past
  * session. Resolves the prefix to a unique transcript, then prints
  * the history-detail block.
  */
-function historyDetail(repo: string, projectDir: string, prefix: string): TmResult {
+function historyDetail(teammateName: string, projectDir: string, prefix: string): TmResult {
   if (!/^[0-9a-f-]{1,36}$/.test(prefix)) {
     return die(`tm history: invalid sid prefix '${prefix}' — must match ^[0-9a-f-]{1,36}$`)
   }
   if (!isDirectory(projectDir)) {
-    return die(`tm history: no project dir at ${projectDir} for ${repo} (no sessions yet)`)
+    return die(`tm history: no project dir at ${projectDir} for ${teammateName} (no sessions yet)`)
   }
 
-  let names: string[]
+  let files: string[]
   try {
-    names = readdirSync(projectDir).filter(
-      (name) =>
-        name.startsWith(prefix) &&
-        name.endsWith('.jsonl') &&
-        isRegularFile(join(projectDir, name)),
+    files = readdirSync(projectDir).filter(
+      (file) =>
+        file.startsWith(prefix) &&
+        file.endsWith('.jsonl') &&
+        isRegularFile(join(projectDir, file)),
     )
   } catch {
-    names = []
+    files = []
   }
-  names.sort()
-  if (names.length === 0) {
-    return die(`tm history: no session matching '${prefix}' in ${repo}`)
+  files.sort()
+  if (files.length === 0) {
+    return die(`tm history: no session matching '${prefix}' in ${teammateName}`)
   }
-  if (names.length > 1) {
-    const cands = `${names.map((name) => name.replace(/\.jsonl$/, '')).join(' ')} `
+  if (files.length > 1) {
+    const cands = `${files.map((f) => f.replace(/\.jsonl$/, '')).join(' ')} `
     return die(
-      `tm history: prefix '${prefix}' matches ${names.length} sessions — ` +
+      `tm history: prefix '${prefix}' matches ${files.length} sessions — ` +
         `be more specific: ${cands}`,
     )
   }
 
-  const name = names[0]!
-  const file = join(projectDir, name)
-  const sidFull = name.replace(/\.jsonl$/, '')
+  const fname = files[0]!
+  const file = join(projectDir, fname)
+  const sidFull = fname.replace(/\.jsonl$/, '')
   let size = 0
   let mtime = 0
   try {
@@ -460,7 +460,7 @@ function historyDetail(repo: string, projectDir: string, prefix: string): TmResu
     'last assistant:\n' +
     `${indent(laDisplay)}\n` +
     '\n' +
-    `resume: tm resume ${repo} ${sidFull}\n`
+    `resume: tm resume ${teammateName} ${sidFull}\n`
   return { code: 0, stdout, stderr: '' }
 }
 
@@ -490,14 +490,15 @@ export function hasClaudeHistoryForCwd(cwd: string, projectsDir: string): boolea
 }
 
 export async function claudeHistory(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
-  const repo = args[0] ?? ''
-  if (repo.length === 0) return die('usage: tm history <repo> [<sid-or-prefix>]')
+  const name = args[0] ?? ''
+  if (name.length === 0) return die('usage: tm history <name> [<sid-or-prefix>]')
 
   const sidArg = args[1] ?? ''
-  if (sidArg === '') return (await claudeHistoryList(repo, env)).tmResult
+  const cwdArg = args[2] && args[2].length > 0 ? args[2] : null
+  if (sidArg === '') return (await claudeHistoryList(name, cwdArg, env)).tmResult
 
-  const path = join(env.dispatcherDir, repo)
-  if (!isDirectory(path)) return dieRepoNotFound('history', repo, path, env.dispatcherDir)
-  const projectDir = projectDirForRepo(repo, env)
-  return historyDetail(repo, projectDir, sidArg)
+  const cwd = cwdArg ?? join(env.dispatcherDir, name)
+  if (!isDirectory(cwd)) return dieRepoNotFound('history', name, cwd, env.dispatcherDir)
+  const projectDir = projectDirForCwd(cwd, env)
+  return historyDetail(name, projectDir, sidArg)
 }

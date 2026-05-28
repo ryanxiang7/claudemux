@@ -1,5 +1,5 @@
 {
   "code": 1,
   "stdout": "",
-  "stderr": "tm: usage: tm kill <repo>\n"
+  "stderr": "tm: usage: tm kill <name>\n"
 }

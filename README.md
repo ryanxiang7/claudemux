@@ -6,6 +6,17 @@
 > teammate Claude Code per repo runs in its own `tmux` session. You
 > orchestrate the fleet in plain language.
 
+> **Worktree default + name decoupling (1.0 cut).** `tm spawn <path>` now
+> takes a filesystem path; the teammate name is a flat identifier
+> (`--name`, or auto `<basename>-<rand4>`). Every other verb takes that
+> name. Teammates run inside a git worktree at
+> `<path>/.claude/worktrees/<name>/` by default; `--no-worktree` opts
+> out. Pre-upgrade teammates must be `tm kill`-ed and respawned (schema
+> 1 → 2; no silent migration). `.worktreeinclude` for the Codex path
+> is a TODO — copy `.env` etc. into the Codex worktree by hand for
+> now. See [`.agents/decisions/worktree-default-and-name-repo-decoupling.md`](./.agents/decisions/worktree-default-and-name-repo-decoupling.md)
+> for the why.
+
 ## Architecture
 
 ```mermaid
@@ -84,36 +95,47 @@ Talk in plain language — the `dispatcher` skill picks up the intent:
 Or call `tm` directly:
 
 ```bash
-tm spawn repo-a --prompt 'run yarn test in unit-test'   # atomic: spawn + send + wait + print
-tm send  repo-a --prompt 'now lint'                     # sync send: returns the reply on stdout
-tm states                                               # fleet snapshot
-tm kill  repo-a                                         # done
+tm spawn repo-a --name testbot --prompt 'run yarn test in unit-test'   # atomic: spawn + send + wait + print
+tm send  testbot --prompt 'now lint'                                   # sync send: returns the reply on stdout
+tm states                                                              # fleet snapshot
+tm kill  testbot                                                       # done
 ```
+
+The first positional is a `<path>` (here `repo-a`, a sibling of the
+dispatcher). The teammate identifier is whatever you pass via `--name`,
+or — when you omit `--name` — the auto-generated `<basename>-<rand4>`
+that spawn prints on stderr (`spawned: repo-a-7d3a`). Every other verb
+takes that flat identifier.
 
 ## The `tm` script
 
 `tm` is on `PATH` inside any Claude Code session. To use it from a regular
 terminal, see [Outside Claude Code](#using-tm-outside-claude-code).
 
+`tm spawn` is the only verb that takes a filesystem path. Every other
+verb takes the flat `<name>` returned by spawn — capture it from the
+spawn stderr (`spawned: <name>`) and reuse it. Names match
+`^[A-Za-z0-9][A-Za-z0-9_-]*$` and are globally unique.
+
 | Subcommand | What it does |
 |---|---|
-| `tm ls` | List running teammate sessions. |
-| `tm states` | Fleet snapshot: repo, sid, busy, last-reply size + age, first 50 chars. |
-| `tm spawn <repo> [--task <slug>] [--prompt "…"]` | Launch a teammate for `<repo>`. With `--prompt`, atomic bootstrap: spawn + send + wait + print the first-turn reply on stdout. `--task <slug>` names the conversation (`<repo>-<slug>`; ASCII + CJK Han); default `<repo>-<rand4>`. |
-| `tm resume <repo> [<sid-or-thread-id>] [--task <slug>] [--prompt "…"]` | Resume a prior conversation. Claude accepts a transcript `sid` and can auto-pick the newest jsonl when omitted. Codex requires an explicit thread id from `/tmp/teammate-codex/<name>/thread` or the rollout filename, starts a new app-server daemon, and calls `thread/resume`. `--prompt` sends a follow-up after relaunch (atomic like `spawn --prompt`). |
-| `tm send <repo> --prompt "…" [--pane-quiet] [--timeout N]` | **Atomic round-trip**: send prompt + wait for the Stop hook + print the reply on stdout. The Stop-hook path also echoes the teammate's post-turn ctx to stderr (`ctx: N tokens · …`), eliminating the common "send, then `tm ctx`" follow-up; skipped on `--pane-quiet`. `--prompt` matches the calling form of `tm spawn --prompt` / `tm resume --prompt` (one API across all three verbs); flag order is free. `--pane-quiet` fallback for TUI-only commands (`/help`, `/effort`, permission prompts) that fire no hook. Exit codes: `0` reply landed; `124` sync wait expired and the teammate is still running (re-collect with `tm wait <repo>`; do NOT respawn — the name is taken); `1` real failure (no session, sid marker missing, …). |
-| `tm wait <repo> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]` | Block until the teammate's next Stop event and print the reply (ctx echo on stderr, same as `tm send`). Use when an external actor (Remote Control, mobile app, cron) drove the turn. `--fresh` waits for the NEXT Stop instead of returning on a stale marker (no-op under `--pane-quiet`). `--timeout N` is equivalent to the positional `[timeout]`. Same exit codes as `tm send`. |
-| `tm compact <repo> [timeout=600] [--timeout N]` | Send `/compact` and verify PostCompact fired. Prints `compacted` on success. Doesn't read ctx — use a separate `tm ctx <repo>` or the inline echo on the next `tm send`. Default 600s — large contexts (~300k+) routinely take 3-4 minutes. Exit codes: `0` PostCompact fired; `1` `/compact` refused with "Not enough messages to compact" (pane-scan detects this and bails early instead of hanging); `124` PostCompact never fired within `--timeout` — compaction may still be running. |
-| `tm last <repo>` | Print the full text of the teammate's last reply. Fresh-spawn sentinel: dies with "no reply yet" when called before any turn has settled. |
-| `tm kill <repo>` | Kill the teammate's tmux session and clean up its state files. |
+| `tm ls` | List teammates: `NAME REPO WORKTREE ENGINE STATE`. |
+| `tm states` | Fleet snapshot: `NAME REPO WORKTREE ENGINE STATE LAST PREVIEW` — `state` reports `idle` / `busy` / `unknown`. |
+| `tm spawn <path> [--name <id>] [--engine claude\|codex] [--prompt "…"] [--no-worktree] [--timeout N]` | Launch a teammate in `<path>` (absolute or relative to the dispatcher dir). Default places the teammate inside a git worktree at `<path>/.claude/worktrees/<name>/` (branch `worktree-<name>`, base ref `HEAD`); `--no-worktree` runs in `<path>` itself. `--name <id>` sets the explicit identifier (globally unique); omit it for an auto-generated `<basename(path)>-<rand4>`. With `--prompt`, atomic bootstrap: spawn + send + wait + print the first-turn reply on stdout. |
+| `tm resume <name> [<sid-or-thread-id>] [--prompt "…"] [--engine claude\|codex]` | Resume a prior conversation by teammate name. Claude accepts a transcript `sid` and can auto-pick the newest jsonl when omitted. Codex requires an explicit thread id from `/tmp/teammate-codex/<name>/thread` or the rollout filename, starts a new app-server daemon, and calls `thread/resume`. `--prompt` sends a follow-up after relaunch (atomic like `spawn --prompt`). |
+| `tm send <name> --prompt "…" [--pane-quiet] [--timeout N]` | **Atomic round-trip**: send prompt + wait for the Stop hook + print the reply on stdout. The Stop-hook path also echoes the teammate's post-turn ctx to stderr (`ctx: N tokens · …`), eliminating the common "send, then `tm ctx`" follow-up; skipped on `--pane-quiet`. `--prompt` matches the calling form of `tm spawn --prompt` / `tm resume --prompt`; flag order is free. `--pane-quiet` fallback for TUI-only commands (`/help`, `/effort`, permission prompts) that fire no hook. Exit codes: `0` reply landed; `124` sync wait expired and the teammate is still running (re-collect with `tm wait <name>`; do NOT respawn — the name is taken); `1` real failure (no session, sid marker missing, …). |
+| `tm wait <name> [timeout=600] [--fresh] [--pane-quiet] [--timeout N]` | Block until the teammate's next Stop event and print the reply (ctx echo on stderr, same as `tm send`). Use when an external actor (Remote Control, mobile app, cron) drove the turn. `--fresh` waits for the NEXT Stop instead of returning on a stale marker (no-op under `--pane-quiet`). `--timeout N` is equivalent to the positional `[timeout]`. Same exit codes as `tm send`. |
+| `tm compact <name> [timeout=600] [--timeout N]` | Send `/compact` and verify PostCompact fired. Prints `compacted` on success. Default 600s — large contexts (~300k+) routinely take 3-4 minutes. Exit codes: `0` PostCompact fired; `1` `/compact` refused with "Not enough messages to compact"; `124` PostCompact never fired within `--timeout`. |
+| `tm last <name> [--verbose]` | Print the full text of the teammate's last reply. Fresh-spawn sentinel: dies with "no reply yet" when called before any turn has settled. `--verbose` prints the raw Codex turn JSON for Codex teammates. |
+| `tm kill <name>` | Graceful `/exit` (clean worktree auto-removed by Claude); dirty worktree preserved with a stderr note pointing at `git worktree remove --force`. Falls back to `tmux kill-session` (SIGHUP) when graceful exit times out. |
 | `tm archive <id> [--status '<tag>']` | Move a closed task from `active-dispatcher-tasks.md` to the archive (outcome text on stdin). |
-| `tm ctx <repo>… \| --all [--window 200k\|1m]` | Real context-window usage per teammate, read from the jsonl `usage` block. More accurate than the TUI percentage. |
-| `tm history <repo> [<sid-or-thread-prefix>]` | List past Claude sessions or Codex threads for `<repo>` (newest first). Each row shows the full Claude `sid` or Codex thread id — the exact string `tm resume` accepts; the live session/thread is marked with `*`. Passing a sid / thread-id prefix opens detail view with a ready-to-paste `tm resume` command. |
-| `tm mem <repo>` | Cat the sibling repo's auto-memory `MEMORY.md` (feature-gate names, branch names, in-progress projects). Read this before composing a `tm spawn` / `tm send --prompt` that quotes sibling state — the dispatcher's own AutoMemory does not include sibling repos. Missing memory → stderr notice + exit 0 + empty stdout. |
-| `tm reload <repo>… \| --all` | Fan out `/reload-plugins` to teammates after a plugin update. |
+| `tm ctx <name>… \| --all [--window 200k\|1m]` | Real context-window usage per teammate, read from the jsonl `usage` block. More accurate than the TUI percentage. |
+| `tm history <name> [<sid-or-thread-prefix>]` | List past Claude sessions or Codex threads for the teammate (newest first). Each row shows the full Claude `sid` or Codex thread id — the exact string `tm resume` accepts; the live session/thread is marked with `*`. Passing a sid / thread-id prefix opens detail view with a ready-to-paste `tm resume` command. |
+| `tm mem <name>` | Cat the parent repo's auto-memory `MEMORY.md` (feature-gate names, branch names, in-progress projects). Worktree teammates share their parent repo's AutoMemory — `tm mem` resolves through `identity.repo`, not the runtime cwd. Missing memory → stderr notice + exit 0 + empty stdout. |
+| `tm reload <name>… \| --all` | Fan out `/reload-plugins` to teammates after a plugin update. |
 
-Diagnostic-only (use when the verbs above don't fit): `tm status <repo>` to
-capture the live pane, `tm poll <repo> <regex>` for intermediate-state polling.
+Diagnostic-only (use when the verbs above don't fit): `tm status <name>` to
+capture the live pane, `tm poll <name> <regex>` for intermediate-state polling.
 
 Behavior contracts and the on-disk state are documented in
 [`plugins/claudemux/skills/dispatcher/SKILL.md`](plugins/claudemux/skills/dispatcher/SKILL.md).
@@ -157,8 +179,9 @@ installed version.
 
 ## Known limitations
 
-- **Single dispatcher root.** `tm spawn <repo>` resolves `<repo>` as
-  `$PWD/<repo>`, so sibling repos must share one parent.
+- **Single dispatcher root.** A relative `tm spawn <path>` resolves
+  against `TM_DISPATCHER_DIR` (or `$PWD`), so sibling repos must share
+  one parent. Absolute paths bypass that limit.
 - **macOS / Linux only.** Scripts use BSD `stat`; GNU Linux needs
   `-c %Y` — PRs welcome.
 - **Cron only fires inside an interactive TUI REPL.** The dispatcher session

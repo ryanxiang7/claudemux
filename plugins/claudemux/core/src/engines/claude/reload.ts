@@ -23,28 +23,28 @@ import type { TmResult } from '../../tm'
 
 export async function claudeReload(args: readonly string[], env: ClaudeVerbEnv): Promise<TmResult> {
   let all = false
-  const repos: string[] = []
+  const names: string[] = []
   for (const arg of args) {
     if (arg === '--all') all = true
-    else if (arg === '-h' || arg === '--help') return die('usage: tm reload <repo>... | --all')
+    else if (arg === '-h' || arg === '--help') return die('usage: tm reload <name>... | --all')
     else if (arg.startsWith('-')) return die(`tm reload: unknown flag: ${arg}`)
-    else repos.push(arg)
+    else names.push(arg)
   }
 
   if (all) {
-    if (repos.length > 0) return die('tm reload: --all conflicts with explicit repos')
-    repos.push(...(await iterTeammates(env.runTmux)))
-    if (repos.length === 0) {
+    if (names.length > 0) return die('tm reload: --all conflicts with explicit names')
+    names.push(...(await iterTeammates(env.runTmux)))
+    if (names.length === 0) {
       return { code: 0, stdout: '(no teammate sessions to reload)\n', stderr: '' }
     }
-  } else if (repos.length === 0) {
-    return die('usage: tm reload <repo>... | --all')
+  } else if (names.length === 0) {
+    return die('usage: tm reload <name>... | --all')
   }
 
   let stdout = ''
-  for (const repo of repos) {
-    stdout += `→ ${repo}: /reload-plugins\n`
-    const sent = await sendKeys(repo, '/reload-plugins', env.runTmux, process.env)
+  for (const name of names) {
+    stdout += `→ ${name}: /reload-plugins\n`
+    const sent = await sendKeys(name, '/reload-plugins', env.runTmux, process.env)
     // A non-zero `sendKeys` is the `die` that ends `tm reload`; its
     // own stderr went to `cmd_reload`'s `>/dev/null`, so it is dropped.
     if (sent.code !== 0) return { code: sent.code, stdout, stderr: '' }

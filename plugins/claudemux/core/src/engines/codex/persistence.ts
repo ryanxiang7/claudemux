@@ -202,7 +202,9 @@ export class CodexTeammateRecord extends TeammateRecord {
 
   constructor(args: {
     name: TeammateName
+    repo: string
     cwd: string
+    worktreeSlug: string | null
     createdAt: number
     displayName: string | null
   }) {

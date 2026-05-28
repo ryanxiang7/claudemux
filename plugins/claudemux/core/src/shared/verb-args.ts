@@ -17,15 +17,14 @@ function die(message: string): TmResult {
 
 /** Parsed arg vector for `tm compact`. */
 export interface CompactArgs {
-  repo: string
+  name: string
   timeout: string
 }
 
 /** Parsed arg vector for `tm resume`. */
 export interface ResumeArgs {
-  repo: string
+  name: string
   sid: string
-  task: string
   prompt: string
   hasPrompt: boolean
   engine: EngineFlag | null
@@ -33,7 +32,7 @@ export interface ResumeArgs {
 
 /** Parsed arg vector for `tm send`. */
 export interface SendArgs {
-  repo: string
+  name: string
   prompt: string
   hasPrompt: boolean
   paneQuiet: boolean
@@ -43,28 +42,30 @@ export interface SendArgs {
 /** Parsed arg vector for `tm spawn`. */
 export interface SpawnArgs {
   engine: EngineFlag | null
+  /** Explicit teammate name from `--name`; empty when the caller wants auto-gen. */
+  name: string
   resumeSid: string
-  task: string
   prompt: string
   hasPrompt: boolean
   timeout: string | null
+  noWorktree: boolean
 }
 
 /** Parsed arg vector for `tm wait`. */
 export interface WaitArgs {
-  repo: string
+  name: string
   timeout: string | null
   fresh: boolean
   paneQuiet: boolean
 }
 
 /**
- * `cmd_compact`'s arg loop: same positional-then-flag rule as `wait`.
- * `--timeout` with no value is bash's silent-exit-1 case; mirror that.
+ * `tm compact`'s arg loop: same positional-then-flag rule as `wait`.
+ * `--timeout` with no value is the bash silent-exit-1 case; mirror it.
  */
 export function parseCompactArgs(args: readonly string[]): CompactArgs | { error: TmResult } {
   const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
+  let name = ''
   let timeout = '1800'
   let i = 0
   while (i < args.length) {
@@ -78,29 +79,25 @@ export function parseCompactArgs(args: readonly string[]): CompactArgs | { error
       i++
     } else if (arg.startsWith('-')) {
       return { error: die(`tm compact: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
+    } else if (name === '') {
+      name = arg
       i++
     } else {
       timeout = arg
       i++
     }
   }
-  return { repo, timeout }
+  return { name, timeout }
 }
 
 /**
- * `cmd_resume`'s arg loop; two positionals (`<repo> [<sid>]`) plus
- * flags. Like `cmd_spawn`, `--task` is bash's silent-exit-1 path (no
- * `[[ $# -ge 2 ]]` guard); `--prompt` is the explicit-die path.
- * `--engine` is the explicit-die path too — it carries a required
- * `claude`/`codex` value, parallel to `tm spawn --engine`.
+ * `tm resume`'s arg loop; two positionals (`<name> [<sid>]`) plus
+ * flags. `--prompt` and `--engine` carry required values; missing
+ * values surface as explicit errors.
  */
 export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: TmResult } {
-  const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
+  let name = ''
   let sid = ''
-  let task = ''
   let prompt = ''
   let hasPrompt = false
   let engine: EngineFlag | null = null
@@ -115,13 +112,6 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
     } else if (arg.startsWith('--prompt=')) {
       prompt = arg.slice('--prompt='.length)
       hasPrompt = true
-      i++
-    } else if (arg === '--task') {
-      if (i + 1 >= args.length) return { error: SILENT }
-      task = args[i + 1]!
-      i += 2
-    } else if (arg.startsWith('--task=')) {
-      task = arg.slice('--task='.length)
       i++
     } else if (arg === '--engine') {
       if (i + 1 >= args.length) return { error: die('tm resume: --engine requires a value') }
@@ -143,8 +133,8 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
       break
     } else if (arg.startsWith('-')) {
       return { error: die(`unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
+    } else if (name === '') {
+      name = arg
       i++
     } else if (sid === '') {
       sid = arg
@@ -153,12 +143,12 @@ export function parseResumeArgs(args: readonly string[]): ResumeArgs | { error: 
       return {
         error: die(
           `tm resume: too many positional args (got '${arg}' after ` +
-            `repo='${repo}' sid='${sid}')`,
+            `name='${name}' sid='${sid}')`,
         ),
       }
     }
   }
-  return { repo, sid, task, prompt, hasPrompt, engine }
+  return { name, sid, prompt, hasPrompt, engine }
 }
 
 /**
@@ -170,15 +160,16 @@ function shellSingleQuote(value: string): string {
 }
 
 /**
- * `cmd_send`'s arg loop. Catches the legacy "tm send repo run tests"
- * form with a dedicated error — pre-0.3.0 callers passed prompts as
- * positional args, and this catches that habit explicitly rather than
- * swallowing the trailing positionals as a confusing "unknown arg".
+ * `tm send`'s arg loop. Catches the legacy `tm send <name> <free
+ * text>` form with a dedicated error — pre-0.3.0 callers passed
+ * prompts as positional args, and this catches that habit explicitly
+ * rather than swallowing the trailing positionals as a confusing
+ * "unknown arg".
  */
 export function parseSendArgs(args: readonly string[]): SendArgs | { error: TmResult } {
   let paneQuiet = false
   let timeout: string | null = null
-  let repo = ''
+  let name = ''
   let prompt = ''
   let hasPrompt = false
   let i = 0
@@ -205,45 +196,43 @@ export function parseSendArgs(args: readonly string[]): SendArgs | { error: TmRe
       i++
     } else if (arg === '--') {
       i++
-      repo = args[i] ?? ''
+      name = args[i] ?? ''
       i++
       break
     } else if (arg.startsWith('-')) {
       return { error: die(`tm send: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
+    } else if (name === '') {
+      name = arg
       i++
     } else {
-      // Legacy form: `tm send <repo> <free text>`. Echo the whole remaining
-      // argv so the suggested rewrite preserves every token. The escape
-      // uses POSIX-safe shell single-quoting.
       const tail = args.slice(i).join(' ')
       return {
         error: die(
           'tm send: prompt is now a --prompt flag, not a positional arg. ' +
-            `Did you mean: tm send ${repo} --prompt ${shellSingleQuote(tail)} ?`,
+            `Did you mean: tm send ${name} --prompt ${shellSingleQuote(tail)} ?`,
         ),
       }
     }
   }
-  return { repo, prompt, hasPrompt, paneQuiet, timeout }
+  return { name, prompt, hasPrompt, paneQuiet, timeout }
 }
 
 /**
- * `cmd_spawn`'s arg loop. `--prompt` is the only value-bearing flag
- * bash validates explicitly (`[[ $# -ge 2 ]] || die`); `--task` and
- * `--resume` use `"${2:-}"; shift 2`, which under `set -e` exits
- * silently when the value is missing because `shift 2` past the end
- * returns non-zero.
+ * `tm spawn`'s arg loop. `--prompt` and `--name` carry required
+ * values; `--resume <sid>` and `--timeout` accept either a separate
+ * value or `--flag=value` form. `--no-worktree` is a boolean.
+ *
+ * `--task` was removed in the schema-2 cut — pass `--name` instead.
  */
 export function parseSpawnArgs(rest: readonly string[]): SpawnArgs | { error: TmResult } {
   const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
+  let name = ''
   let resumeSid = ''
-  let task = ''
   let prompt = ''
   let hasPrompt = false
   let timeout: string | null = null
   let engine: EngineFlag | null = null
+  let noWorktree = false
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!
     if (arg === '--resume') {
@@ -264,18 +253,26 @@ export function parseSpawnArgs(rest: readonly string[]): SpawnArgs | { error: Tm
         return { error: die(`tm spawn: --engine must be 'claude' or 'codex' (got: '${value}')`) }
       }
       engine = value
-    } else if (arg === '--task') {
-      if (i + 1 >= rest.length) return { error: SILENT }
-      task = rest[i + 1]!
+    } else if (arg === '--name') {
+      if (i + 1 >= rest.length) return { error: die('tm spawn: --name requires a value') }
+      name = rest[i + 1]!
       i++
+    } else if (arg.startsWith('--name=')) {
+      name = arg.slice('--name='.length)
+    } else if (arg === '--task' || arg.startsWith('--task=')) {
+      return {
+        error: die(
+          "tm spawn: --task was removed in the name/repo decoupling cut. " +
+            "Pass --name <id> to set an explicit teammate name, or omit it " +
+            'to auto-generate (`<path-leaf>-<rand4>`).',
+        ),
+      }
     } else if (arg === '--timeout') {
       if (i + 1 >= rest.length) return { error: die('tm spawn: --timeout requires a value') }
       timeout = rest[i + 1]!
       i++
     } else if (arg.startsWith('--timeout=')) {
       timeout = arg.slice('--timeout='.length)
-    } else if (arg.startsWith('--task=')) {
-      task = arg.slice('--task='.length)
     } else if (arg === '--prompt') {
       if (i + 1 >= rest.length) return { error: die('tm spawn: --prompt requires a value') }
       prompt = rest[i + 1]!
@@ -284,22 +281,23 @@ export function parseSpawnArgs(rest: readonly string[]): SpawnArgs | { error: Tm
     } else if (arg.startsWith('--prompt=')) {
       prompt = arg.slice('--prompt='.length)
       hasPrompt = true
+    } else if (arg === '--no-worktree') {
+      noWorktree = true
     } else {
       return { error: die(`unknown flag: ${arg}`) }
     }
   }
-  return { engine, resumeSid, task, prompt, hasPrompt, timeout }
+  return { engine, name, resumeSid, prompt, hasPrompt, timeout, noWorktree }
 }
 
 /**
- * `cmd_wait`'s arg loop; positional after `<repo>` is a positional
- * timeout. `--timeout` with no value is bash's silent-exit-1 case
- * (`${2:-}; shift 2` trips `set -e`); mirror it so the conformance
- * differential stays clean.
+ * `tm wait`'s arg loop; positional after `<name>` is a positional
+ * timeout. `--timeout` with no value is the bash silent-exit-1 case;
+ * mirror it so the conformance differential stays clean.
  */
 export function parseWaitArgs(args: readonly string[]): WaitArgs | { error: TmResult } {
   const SILENT: TmResult = { code: 1, stdout: '', stderr: '' }
-  let repo = ''
+  let name = ''
   let timeout: string | null = null
   let fresh = false
   let paneQuiet = false
@@ -321,13 +319,13 @@ export function parseWaitArgs(args: readonly string[]): WaitArgs | { error: TmRe
       i++
     } else if (arg.startsWith('-')) {
       return { error: die(`tm wait: unknown flag: ${arg}`) }
-    } else if (repo === '') {
-      repo = arg
+    } else if (name === '') {
+      name = arg
       i++
     } else {
       timeout = arg
       i++
     }
   }
-  return { repo, timeout, fresh, paneQuiet }
+  return { name, timeout, fresh, paneQuiet }
 }
