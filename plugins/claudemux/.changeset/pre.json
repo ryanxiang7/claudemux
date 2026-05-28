@@ -13,6 +13,7 @@
     "fix-codex-ipc-broadcast-version",
     "fix-cron-host-rule",
     "fix-kill-grace-and-resume-after-kill",
+    "fix-kill-tmux-session-leak-on-graceful",
     "fix-prerelease-workflow-consumption",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
