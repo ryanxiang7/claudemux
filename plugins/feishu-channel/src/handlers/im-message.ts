@@ -9,12 +9,12 @@
  * it directly.
  */
 
-import { gate } from '../access'
+import { gate, isBotSenderType, isGroupAuthorized } from '../access'
 import { loadAccess, saveAccess } from '../access-store'
 import { parseInbound } from '../content'
 import type { ChannelDelivery, EventHandler, HandlerContext } from '../events'
 import { asString, isRecord } from '../json'
-import { recordObservedBots } from '../observed-bots-store'
+import { listObservedBots, recordObservedBots } from '../observed-bots-store'
 import type { Mention } from '../types'
 
 /** The Feishu event_type this handler subscribes to. */
@@ -30,6 +30,8 @@ export interface FeishuInboundEvent {
   chatType: string
   /** open_id of the sender — the identity access control gates on. */
   senderId: string
+  /** Feishu sender_type — `'user'` for a human, `'bot'` for an app/bot. */
+  senderType: string
   /** Feishu message_type — `text`, `post`, `image`, `file`, ... */
   messageType: string
   /** JSON-encoded content string, exactly as Feishu delivered it. */
@@ -62,8 +64,40 @@ export function createImMessageHandler(): EventHandler {
         ctx.logError('access.json was unreadable; started from defaults')
       }
 
+      // Hoist the /introduce detection once; both paths below reuse this result.
+      const isIntroduce = isIntroduceCommand(event.content, event.messageType, event.mentions)
+
+      // Ambient /introduce: a bot sender that broadcasts /introduce in an
+      // authorized group is recorded even without @-mentioning us. Runs before
+      // observedBotIds is loaded so the sender is included in the gate check on
+      // this same message (enabling single-step self-introduction).
+      if (
+        event.chatType === 'group' &&
+        isBotSenderType(event.senderType) &&
+        isIntroduce &&
+        isGroupAuthorized(loaded.access, event.chatId, event.senderId)
+      ) {
+        const name =
+          event.mentions.find((m) => m.id?.open_id === event.senderId)?.name ?? event.senderId
+        try {
+          recordObservedBots(ctx.baseDir, ctx.transport.appId, event.chatId, [
+            { openId: event.senderId, name },
+          ])
+        } catch (err) {
+          ctx.logError('ambient /introduce: failed to persist sender bot', err)
+        }
+      }
+
+      const observedBotIds =
+        event.chatType === 'group'
+          ? new Set(
+              listObservedBots(ctx.baseDir, ctx.transport.appId, event.chatId).map((b) => b.openId),
+            )
+          : undefined
+
       const decision = gate({
         senderId: event.senderId,
+        senderType: event.senderType,
         chatId: event.chatId,
         chatType: event.chatType,
         access: loaded.access,
@@ -71,19 +105,20 @@ export function createImMessageHandler(): EventHandler {
         newCode: ctx.generateCode(),
         mentions: event.mentions,
         botOpenId: ctx.transport.botOpenId,
+        observedBotIds,
       })
       const persist = (): void => {
         if (decision.changed) saveAccess(ctx.accessFile, decision.access)
       }
 
-      // /introduce collaboration handshake — intercept before normal routing.
-      // Detect using raw content + mention keys (not display names) so names
-      // with spaces don't break the prefix-strip. Side effects only fire when
-      // the access gate would deliver; for pair/drop we consume silently without
-      // persisting — saving a pair decision here would create a phantom pairing
-      // code that was never shown to anyone, causing "group pairing already
-      // pending" to block legitimate pairings until the entry expires.
-      if (isIntroduceCommand(event.content, event.messageType, event.mentions)) {
+      // @-mention /introduce collaboration handshake — intercept before normal
+      // routing. Detect using raw content + mention keys (not display names) so
+      // names with spaces don't break the prefix-strip. Side effects only fire
+      // when the access gate would deliver; for pair/drop we consume silently
+      // without persisting — saving a pair decision here would create a phantom
+      // pairing code that was never shown to anyone, causing "group pairing
+      // already pending" to block legitimate pairings until the entry expires.
+      if (isIntroduce) {
         if (decision.action === 'deliver') {
           persist()
           await handleIntroduce(event, ctx)
@@ -273,6 +308,7 @@ export function normalizeInboundEvent(raw: unknown): FeishuInboundEvent | null {
     chatId,
     chatType: asString(message.chat_type),
     senderId: openId,
+    senderType: asString(sender.sender_type),
     messageType: asString(message.message_type) || 'unknown',
     content: asString(message.content),
     mentions: normalizeMentions(message.mentions),

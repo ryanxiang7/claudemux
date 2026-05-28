@@ -21,6 +21,12 @@ export const PAIRING_TTL_MS = 60 * 60 * 1000
 export interface GateInput {
   /** open_id of the message sender. */
   senderId: string
+  /**
+   * Feishu sender_type. Feishu uses `'bot'` for cross-bot card messages and
+   * `'app'` for custom-bot messages in some scenarios; `'user'` for humans.
+   * Absent when the field is missing from the raw payload.
+   */
+  senderType?: string
   /** chat_id the message arrived in. */
   chatId: string
   /** Feishu chat_type — `p2p` or `group`. */
@@ -35,6 +41,16 @@ export interface GateInput {
   mentions?: Mention[]
   /** open_id of the bot itself, for group mention-gating. */
   botOpenId?: string
+  /**
+   * open_ids of peer bots known via /introduce in this specific chat. Populated
+   * by the caller for group messages only; `undefined` for direct messages.
+   * Entries arise from two sources, both scoped to this chatId:
+   *  - an authorized human sender ran /introduce (trust via the gate that
+   *    governed that delivery), or
+   *  - a bot sender broadcast /introduce in an authorized group (ambient
+   *    self-recording; `isBotSenderType` and `isGroupAuthorized` are the guards).
+   */
+  observedBotIds?: ReadonlySet<string>
 }
 
 export type GateResult =
@@ -134,13 +150,18 @@ function gateGroup(input: GateInput, access: Access, changed: boolean): GateResu
 
 /**
  * Decide a group message under the `follow-user` policy: the group itself
- * needs no authorization — the person does. A message is delivered when the
+ * needs no authorization — the sender does. A message is delivered when the
  * bot is @-mentioned (the deliberate "engage the bot" signal, without which
- * the bot would react to every message in the group) and the sender's open_id
- * is on the top-level `allowFrom` allowlist — the same allowlist that
- * authorizes direct messages. A non-mention message, or a mention from a
- * sender who is not allowlisted, is dropped; no pairing code is posted into a
- * group.
+ * the bot would react to every message in the group) AND the sender's open_id
+ * is either on the top-level `allowFrom` allowlist (the same allowlist that
+ * authorizes direct messages) OR is a peer bot known via /introduce in this
+ * chat. A non-mention message, or a mention from an unrecognized sender, is
+ * dropped; no pairing code is posted into a group.
+ *
+ * The observed-bot path is safe: entries are per-chatId and arise from two
+ * guarded sources — an authorized human /introduce delivery, or a bot that
+ * broadcast /introduce in an authorized group (ambient path, guarded by
+ * `isBotSenderType` + `isGroupAuthorized`). Both scope trust to this chat.
  */
 function gateGroupFollowUser(input: GateInput, access: Access, changed: boolean): GateResult {
   if (input.botOpenId === undefined) {
@@ -154,7 +175,10 @@ function gateGroupFollowUser(input: GateInput, access: Access, changed: boolean)
   if (!isBotMentioned(input.mentions, input.botOpenId)) {
     return { action: 'drop', access, changed, reason: 'bot not mentioned' }
   }
-  if (!access.allowFrom.includes(input.senderId)) {
+  const onAllowlist = access.allowFrom.includes(input.senderId)
+  const isIntroducedBot =
+    isBotSenderType(input.senderType) && (input.observedBotIds?.has(input.senderId) ?? false)
+  if (!onAllowlist && !isIntroducedBot) {
     return { action: 'drop', access, changed, reason: 'sender not on allowlist' }
   }
   return { action: 'deliver', access, changed }
@@ -275,4 +299,35 @@ export function pruneExpiredPending(
     }
   }
   return changed ? { access: { ...access, pending: kept }, changed: true } : { access, changed: false }
+}
+
+/**
+ * True when `senderType` identifies a Feishu bot or app.
+ * Feishu uses `'bot'` for cross-bot messages and `'app'` for custom-bot
+ * messages in some event contexts; both are non-human senders.
+ */
+export function isBotSenderType(senderType: string | undefined): boolean {
+  return senderType === 'bot' || senderType === 'app'
+}
+
+/**
+ * True when the given group is "authorized" — i.e. the channel is actively
+ * serving it and ambient side effects (like /introduce recording) are appropriate.
+ *
+ *  - `block`       → never authorized; the bot ignores all groups.
+ *  - `follow-user` → always authorized; any group can receive messages.
+ *  - `allowlist`   → authorized only when the group has been paired and is
+ *                    present in `access.groups`. When `senderId` is provided,
+ *                    also checks that the sender passes the group's `allowFrom`
+ *                    filter (empty allowFrom = no restriction).
+ */
+export function isGroupAuthorized(access: Access, chatId: string, senderId?: string): boolean {
+  if (access.groupPolicy === 'block') return false
+  if (access.groupPolicy === 'follow-user') return true
+  const policy = access.groups[chatId]
+  if (!policy) return false
+  if (senderId !== undefined && policy.allowFrom.length > 0 && !policy.allowFrom.includes(senderId)) {
+    return false
+  }
+  return true
 }

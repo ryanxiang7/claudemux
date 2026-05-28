@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest'
 import {
   gate,
   isBotMentioned,
+  isBotSenderType,
+  isGroupAuthorized,
   MAX_PAIRING_REPLIES,
   MAX_PENDING,
   PAIRING_TTL_MS,
@@ -301,6 +303,74 @@ describe('gate — groupPolicy follow-user', () => {
     const unknownSender = gate(groupInput({ access: followUser() }))
     expect(unknownSender.action).not.toBe('pair')
   })
+
+  test('delivers a message from a peer bot that is in observedBotIds and @-mentions the bot', () => {
+    const r = gate(
+      groupInput({
+        access: followUser(),
+        senderId: 'ou_peer_bot',
+        senderType: 'bot',
+        observedBotIds: new Set(['ou_peer_bot']),
+      }),
+    )
+    expect(r.action).toBe('deliver')
+  })
+
+  test('observed bot without a mention is still dropped', () => {
+    const r = gate(
+      groupInput({
+        access: followUser(),
+        senderId: 'ou_peer_bot',
+        senderType: 'bot',
+        mentions: [],
+        observedBotIds: new Set(['ou_peer_bot']),
+      }),
+    )
+    expect(r.action).toBe('drop')
+    if (r.action !== 'drop') throw new Error('unreachable')
+    expect(r.reason).toBe('bot not mentioned')
+  })
+
+  test('an unrecognized sender not in observedBotIds is still dropped', () => {
+    const r = gate(
+      groupInput({
+        access: followUser(),
+        senderId: 'ou_unknown',
+        senderType: 'bot',
+        observedBotIds: new Set(['ou_other_bot']),
+      }),
+    )
+    expect(r.action).toBe('drop')
+    if (r.action !== 'drop') throw new Error('unreachable')
+    expect(r.reason).toBe('sender not on allowlist')
+  })
+
+  test('a human open_id in observedBotIds cannot bypass allowFrom — senderType guard', () => {
+    // Regression: /introduce mentions can include human open_ids. A human whose
+    // open_id ended up in observed-bots must NOT bypass the allowFrom check.
+    const r = gate(
+      groupInput({
+        access: followUser(),
+        senderId: 'ou_human',
+        senderType: 'user',
+        observedBotIds: new Set(['ou_human']),
+      }),
+    )
+    expect(r.action).toBe('drop')
+    if (r.action !== 'drop') throw new Error('unreachable')
+    expect(r.reason).toBe('sender not on allowlist')
+  })
+
+  test('a human on allowFrom is still delivered regardless of senderType check', () => {
+    const r = gate(
+      groupInput({
+        access: followUser({ allowFrom: ['ou_human'] }),
+        senderId: 'ou_human',
+        senderType: 'user',
+      }),
+    )
+    expect(r.action).toBe('deliver')
+  })
 })
 
 describe('gate — purity and pruning', () => {
@@ -366,5 +436,47 @@ describe('isBotMentioned', () => {
 
   test('false when no mention is the bot', () => {
     expect(isBotMentioned([{ key: '@_user_1', id: { open_id: 'ou_human' } }], 'ou_bot')).toBe(false)
+  })
+})
+
+describe('isBotSenderType', () => {
+  test("true for 'bot'", () => expect(isBotSenderType('bot')).toBe(true))
+  test("true for 'app' (custom-bot scenario)", () => expect(isBotSenderType('app')).toBe(true))
+  test("false for 'user'", () => expect(isBotSenderType('user')).toBe(false))
+  test('false for undefined (missing field)', () => expect(isBotSenderType(undefined)).toBe(false))
+  test('false for empty string', () => expect(isBotSenderType('')).toBe(false))
+})
+
+describe('isGroupAuthorized', () => {
+  test('block policy — never authorized', () => {
+    expect(isGroupAuthorized(access({ groupPolicy: 'block' }), 'oc_any')).toBe(false)
+  })
+
+  test('follow-user policy — always authorized', () => {
+    expect(isGroupAuthorized(access({ groupPolicy: 'follow-user' }), 'oc_any')).toBe(true)
+  })
+
+  test('allowlist policy — authorized when group is configured', () => {
+    const a = access({ groupPolicy: 'allowlist', groups: { oc_chat: { requireMention: false, allowFrom: [] } } })
+    expect(isGroupAuthorized(a, 'oc_chat')).toBe(true)
+  })
+
+  test('allowlist policy — not authorized when group is absent', () => {
+    expect(isGroupAuthorized(access({ groupPolicy: 'allowlist' }), 'oc_chat')).toBe(false)
+  })
+
+  test('allowlist policy — sender in allowFrom is authorized', () => {
+    const a = access({ groupPolicy: 'allowlist', groups: { oc_chat: { requireMention: false, allowFrom: ['ou_bot'] } } })
+    expect(isGroupAuthorized(a, 'oc_chat', 'ou_bot')).toBe(true)
+  })
+
+  test('allowlist policy — sender not in allowFrom is not authorized', () => {
+    const a = access({ groupPolicy: 'allowlist', groups: { oc_chat: { requireMention: false, allowFrom: ['ou_allowed'] } } })
+    expect(isGroupAuthorized(a, 'oc_chat', 'ou_stranger')).toBe(false)
+  })
+
+  test('allowlist policy — empty allowFrom means no restriction (any sender passes)', () => {
+    const a = access({ groupPolicy: 'allowlist', groups: { oc_chat: { requireMention: false, allowFrom: [] } } })
+    expect(isGroupAuthorized(a, 'oc_chat', 'ou_anyone')).toBe(true)
   })
 })

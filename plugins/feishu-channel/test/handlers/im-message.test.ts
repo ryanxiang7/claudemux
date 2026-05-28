@@ -9,7 +9,7 @@ import {
   createImMessageHandler,
   normalizeInboundEvent,
 } from '../../src/handlers/im-message'
-import { listObservedBots } from '../../src/observed-bots-store'
+import { listObservedBots, recordObservedBots } from '../../src/observed-bots-store'
 import type { Access } from '../../src/types'
 import { FakeTransport } from '../support/fake-transport'
 
@@ -42,11 +42,34 @@ describe('normalizeInboundEvent — happy path', () => {
       chatId: 'oc_chat',
       chatType: 'p2p',
       senderId: 'ou_sender',
+      senderType: 'user',
       messageType: 'text',
       content: '{"text":"hello there"}',
       mentions: [],
       createTime: '1700000000000',
     })
+  })
+
+  test('captures sender_type=bot for a bot sender', () => {
+    const event = normalizeInboundEvent(
+      rawEvent({}, { open_id: 'ou_bot', union_id: 'on_b', user_id: 'u_b' }),
+    )
+    // rawEvent passes sender_type via the second arg only if we override
+    // — use a raw object to test bot type directly
+    const botRaw = {
+      sender: { sender_id: { open_id: 'ou_bot' }, sender_type: 'bot' },
+      message: {
+        message_id: 'om_msg',
+        chat_id: 'oc_chat',
+        chat_type: 'group',
+        message_type: 'text',
+        content: '{"text":"hi"}',
+        create_time: '1700000000000',
+        mentions: [],
+      },
+    }
+    expect(normalizeInboundEvent(botRaw)?.senderType).toBe('bot')
+    void event
   })
 
   test('unwraps a full {event: ...} envelope', () => {
@@ -311,6 +334,113 @@ describe('createImMessageHandler — group follow-user policy', () => {
   })
 })
 
+describe('createImMessageHandler — observed-bot delivery (follow-user policy)', () => {
+  test('delivers a message from a peer bot in observed-bots that @-mentions the bot', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    recordObservedBots(dir, transport.appId, 'oc_group', [{ openId: 'ou_peer_bot', name: 'PeerBot' }])
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: 'bot' },
+        message: {
+          message_id: 'om_bot_msg',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: '{"text":"hello from peer"}',
+          create_time: '1700000000000',
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_self' } }],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    expect(delivery?.content).toBe('hello from peer')
+    expect(delivery?.meta.sender_id).toBe('ou_peer_bot')
+  })
+
+  test('observed bot without @-mention is still dropped', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    recordObservedBots(dir, transport.appId, 'oc_group', [{ openId: 'ou_peer_bot', name: 'PeerBot' }])
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: 'bot' },
+        message: {
+          message_id: 'om_bot_msg2',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: '{"text":"no mention"}',
+          create_time: '1700000000000',
+          mentions: [],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    expect(delivery).toBeNull()
+  })
+
+  test('observed bot from a different group cannot deliver into this group', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    // Register the bot only in 'oc_other_group', not 'oc_group'
+    recordObservedBots(dir, transport.appId, 'oc_other_group', [{ openId: 'ou_peer_bot', name: 'PeerBot' }])
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: 'bot' },
+        message: {
+          message_id: 'om_bot_msg3',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: '{"text":"cross-group attempt"}',
+          create_time: '1700000000000',
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_self' } }],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    expect(delivery).toBeNull()
+  })
+
+  test('a human open_id in observed-bots with sender_type=user cannot bypass allowFrom', async () => {
+    // Regression: /introduce mentions can include human open_ids. A human whose
+    // open_id ended up in observed-bots must NOT be delivered unless they are
+    // also on allowFrom.
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    recordObservedBots(dir, transport.appId, 'oc_group', [{ openId: 'ou_human', name: 'Alice' }])
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_human' }, sender_type: 'user' },
+        message: {
+          message_id: 'om_human_msg',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: '{"text":"bypass attempt"}',
+          create_time: '1700000000000',
+          mentions: [{ key: '@_user_1', id: { open_id: 'ou_self' } }],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    expect(delivery).toBeNull()
+  })
+})
+
 describe('createImMessageHandler — group block policy', () => {
   test('drops a group message and sends nothing', async () => {
     writeAccess({ groupPolicy: 'block', allowFrom: ['ou_sender'] })
@@ -402,6 +532,178 @@ describe('createImMessageHandler — pairing send failure', () => {
     // The send failed, so nothing is persisted — the sender's next message
     // starts a fresh pairing rather than finding a code they never received.
     expect(loadAccess(accessFile).access.pending).toEqual({})
+  })
+})
+
+// ── ambient /introduce (bot sender, no @-mention required) ──────────────────
+
+/** A raw group event from a bot sender (no @-mention of our bot). */
+function botIntroduceEvent(
+  text: string,
+  chatId = 'oc_grp',
+  senderType = 'bot',
+): Record<string, unknown> {
+  return {
+    sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: senderType },
+    message: {
+      message_id: 'om_ambient',
+      chat_id: chatId,
+      chat_type: 'group',
+      message_type: 'text',
+      content: JSON.stringify({ text }),
+      create_time: '1700000000000',
+      mentions: [],
+    },
+  }
+}
+
+describe('createImMessageHandler — ambient /introduce (bot broadcasts without @-mention)', () => {
+  test('records the bot sender in observed-bots for a follow-user group', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(delivery).toBeNull()
+    const bots = listObservedBots(dir, transport.appId, 'oc_grp')
+    expect(bots.map((b) => b.openId)).toContain('ou_peer_bot')
+  })
+
+  test('silent — no ack message sent', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(transport.sent).toHaveLength(0)
+  })
+
+  test('records for an authorized allowlist group', async () => {
+    writeAccess({ groupPolicy: 'allowlist', groups: { oc_grp: { requireMention: false, allowFrom: [] } } })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(listObservedBots(dir, transport.appId, 'oc_grp').map((b) => b.openId)).toContain('ou_peer_bot')
+  })
+
+  test('does NOT record in an unconfigured allowlist group', async () => {
+    writeAccess({ groupPolicy: 'allowlist', groups: {} })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(listObservedBots(dir, transport.appId, 'oc_grp')).toHaveLength(0)
+  })
+
+  test('does NOT record in a blocked group', async () => {
+    writeAccess({ groupPolicy: 'block', allowFrom: ['ou_peer_bot'] })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(listObservedBots(dir, transport.appId, 'oc_grp')).toHaveLength(0)
+  })
+
+  test('does NOT record a human sender (senderType=user)', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce', 'oc_grp', 'user'), makeCtx(transport))
+
+    expect(listObservedBots(dir, transport.appId, 'oc_grp')).toHaveLength(0)
+  })
+
+  test('single-step: ambient records sender so same-message gate can deliver (follow-user + @-mention)', async () => {
+    // Bot A sends "/introduce @OurBot": ambient records Bot A first, then
+    // observedBotIds includes Bot A, so gate delivers — enabling single-step
+    // self-introduction. The message is still consumed (null) because /introduce
+    // always returns null regardless of delivery.
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    const delivery = await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: 'bot' },
+        message: {
+          message_id: 'om_self_intro',
+          chat_id: 'oc_grp',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: '@_user_self /introduce' }),
+          create_time: '1700000000000',
+          mentions: [{ key: '@_user_self', id: { open_id: 'ou_self' }, name: 'OurBot' }],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    // /introduce always returns null, but the bot is now recorded
+    expect(delivery).toBeNull()
+    expect(listObservedBots(dir, transport.appId, 'oc_grp').map((b) => b.openId)).toContain('ou_peer_bot')
+  })
+
+  test('does NOT record bot not in group allowFrom (allowlist policy with non-empty allowFrom)', async () => {
+    writeAccess({ groupPolicy: 'allowlist', groups: { oc_grp: { requireMention: false, allowFrom: ['ou_allowed'] } } })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    // ou_peer_bot is not in allowFrom=['ou_allowed'] → should not be recorded
+    expect(listObservedBots(dir, transport.appId, 'oc_grp')).toHaveLength(0)
+  })
+
+  test('records bot in group allowFrom (allowlist policy)', async () => {
+    writeAccess({ groupPolicy: 'allowlist', groups: { oc_grp: { requireMention: false, allowFrom: ['ou_peer_bot'] } } })
+    const transport = new FakeTransport('ou_self')
+    const handler = createImMessageHandler()
+
+    await handler.handle(botIntroduceEvent('/introduce'), makeCtx(transport))
+
+    expect(listObservedBots(dir, transport.appId, 'oc_grp').map((b) => b.openId)).toContain('ou_peer_bot')
+  })
+
+  test('combination: bot sender + @OurBot + @BotB /introduce → ambient records sender, handleIntroduce records BotB, ack for BotB only', async () => {
+    writeAccess({ groupPolicy: 'follow-user', allowFrom: [] })
+    const transport = new FakeTransport('ou_self')
+    // Pre-seed peer bot so gate delivers (otherwise handleIntroduce won't run)
+    recordObservedBots(dir, transport.appId, 'oc_grp', [{ openId: 'ou_peer_bot', name: 'PeerBot' }])
+    const handler = createImMessageHandler()
+
+    await handler.handle(
+      {
+        sender: { sender_id: { open_id: 'ou_peer_bot' }, sender_type: 'bot' },
+        message: {
+          message_id: 'om_combo',
+          chat_id: 'oc_grp',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: '@_user_self @_user_ext /introduce' }),
+          create_time: '1700000000000',
+          mentions: [
+            { key: '@_user_self', id: { open_id: 'ou_self' }, name: 'OurBot' },
+            { key: '@_user_ext', id: { open_id: 'ou_ext_bot' }, name: 'ExtBot' },
+          ],
+        },
+      },
+      makeCtx(transport),
+    )
+
+    // ambient records the sender; handleIntroduce records all mentions (self + ext)
+    const bots = listObservedBots(dir, transport.appId, 'oc_grp').map((b) => b.openId)
+    expect(bots).toContain('ou_peer_bot')  // ambient path
+    expect(bots).toContain('ou_ext_bot')   // handleIntroduce
+    // ack contains all mentioned bots (handleIntroduce records all mentions including self)
+    expect(transport.sent).toHaveLength(1)
+    expect(transport.sent[0]?.text).toContain('ExtBot')
   })
 })
 
