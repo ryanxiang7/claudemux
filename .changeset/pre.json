@@ -2,7 +2,9 @@
   "mode": "pre",
   "tag": "beta",
   "initialVersions": {
-    "claudemux": "1.0.0-beta.3"
+    "claudemux": "1.0.0-beta.3",
+    "@claudemux/tm": "0.0.0",
+    "claude-channel-feishu": "0.1.0"
   },
   "changesets": [
     "codex-ipc-bridge",
