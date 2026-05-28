@@ -345,9 +345,11 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
       pattern that appears in the sent prompt makes the wait return
       instantly).
 `,
-  doctor: `tm doctor
+  doctor: `tm doctor [--json]
 
-      Self-check for the dispatcher environment. Reports, in order:
+      Self-check for the dispatcher environment. Two output modes:
+
+      Text mode (default). Reports, in order:
         - tm executable: resolved path and reported plugin version
         - dispatcher dir: TM_DISPATCHER_DIR (or $PWD fallback),
           whether the env was actually set, and whether the
@@ -356,10 +358,20 @@ export const HELP_TEXTS: Readonly<Record<string, string>> = {
           a tmux session?
         - idle dir: does /tmp/claude-idle/ exist?
         - active teammates: count + names from \`tm ls\`
-      Read-only — doesn't change any state. Use it when something
-      looks off ("why is tm using the wrong path?" / "did
-      /claudemux:setup actually write the env?"). Exit code is
-      always 0; interpret the printed lines, not the status.
+        - codex teammates: count + reaps any orphan daemon registry
+          entries it finds (this is the only mutating side effect
+          of doctor in text mode)
+      Use it when something looks off. Exit code is always 0;
+      interpret the printed lines, not the status.
+
+      JSON mode (--json). Prints a single structured report on
+      stdout — see the schema documented in the npm package README.
+      Read-only: never reaps orphan codex daemons. Exit code is 5
+      when health is "unhealthy" (no engine usable / dispatcher
+      dir missing), otherwise 0 for both "ok" and "degraded".
+      Designed for the hook scripts, \`/claudemux:setup\`, and
+      external clients (e.g. dreamux) that want to gate on
+      machine-readable health before invoking other verbs.
 `,
 }
 

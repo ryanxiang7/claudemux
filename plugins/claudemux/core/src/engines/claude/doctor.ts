@@ -27,6 +27,7 @@ import {
   reapDaemon as reapCodexDaemon,
 } from '../codex/supervisor'
 import { removeBaseRecord as removeCodexBaseRecord } from '../codex/persistence'
+import { collectDoctorReport, renderDoctorJson } from './doctor-json'
 import type { ClaudeVerbEnv } from './env'
 import type { TmResult } from '../../tm'
 
@@ -37,13 +38,29 @@ export interface DoctorPaths {
   pluginJson: string
 }
 
+export { collectDoctorReport, renderDoctorJson } from './doctor-json'
+export type { DoctorReport, DoctorIssue, IssueCode } from './doctor-json'
+
 export async function claudeDoctor(
   args: readonly string[],
   env: ClaudeVerbEnv,
   paths: DoctorPaths,
 ): Promise<TmResult> {
-  if (args.length > 0) {
-    return die(`tm doctor: takes no arguments (got: ${args.join(' ')})`)
+  let json = false
+  for (const arg of args) {
+    if (arg === '--json') {
+      json = true
+      continue
+    }
+    return die(`tm doctor: takes no arguments other than --json (got: ${arg})`)
+  }
+
+  if (json) {
+    // The JSON branch is read-only by contract — it never reaps orphan
+    // Codex daemons the way the text branch does, because dreamux polls
+    // it on a cadence and a transient pid-check miss must not silently
+    // delete recoverable state.
+    return renderDoctorJson(await collectDoctorReport(env, paths))
   }
 
   // The kv row: a 20-character padded label, then the value — matches
