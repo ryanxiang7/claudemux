@@ -21,6 +21,7 @@
     "migrate-release-pipeline",
     "release-next-app-token",
     "release-next-direct-push",
+    "remove-available-bots-injection",
     "swift-balloons-search",
     "worktree-default-name-decoupling"
   ]
