@@ -12,6 +12,7 @@
     "dispatcher-prompt-and-parallel-rules",
     "fix-codex-ipc-broadcast-version",
     "fix-cron-host-rule",
+    "fix-kill-grace-and-resume-after-kill",
     "fix-prerelease-workflow-consumption",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
