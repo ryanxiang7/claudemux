@@ -9,6 +9,7 @@
     "codex-ipc-discovery",
     "codex-ipc-follower-controls",
     "cute-lamps-brush",
+    "dispatcher-prompt-and-parallel-rules",
     "fix-codex-ipc-broadcast-version",
     "fix-cron-host-rule",
     "fix-prerelease-workflow-consumption",

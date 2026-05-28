@@ -1,5 +1,11 @@
 # claudemux
 
+## 1.0.0-beta.11
+
+### Patch Changes
+
+- a1f4930: dispatcher skill: add MUST/MUST-NOT prompt-composition checklist for `tm spawn/send --prompt` and a default-to-parallel dispatch posture for fan-out across teammates
+
 ## 1.0.0-beta.10
 
 ### Major Changes
