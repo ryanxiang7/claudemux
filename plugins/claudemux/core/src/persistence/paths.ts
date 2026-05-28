@@ -17,6 +17,25 @@
 import { join } from 'node:path'
 import type { TeammateName } from '../engines/types'
 
+/**
+ * Version of the `/tmp/teammate-*` + `/tmp/claude-idle/*` cross-process
+ * file protocol the CLI and the Bash hooks share. Bump **iff** a path
+ * name, a file field, or a field's semantics changes in a way that
+ * makes an older hook + newer CLI (or vice versa) misbehave. Adding a
+ * new optional field that older hooks can ignore is **not** a bump.
+ *
+ * Source of truth: this constant. The companion file
+ * `plugins/claudemux/hooks/protocol-version` is mirrored from it by
+ * `plugins/claudemux/scripts/sync-plugin-version.mjs`, and
+ * `test/persistence/protocol-version.test.ts` asserts the two stay in
+ * lockstep so a drift in a PR fails CI rather than reaching users.
+ *
+ * Surfaced on the CLI as `tm --protocol-version` (raw integer, one
+ * line) so hook scripts and `tm doctor --json` can probe it without a
+ * full verb dispatch.
+ */
+export const PROTOCOL_VERSION = 1
+
 /** The root directory the Claude engine's extension files live in. */
 const TEAMMATE_ROOT = '/tmp'
 

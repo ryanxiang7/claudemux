@@ -1,4 +1,5 @@
 import { HELP_TEXTS, OVERVIEW_HELP, REMOVED_VERB_MESSAGES } from '../help'
+import { PROTOCOL_VERSION } from '../persistence/paths'
 import { pluginJsonPath, tmWrapperPath } from '../plugin-root'
 import type { TmResult } from '../tm'
 import type { NativeEnv } from '../env'
@@ -356,6 +357,15 @@ export async function runCli(
   // 2. The `help` / `-h` / `--help` verb forms.
   if (verb === 'help' || verb === '-h' || verb === '--help') {
     return runHelpVerb(rest)
+  }
+
+  // 2a. `--protocol-version` — print the `/tmp/*` cross-process file
+  //     protocol version as a raw integer on stdout, exit 0. Designed
+  //     for the Bash hooks and dreamux's preflight to probe the CLI
+  //     without paying a full verb dispatch or a JSON parse. Ignores
+  //     any trailing args because it is a degenerate read.
+  if (verb === '--protocol-version') {
+    return { code: 0, stdout: `${PROTOCOL_VERSION}\n`, stderr: '' }
   }
 
   // 3. Help pre-scan — `tm <verb> --help` prints that verb's detail.
