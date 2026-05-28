@@ -58,13 +58,17 @@ These rules cover the shared surfaces between `bin/tm`, the hooks, and the host 
 
 This repo ships more than one plugin under `plugins/`. Each plugin has its own manifest (`plugins/<name>/.claude-plugin/plugin.json`) and its own version number — the plugins are versioned independently.
 
-For claudemux, a feature commit does **not** edit the `version` field. It declares the change with an official Changesets fragment:
+For claudemux, a feature commit does **not** edit the `version` field. It declares the change with a Changesets fragment written directly to `.changeset/<slug>.md` at the repo root — do not use the interactive CLI:
 
-```bash
-pnpm --dir plugins/claudemux changeset
+```markdown
+---
+"claudemux": patch
+---
+
+<one-paragraph description>
 ```
 
-Commit the generated `plugins/claudemux/.changeset/*.md` file alongside the change. The level you pick is what that change warrants on its own:
+Commit the fragment alongside the change. The level you pick is what that change warrants on its own:
 
 - `patch` — bug fix, no behavior change visible to users
 - `minor` — new feature, backward-compatible
@@ -72,21 +76,26 @@ Commit the generated `plugins/claudemux/.changeset/*.md` file alongside the chan
 
 The version is bumped only by the release pipeline. Official Changesets consumes pending fragments, updates `plugins/claudemux/package.json`, writes `plugins/claudemux/CHANGELOG.md`, and deletes consumed fragments. The `version-packages` script then mirrors that package version into `plugins/claudemux/.claude-plugin/plugin.json`. Because each feature commit adds a new fragment instead of editing the shared `version` line, parallel feature branches do not collide on versioning. See [decision changeset-release-versioning](/.agents/decisions/changeset-release-versioning.md).
 
-For claudemux, release-surface paths are declared in `plugins/claudemux/.changeset/config.json` under `changedFilePatterns`:
+Release-surface paths are declared in `.changeset/config.json` under `changedFilePatterns`:
 
-- `bin/*`, `hooks/*`, `scripts/*`, `templates/*`
-- `skills/*/SKILL.md`
-- `core/src/*`, `core/package.json`
-- `core/resolver.mjs`, `core/resolver-register.mjs`, `core/third_party/*`
+- `bin/*`, `hooks/*`, `scripts/*`, `templates/*` (claudemux)
+- `skills/*/SKILL.md` (claudemux)
+- `core/src/*`, `core/package.json`, `core/resolver.mjs`, `core/resolver-register.mjs`, `core/third_party/*` (claudemux core)
+- `src/**` (feishu-channel — use package name `"claude-channel-feishu"`)
 
-The local pre-commit hook at `.githooks/pre-commit` checks only the commit author email. Changeset enforcement belongs in CI, not in the local hook. Pure-docs commits (README, CLAUDE.md, KB files, `*.md` outside `SKILL.md`), CI/test changes, and edits limited to a manifest's description/keywords remain exempt from claudemux release intent.
+Two local hooks run via Husky (installed by `pnpm install`):
 
-To enable the hook on a fresh clone, run once: `git config core.hooksPath .githooks`.
+- `.husky/pre-commit` — delegates to `.githooks/pre-commit`, which checks the commit author email via `bin/check-author`.
+- `.husky/pre-push` — runs `pnpm changeset status --since=origin/next` to catch missing changeset fragments before push.
+
+Pure-docs commits (README, CLAUDE.md, KB files, `*.md` outside `SKILL.md`), CI/test changes, and edits limited to a manifest's description/keywords remain exempt from release intent.
+
+To enable all hooks on a fresh clone: `pnpm install` (the `prepare` script sets `core.hooksPath=.husky/_` automatically).
 
 ## Commit Author
 
 Commit author email must be a real, well-formed address — not a machine-default identity (git's `whoami@hostname` guess, e.g. `dyzhu@MacBook.local`, which git fabricates when `user.email` is unset). Any valid public email passes; there is no per-person whitelist.
 
-The rule lives in `bin/check-author` — one source of truth, called from two places: `.githooks/pre-commit` checks the identity the next commit would use, and the CI workflow checks every commit a push or PR introduces. It rejects an unparseable email or an mDNS/LAN suffix (`.local`, `.localdomain`, `.lan`, `.home`, `.internal`). Enable the hook with `git config core.hooksPath .githooks`.
+The rule lives in `bin/check-author` — one source of truth, called from two places: `.githooks/pre-commit` (invoked via `.husky/pre-commit`) checks the identity the next commit would use, and the CI workflow checks every commit a push or PR introduces. It rejects an unparseable email or an mDNS/LAN suffix (`.local`, `.localdomain`, `.lan`, `.home`, `.internal`).
 
 To stop machine-default identities at the root, set once per machine: `git config --global user.useConfigOnly true` — git then refuses to commit until `user.email` is explicitly configured, instead of silently guessing.
