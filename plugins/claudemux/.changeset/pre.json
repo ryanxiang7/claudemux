@@ -16,6 +16,7 @@
     "migrate-release-pipeline",
     "release-next-app-token",
     "release-next-direct-push",
-    "swift-balloons-search"
+    "swift-balloons-search",
+    "worktree-default-name-decoupling"
   ]
 }
