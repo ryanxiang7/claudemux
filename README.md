@@ -231,8 +231,8 @@ EOF
 ```
 
 Feature PRs commit the generated `.changeset/*.md` file alongside the change;
-generated release PRs later consume those fragments into the plugin version and
-changelog.
+release automation on `next`/`main` later consumes those fragments into the
+plugin version and changelog.
 
 ## Uninstall
 

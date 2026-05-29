@@ -7,12 +7,12 @@ on:
 
 jobs:
   claudemux-changeset-status:
+    # Authored-PR gate: every PR into next that touches a release surface must
+    # declare a changeset. PRs into main are promotions (next -> main), which
+    # carry no new changeset, so they are excluded.
     if: >
       github.event_name == 'pull_request' &&
-      github.base_ref != 'main' &&
-      !startsWith(github.event.pull_request.head.ref, 'changeset-release/') &&
-      !startsWith(github.event.pull_request.head.ref, 'release/claudemux-ga-') &&
-      !startsWith(github.event.pull_request.head.ref, 'release/claudemux-next-pre-')
+      github.base_ref != 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

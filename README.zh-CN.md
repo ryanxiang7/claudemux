@@ -209,8 +209,8 @@ Fix: 描述本次改动。
 EOF
 ```
 
-feature PR 将 `.changeset/*.md` 随改动一起提交;后续 release PR 会消费这些
-fragment,更新插件版本和 changelog。
+feature PR 将 `.changeset/*.md` 随改动一起提交;`next`/`main` 上的 release
+自动化(release bot)随后消费这些 fragment,更新插件版本和 changelog。
 
 ## 卸载
 

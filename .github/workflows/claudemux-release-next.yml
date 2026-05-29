@@ -10,6 +10,15 @@ concurrency:
 permissions:
   contents: write
 
+# The release job commits and pushes as the bot. Husky's local pre-push hook
+# runs `changeset status`, which fails on a release commit because the bump
+# touches a release-surface file (package.json) whose changeset is already
+# consumed — that is authored-PR enforcement misfiring on the machine push.
+# HUSKY=0 disables the local hooks for this job; the authoritative changeset
+# gate is the CI `claudemux-changeset-status` job on PRs into next.
+env:
+  HUSKY: "0"
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -54,7 +63,6 @@ jobs:
             exit 0
           fi
 
-          node plugins/claudemux/scripts/prepare-prerelease-changesets.mjs $changed_changesets
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git config user.name 'github-actions[bot]'
           pnpm --dir plugins/claudemux version-packages

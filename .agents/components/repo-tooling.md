@@ -17,7 +17,10 @@ workflow.
 | [`/.githooks/pre-commit`](/.githooks/pre-commit) | Author-email check (source of truth); called by `.husky/pre-commit` |
 | [`/.husky/pre-commit`](/.husky/pre-commit) | Husky hook — delegates to `.githooks/pre-commit` |
 | [`/.husky/pre-push`](/.husky/pre-push) | Husky hook — runs `pnpm changeset status --since=origin/next` before push |
-| [`/.github/workflows/ci.yml`](/.github/workflows/ci.yml) | CI — shellcheck + bats on an Ubuntu/macOS matrix |
+| [`/.github/workflows/ci.yml`](/.github/workflows/ci.yml) | CI — changeset-status gate (PRs into `next`) + shellcheck/bats/TypeScript jobs on an Ubuntu/macOS matrix |
+| [`/.github/workflows/claudemux-release-next.yml`](/.github/workflows/claudemux-release-next.yml) | On push to `next`: `changeset version` (beta) + sync, commit, direct push back to `next` |
+| [`/.github/workflows/claudemux-release-main.yml`](/.github/workflows/claudemux-release-main.yml) | On push to `main` in pre mode: `version-ga` (pre exit + version) + sync, commit, direct push back to `main` |
+| [`/.github/workflows/claudemux-reset-next-pre.yml`](/.github/workflows/claudemux-reset-next-pre.yml) | After a successful GA (`workflow_run`): fast-forward `next` to main and re-enter beta pre mode |
 
 ## Versioning — official Changesets
 
@@ -121,5 +124,5 @@ The `feishu-channel` job covers a plugin that is still on a branch — see
 ## See also
 
 - [decisions/tm-quality-hardening.md](/.agents/decisions/tm-quality-hardening.md) — how CI, tests, and the lint hooks were introduced.
-- [decisions/changeset-release-versioning.md](/.agents/decisions/changeset-release-versioning.md) — why versioning moved to Changesets fragments and release PRs.
+- [decisions/changeset-release-versioning.md](/.agents/decisions/changeset-release-versioning.md) — why versioning moved to Changesets fragments with direct-push beta/GA automation.
 - [components/tm.md](/.agents/components/tm.md) — what shellcheck and the bats suite guard.
