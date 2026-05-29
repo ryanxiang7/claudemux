@@ -11,6 +11,7 @@
     "codex-ipc-bridge",
     "codex-ipc-discovery",
     "codex-ipc-follower-controls",
+    "collapse-claudemux-core-into-plugin-root",
     "cute-lamps-brush",
     "dispatcher-prompt-and-parallel-rules",
     "fix-codex-ipc-broadcast-version",
@@ -18,12 +19,14 @@
     "fix-feishu-manifest-version-sync",
     "fix-kill-grace-and-resume-after-kill",
     "fix-kill-tmux-session-leak-on-graceful",
+    "fix-plugin-root-walk-after-collapse",
     "fix-prerelease-workflow-consumption",
     "mighty-grapes-ask",
     "migrate-release-pipeline",
     "release-next-app-token",
     "release-next-direct-push",
     "remove-available-bots-injection",
+    "rework-release-pipeline-direct-push",
     "swift-balloons-search",
     "worktree-default-name-decoupling"
   ]

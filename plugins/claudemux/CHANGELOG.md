@@ -1,5 +1,16 @@
 # claudemux
 
+## 1.0.0-beta.18
+
+### Patch Changes
+
+- 9ceed4e: Collapse the `plugins/claudemux/core/` subdirectory into the plugin root so the plugin has a single `package.json` (the same shape `plugins/feishu-channel` already uses). `src/`, `test/`, `third_party/`, `resolver*.mjs`, `tsconfig.json`, `vitest.integration.config.ts`, `knip.json`, and `core/scripts/*` move up one level; the inner `core/package.json` and its `package-lock.json` are removed and the outer manifest absorbs the Node project fields (`type`, `engines`, `imports`, devDeps, test/typecheck/lint scripts). `bin/tm`'s `ROOT` resolution, `.changeset/config.json`'s `changedFilePatterns`, the CI job (switched from `npm ci` to workspace pnpm install), and the KB docs that describe current state are updated accordingly. Runtime behavior of `tm` is unchanged.
+
+  Also: move `bin/check-author` to `scripts/check-author` (it is a repo governance tool, not a user-facing executable) and remove two stale regression scripts (`bin/test-tm-mem`, `bin/test-tm-prompt-splat`) that targeted the pre-TypeScript Bash `tm` and no longer execute against current code.
+
+- 9ceed4e: Fix the plugin-root path walk after the `core/` collapse moved the source tree up one level. `tmWrapperPath`/`pluginJsonPath` (`src/plugin-root.ts`) and `resolveTmBinary` (`src/tm.ts`) still walked up two directories from their module, resolving to `plugins/bin/tm` and `plugins/.claude-plugin/plugin.json` instead of the real files under `plugins/claudemux/`. Each now walks up one level. A new `test/paths.test.ts` block pins all three helpers to files that must exist on disk under a `claudemux` plugin root, so a future tree-depth change fails in CI instead of at teammate spawn or plugin.json read.
+- cd49706: Rework the release pipeline onto direct-push beta + GA and drop the self-built workaround layer. release-next no longer rewrites pre.json internal state (the `prepare-prerelease-changesets` script is removed) and sets `HUSKY=0` so the bot's version-bump push is not blocked by the local pre-push changeset check — a check that misfires on the release commit because the bump touches a release-surface file (`package.json`) whose changeset is already consumed. GA moves off the never-run `workflow_dispatch` promote button onto a push-to-main workflow that exits pre mode, versions, and pushes the GA commit directly; `reset-next-pre` then fast-forwards next to main's GA state and re-enters beta pre mode so the next prerelease cycle versions from the GA base instead of re-consuming shipped changesets.
+
 ## 1.0.0-beta.17
 
 ### Patch Changes
