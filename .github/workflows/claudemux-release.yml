@@ -145,11 +145,26 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          # OIDC tokenless trusted publishing requires Node >= 22.14.0.
+          # node-version: '22' resolves to the latest Node 22.x release, which
+          # is always >= 22.14.0 on current GitHub-hosted runners.
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for OIDC trusted publishing
+        # Two separate npm version thresholds apply here:
+        #   >= 9.6.0  — `--provenance` flag (attestation only; still needs a token)
+        #   >= 11.5.1 — OIDC tokenless trusted publishing (GA 2025-07-31):
+        #               npm exchanges the GitHub OIDC token for a short-lived
+        #               publish token automatically, no NODE_AUTH_TOKEN needed.
+        # Node 22 LTS ships npm 10.x, which is below the 11.5.1 threshold.
+        # This step upgrades to the exact version that introduced the feature.
+        run: npm install -g npm@11.5.1
 
       - name: Publish @excitedjs/tm to npm (OIDC trusted publishing)
         working-directory: plugins/claudemux
         run: npm publish --provenance --access public
-        # No NODE_AUTH_TOKEN — npm exchanges the OIDC token automatically.
-        # Requires npm >= 9.8.1 (Node 22 ships npm 10.x; always satisfied).
+        # No NODE_AUTH_TOKEN — npm 11.5.1+ automatically detects the GitHub
+        # Actions OIDC environment and exchanges the token with the npm registry.
+        # The package must be configured as a trusted publisher on npmjs.com
+        # (repo=excitedjs/claudemux, workflow=claudemux-release.yml).
